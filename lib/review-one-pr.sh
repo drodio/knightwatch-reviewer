@@ -253,10 +253,14 @@ fi
 # Repo visibility (public|private|internal), lowercased — feeds the security
 # threat model and portability bar into the specialist prompts. `gh repo view`
 # reports visibility UPPERCASE; the prompts branch on the lowercase string.
-# Default to `private` if unreadable: the quieter posture (no portability noise),
-# and `gh` effectively never fails for a repo we're already cloning.
+# Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
+# above: a metadata-lookup break must not silently downgrade a public repo to
+# the quieter private posture (under-calibrated security + portability review).
 REPO_VISIBILITY=$(gh repo view "$REPO" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]')
-[ -z "$REPO_VISIBILITY" ] && REPO_VISIBILITY=private
+if [ -z "$REPO_VISIBILITY" ]; then
+    log "$PR_ID: gh repo view returned no visibility — aborting before placeholder post (refusing to review under an assumed posture)"
+    exit 1
+fi
 
 # Author trust — computed once, before any placeholder/clone/codex. Container-
 # mode review gate: codex agents run sandbox-bypassed and share the privileged

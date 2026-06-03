@@ -62,6 +62,13 @@ if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
     exit 0
 fi
 
+# gh repo view --repo <repo> --json visibility → fixed visibility (worker
+# aborts on an empty result, so the stub must answer this lookup).
+if [ "\$1" = "repo" ] && [ "\$2" = "view" ]; then
+    printf '{"visibility":"PUBLIC"}\n'
+    exit 0
+fi
+
 # gh api repos/.../issues/N/comments --method POST → placeholder POST
 # (returns a fake comment id so the worker captures it as
 # EYES_COMMENT_ID and continues).

@@ -65,6 +65,9 @@ case "\$fields" in
     *baseRefName*)
         printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
         ;;
+    *visibility*)
+        printf '{"visibility":"PUBLIC"}\n'
+        ;;
     *headRefOid*)
         printf '{"headRefOid":"$head_oid"}\n'
         ;;
@@ -717,14 +720,15 @@ write_stateful_gh_stub() {
 STORE="$store"
 BOT_LOGIN="${BOT_USER:-test-user}"
 
-# --- gh pr view (canned, same shape as write_gh_stub) ---
-if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
+# --- gh pr view / gh repo view (canned, same shape as write_gh_stub) ---
+if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     fields=""
     for ((i=1; i<=\$#; i++)); do
         if [ "\${!i}" = "--json" ]; then j=\$((i+1)); fields="\${!j}"; break; fi
     done
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
+        *visibility*)  printf '{"visibility":"PUBLIC"}\n' ;;
         *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
     esac
     exit 0
