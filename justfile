@@ -41,6 +41,14 @@ test:
         bash -n "$f" && echo "  ok: $f"
     done < <(git ls-files '*.sh')
 
+    # Runs before any commit-heavy smoke: if the GIT_CONFIG_GLOBAL=/dev/null
+    # export above were dropped, this fails fast here — before the fixture
+    # commits in search-roots/diff-build/sibling-symlinks could enqueue stray
+    # live review jobs into ~/.roborev/reviews.db.
+    echo ""
+    echo "=== git-global-hook isolation smoke test ==="
+    bash lib/tests/git-global-hook-isolation-smoke.sh
+
     echo ""
     echo "=== python pipeline tests ==="
     python3 -m unittest discover -s lib/tests -p 'test_*.py' -v
@@ -132,10 +140,6 @@ test:
     echo ""
     echo "=== run-just-test isolation smoke test ==="
     bash lib/tests/run-just-test-isolation-smoke.sh
-
-    echo ""
-    echo "=== git-global-hook isolation smoke test ==="
-    bash lib/tests/git-global-hook-isolation-smoke.sh
 
     echo ""
     echo "=== orchestrator skip smoke test ==="
