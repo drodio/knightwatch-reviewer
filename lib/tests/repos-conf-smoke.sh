@@ -128,6 +128,49 @@ rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/config.env"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cncorp/nonexistent; echo \"v=[\${KID_PATHS[\$REPO]:-}]\"" 2>&1)
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
+# require_tracked_targets — the startup guard shared by the PR-enumeration
+# entry scripts (review.sh / approve-from-replies.sh / re-request-poller.sh).
+# Locks the contract that a whole-org (ORGS-only, no REPOS) manifest is
+# satisfiable, and that a wholly-empty manifest still fails loud.
+echo "  B4-targets-orgs-only: require_tracked_targets accepts ORGS with empty REPOS..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+ORGS=(acme)
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
+[ "$out" = "OK" ] || { echo "FAIL B4-targets-orgs-only: expected OK (guard should pass); output: $out"; exit 1; }
+
+echo "  B4-targets-repos-only: require_tracked_targets accepts REPOS with empty ORGS..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_tracked_targets; echo OK" 2>&1)
+[ "$out" = "OK" ] || { echo "FAIL B4-targets-repos-only: expected OK; output: $out"; exit 1; }
+
+echo "  B4-targets-empty: require_tracked_targets aborts loud when neither REPOS nor ORGS is set..."
+rm -f "$SAND_STATE/repos.conf"   # both arrays empty
+if out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; require_tracked_targets; echo SHOULD_NOT_REACH" 2>&1); then
+    echo "FAIL B4-targets-empty: guard exited 0 (expected non-zero); output: $out"; exit 1
+fi
+printf '%s' "$out" | grep -q 'FATAL: no tracked targets' || { echo "FAIL B4-targets-empty: missing FATAL line; output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'SHOULD_NOT_REACH' && { echo "FAIL B4-targets-empty: continued past abort; output: $out"; exit 1; }
+
+# require_repos — the calibration-timer guard (learn-from-replies / bakeoff).
+# Empty REPOS is a clean opt-out (exit 0, message on stderr); non-empty continues.
+echo "  B4-repos-empty: require_repos exits 0 (clean opt-out) on empty REPOS..."
+rm -f "$SAND_STATE/repos.conf"   # REPOS empty
+out=$(STATE_DIR="$SAND_STATE" bash -c ". '$LOADER'; require_repos; echo CONTINUED" 2>&1) \
+    || { echo "FAIL B4-repos-empty: require_repos exited non-zero (expected 0 opt-out); output: $out"; exit 1; }
+printf '%s' "$out" | grep -q 'CONTINUED' && { echo "FAIL B4-repos-empty: continued past require_repos on empty REPOS"; exit 1; }
+printf '%s' "$out" | grep -q 'per-repo calibration scans REPOS only' || { echo "FAIL B4-repos-empty: missing opt-out message; output: $out"; exit 1; }
+
+echo "  B4-repos-nonempty: require_repos continues when REPOS is set..."
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+CONF
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; require_repos; echo CONTINUED" 2>&1)
+printf '%s' "$out" | grep -q 'CONTINUED' || { echo "FAIL B4-repos-nonempty: expected to continue past require_repos; output: $out"; exit 1; }
+rm -f "$SAND_STATE/repos.conf"
+
 echo "  B5: repos.conf.auto consumer — manual wins, stale auto KID_PATHS get convention-defaulted..."
 # Pin the split-file manifest contract:
 #   - Loader sources both files and exposes the merged view.
@@ -191,6 +234,20 @@ for c in "${CONSUMERS[@]}"; do
     f="$PROJECT_ROOT/$c"
     [ -f "$f" ] || { echo "FAIL C: $c missing from repo"; exit 1; }
     grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
+done
+
+# Startup-guard call-site fencing: the PR-enumeration entrypoints accept an
+# ORGS-only config (require_tracked_targets — ORGS = whole-org review), while
+# the per-repo calibration timers require REPOS (require_repos — REPOS-only,
+# clean opt-out on empty). The split is load-bearing; a refactor that swapped
+# a calibration timer onto require_tracked_targets would make it run with no
+# REPOS to walk, so pin which guard each side calls.
+echo "  C-guard: review entrypoints use require_tracked_targets; calibration uses require_repos..."
+for c in review.sh approve-from-replies.sh re-request-poller.sh; do
+    grep -q 'require_tracked_targets' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_tracked_targets (ORGS-or-REPOS)"; exit 1; }
+done
+for c in learn-from-replies.sh specialist-bakeoff.sh; do
+    grep -q 'require_repos' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_repos (REPOS-only calibration)"; exit 1; }
 done
 
 # ----- Contract D: install.sh bootstrap + symlink delivery ----------------

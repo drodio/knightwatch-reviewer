@@ -6,17 +6,16 @@
 # REPOS=(…) and ORGS=(…) are in scope.
 #
 # enumerate_open_prs
-#   For each owner in ORGS:
-#       gh api graphql search(user:OWNER is:pr is:open) — one call per
-#       owner, returns repository/number/title/headRefName/headRefOid/
-#       updatedAt/author per PR.
+#   For each owner in ORGS (reviewed in FULL):
+#       paginated gh api graphql search(user:OWNER is:pr is:open
+#       archived:false) — one batched search per owner per tick (NOT a
+#       per-repo fan-out), returns every non-archived open PR.
 #   For each entry in REPOS whose owner is NOT in ORGS:
 #       gh pr list --repo OWNER/NAME --json … — fallthrough for
-#       partially-tracked owners (today: cncorp/plow, cncorp/plow-content).
-#   Concatenates results, post-filters against ${REPOS[@]} so a batched
-#   ORG search can't surface a repo we don't actually track (e.g. one
-#   removed from repos.conf.auto between org-sync ticks, or an archived
-#   repo whose pruning hasn't propagated yet).
+#       partially-tracked owners (today: cncorp/plow).
+#   Concatenates results with NO post-filter: ORGS owners are reviewed in
+#   FULL (every result is wanted), and the per-repo path only fetches the
+#   explicit non-ORGS REPOS entries — so nothing untracked is ever fetched.
 #
 # On success: prints one JSON array on stdout (possibly empty), exits 0.
 # Output shape per element:
@@ -36,8 +35,9 @@
 # srosro repos into 1 call per owner (~3 pts each), keeping cncorp/* on
 # per-repo because those orgs are only partially tracked.
 
-_enumerate_graphql_query='query($q: String!) {
-  search(query: $q, type: ISSUE, first: 100) {
+_enumerate_graphql_query='query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
         number title headRefName headRefOid updatedAt
@@ -60,17 +60,35 @@ enumerate_open_prs() {
     local pieces=() owner repo raw nodes
     declare -A _seen_owners=()
 
-    # 1. ORGS-batched path: one graphql call per fully-tracked owner.
+    # 1. ORGS-batched path: paginated graphql search per ORGS owner. ORGS are
+    #    reviewed in FULL, so one batched search per owner per tick covers the
+    #    whole org — it does NOT fan out per-repo (that would scale gh-quota
+    #    cost with org size on every poll). Paged (not just first:100) because
+    #    whole-org coverage of a >100-open-PR owner would otherwise miss page 2;
+    #    bounded by GitHub's 1000-result search cap (far past our operating
+    #    point). archived:false mirrors org-sync's `--no-archived` (never review
+    #    an archived repo's stale PRs); it does NOT mirror `--source`, so an
+    #    org-owned fork's PR is in scope — intended/harmless at our operating
+    #    point, and `fork:false` is NOT usable (the issues index free-texts it,
+    #    zeroing results — verified against the live API).
+    local after
     for owner in "${ORGS[@]}"; do
         [ -n "${_seen_owners[$owner]:-}" ] && continue
         _seen_owners[$owner]=1
-        if ! raw=$(gh api graphql \
-                -F q="user:${owner} is:pr is:open" \
-                -f query="$_enumerate_graphql_query" 2>/dev/null); then
-            return 1
-        fi
-        nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
-        pieces+=("$nodes")
+        after=""
+        while :; do
+            if [ -n "$after" ]; then
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                        -F after="$after" -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+            else
+                raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
+                        -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
+            fi
+            nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            pieces+=("$nodes")
+            after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
+            [ -n "$after" ] || break
+        done
     done
 
     # 2. Per-repo fallthrough for manual entries in non-ORGS namespaces.
@@ -89,16 +107,14 @@ enumerate_open_prs() {
         pieces+=("$nodes")
     done
 
-    # 3. Concat all pieces, post-filter against ${REPOS[@]} so an ORG
-    #    search can't surface an untracked repo.
-    local tracked_json
-    tracked_json=$(printf '%s\n' "${REPOS[@]}" | jq -R . | jq -s .)
+    # 3. Concat all pieces. No post-filter needed: an ORGS owner is reviewed
+    #    in FULL (every result is wanted), and the per-repo fallthrough only
+    #    fetches explicit REPOS entries — so nothing untracked is ever fetched.
     if [ ${#pieces[@]} -eq 0 ]; then
         echo "[]"
         return 0
     fi
-    printf '%s\n' "${pieces[@]}" | jq -s --argjson tracked "$tracked_json" \
-        'add // [] | map(select(.repository.nameWithOwner as $r | $tracked | index($r)))'
+    printf '%s\n' "${pieces[@]}" | jq -s 'add // []'
 }
 
 _bot_activity_graphql_query='query($q: String!, $after: String) {

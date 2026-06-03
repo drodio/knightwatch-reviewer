@@ -100,9 +100,9 @@ docker compose up -d
 docker compose logs -f reviewer-1
 ```
 
-The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. **Two write host state the containers don't read — auto-discovery and auto-calibration are host-only in v1:**
-- `pr-reviewer-org-sync` writes auto-discovered repos to `~/.pr-reviewer/repos.conf.auto`, which the containers (reading `/shared/repos.conf`) never see → list tracked repos explicitly in `docker/secrets/repos.conf` (or mount a shared `repos.conf.auto` into `/shared` and run org-sync against it).
-- `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md` (learned review calibrations), but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
+The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. The containers read only `/shared/repos.conf`, never host state — two notes follow from that:
+- **Review coverage comes from `ORGS`, not `repos.conf.auto`.** Set `ORGS=(plow-pbc srosro)` in `docker/secrets/repos.conf` for whole-org review (every non-archived open PR, new repos included, via one batched search per org per tick); keep only partial orgs in `REPOS` (e.g. `cncorp/plow`). The containers never read `pr-reviewer-org-sync`'s `~/.pr-reviewer/repos.conf.auto` — and with `ORGS` they don't need to; org-sync's role is now just cloning org repos host-side for kid-prior-art.
+- **Calibration is host-only in v1.** `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md`, but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
 
 Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
 
@@ -115,13 +115,19 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 The tracked-repo manifest is split into a committed template ([`repos.conf.example`](repos.conf.example)) and a per-operator live file (`repos.conf`, gitignored). On first `./install.sh` run the live file is bootstrapped from the template — edit it in place, then re-run `./install.sh`:
 
 ```sh
+# Whole-org coverage: review every non-archived open PR in the org,
+# including repos created later — no manifest edit per new repo. One
+# batched search per org per tick (not a per-repo fan-out).
+ORGS=(your-org)
+
+# Per-repo allowlist: for partially-tracked orgs where you want only
+# specific repos reviewed (leave such an org OUT of ORGS).
 REPOS=(
-    "your-org/your-repo"
-    ...
+    "other-org/just-this-repo"
 )
 ```
 
-The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
+The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. Set `ORGS` there for whole-org coverage; reserve `REPOS` for specific repos in partially-tracked orgs. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
 
 ## Use on a PR
 

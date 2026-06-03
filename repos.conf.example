@@ -10,13 +10,19 @@
 # learn-from-replies.sh, approve-from-replies.sh, re-request-poller.sh,
 # and lib/review-one-pr.sh.
 #
-# To track a new repo: append a line to REPOS and a corresponding entry
-# in each of the two maps below (KID_PATHS, SOURCE_PATHS — smoke suite
-# enforces a key per repo). Then run ./install.sh on the deployed
-# checkout: adding a KID_PATHS entry widens the kid-refresh unit's
-# ReadWritePaths sandbox, which only re-renders on
-# install. A plain `git pull` on the deployed checkout is sufficient
-# only when no KID_PATHS key was added.
+# Whole-org review coverage comes from ORGS (see below): list an org there
+# and every non-archived open PR in it is reviewed — new repos included, no
+# per-repo manifest edit. REPOS is only for PARTIAL orgs (review just specific
+# repos, e.g. cncorp/plow) and for optional explicit KID_PATHS/SOURCE_PATHS
+# wiring (kid-prior-art + cross-repo grep, which stay per-repo opt-in).
+#
+# To add a partial-org repo (or wire KID/source for one): append a line to
+# REPOS and a corresponding entry in each of the two maps below (KID_PATHS,
+# SOURCE_PATHS — smoke suite enforces a key per repo). Then run ./install.sh
+# on the deployed checkout: adding a KID_PATHS entry widens the kid-refresh
+# unit's ReadWritePaths sandbox, which only re-renders on install. A plain
+# `git pull` on the deployed checkout is sufficient only when no KID_PATHS key
+# was added. (Whole-org repos via ORGS need no REPOS/maps entry at all.)
 #
 # Per-repo policy (sibling allowlist, product context, review priority,
 # dead-code command, strict-typing command) lives in
@@ -49,13 +55,20 @@ declare -A SOURCE_PATHS=(
     ["your-org/example-repo"]="$HOME/Hacking/example-repo"
 )
 
-# Orgs auto-synced hourly by org-sync.sh / pr-reviewer-org-sync.timer.
-# Each entry is a GitHub org name (NOT org/repo). For each org, the
-# sync runs `gh repo list <org> --source --no-archived` (excludes
-# archived + forks), clones any missing repos into
-# $HOME/services/kwr-repos/<name>, and writes the resulting
-# auto-tracked set to a separate file — $STATE_DIR/repos.conf.auto —
-# that lib/tracked-repos.sh sources after this one. We never write
-# THIS file. Leave ORGS empty to disable auto-sync entirely (and to
-# truncate any prior repos.conf.auto).
+# Orgs reviewed in FULL — the whole-org config alongside the per-repo REPOS
+# allowlist above. Each entry is a GitHub org name (NOT org/repo). Every
+# non-archived open PR in an ORGS owner is eligible, with no per-repo REPOS
+# entry required: a repo created later is reviewed the moment it has a PR, no
+# manifest edit. lib/pr-enumerate.sh covers each ORGS owner with ONE batched
+# `search(user:<org> is:pr is:open archived:false)` per tick — it does NOT
+# fan out per-repo (that would scale GitHub-quota cost with org size on every
+# poll). Partial orgs — where you want only specific repos reviewed (e.g.
+# cncorp/plow) — stay OUT of ORGS and list those repos in REPOS, which the
+# per-repo fallthrough fetches with a bounded `gh pr list`.
+#
+# org-sync.sh / pr-reviewer-org-sync.timer also use ORGS (host path only):
+# hourly `gh repo list <org> --source --no-archived`, cloning missing repos
+# into $HOME/services/kwr-repos/<name> for kid-prior-art. Leave ORGS empty
+# to disable both whole-org review and auto-sync.
+#   e.g. ORGS=(your-org)   # review every repo in your-org
 ORGS=()
