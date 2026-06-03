@@ -104,6 +104,16 @@ def _codex_auth_fatal_line(marker: str = "refresh_token_reused") -> str:
     )
 
 
+def _codex_rate_limit_line() -> str:
+    """Shape of codex's stderr when it exhausts its own retries against a
+    transient HTTP 429 rate limit — distinct from a usage cap (no reset time)
+    and from fatal auth. Drives a short backoff, not an offline/timed-cap."""
+    return (
+        "ERROR: exceeded retry limit, last status: 429 Too Many Requests, "
+        "request id: 00000000-0000-0000-0000-000000000000\n"
+    )
+
+
 def _inject_intent_stream(stream: str, line: str):
     """Returns a before_write callback that appends `line` to the intent
     agent's <stream>.txt (`err` = codex CLI stderr / real error path, `log`
@@ -1287,6 +1297,29 @@ class TestRunPipeline(unittest.TestCase):
         self.assertEqual(rc, 0)
 
     @patch("pipeline.subprocess.Popen")
+    def test_wave_b_concurrency_is_capped(self, mock_popen):
+        """Wave B caps simultaneous specialist codex calls at
+        WAVE_B_MAX_CONCURRENCY so a review can't fire all 7 at once and trip
+        429s (the 2026-06-03 storm). With the cap at 2, peak concurrent
+        specialists must not exceed 2 — and the review still completes."""
+        lock = threading.Lock()
+        state = {"cur": 0, "peak": 0}
+        def track(name, _out_path):
+            if name in pipeline.SPECIALISTS:
+                with lock:
+                    state["cur"] += 1
+                    state["peak"] = max(state["peak"], state["cur"])
+                time.sleep(0.05)
+                with lock:
+                    state["cur"] -= 1
+        with patch.object(pipeline, "WAVE_B_MAX_CONCURRENCY", 2):
+            mock_popen.side_effect = _make_codex_stub(before_write=track)
+            rc = self._run()
+        self.assertEqual(rc, 0)
+        self.assertGreaterEqual(state["peak"], 1)   # specialists actually ran
+        self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
+
+    @patch("pipeline.subprocess.Popen")
     def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_popen):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
@@ -1451,6 +1484,35 @@ class TestRunPipeline(unittest.TestCase):
         rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_rate_limit_writes_sentinel(self, mock_popen):
+        """A transient codex 429 (retry-limit exhausted) writes
+        _codex_rate_limit.txt so review-one-pr.sh backs the worker off one rate
+        window instead of hard-aborting + instantly retrying (the 2026-06-03
+        post-restart 429 storm). Distinct from a usage cap and from fatal auth —
+        neither of those sentinels is written."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream("err", _codex_rate_limit_line()),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertTrue((self.run_dir / "_codex_rate_limit.txt").exists())
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+        self.assertFalse((self.run_dir / "_codex_auth_fatal.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_codex_rate_limit_no_sentinel_on_unrelated_failure(self, mock_popen):
+        """A generic non-zero exit with no 429 marker writes no rate-limit
+        sentinel — the worker aborts normally, no spurious backoff."""
+        mock_popen.side_effect = _make_codex_stub(
+            plan={"intent": (1, "")},
+            before_write=_inject_intent_stream("err", "ERROR: something unrelated broke\n"),
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)
+        self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_auth_fatal_writes_sentinel(self, mock_popen):

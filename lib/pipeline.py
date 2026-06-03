@@ -89,6 +89,23 @@ _CODEX_AUTH_FATAL_RE = re.compile(
     r"refresh_token_reused|token_invalidated",
     re.IGNORECASE,
 )
+# Codex prints this when it exhausts its OWN retries against a transient
+# server-side rate limit (HTTP 429) — distinct from a usage cap (which names a
+# reset time, _CODEX_QUOTA_RE) and from fatal auth. Pinned to codex's first-
+# party retry-exhaustion structure ("exceeded retry limit … 429") so PR-
+# reflected stderr can't spoof it — and even a spoof only triggers a short
+# backoff, never an offline. Drives a one-rate-window pause in review-one-pr.sh
+# so a 429 doesn't hard-abort + instantly retry + re-saturate the account (the
+# 2026-06-03 post-restart 429 storm).
+_CODEX_RATE_LIMIT_RE = re.compile(
+    r"exceeded retry limit.{0,40}\b429\b",
+    re.IGNORECASE | re.DOTALL,
+)
+# Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
+# at once put ~8 concurrent calls on a single account and tripped 429s (the
+# 2026-06-03 storm); bounding peak concurrency spreads them out (the executor
+# queues the rest).
+WAVE_B_MAX_CONCURRENCY = 4
 
 
 def _ts() -> str:
@@ -303,6 +320,13 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # so review-one-pr.sh takes it OFFLINE until an operator re-login
             # rather than spin-aborting + commenting on every PR.
             (agent.parent.parent / "_codex_auth_fatal.txt").write_text("codex auth invalid\n")
+        elif _CODEX_RATE_LIMIT_RE.search(err_text):
+            # Transient 429: codex exhausted its own retries against a rate
+            # limit. Not a usage cap (no reset time), not fatal auth — back the
+            # worker off for one rate window so it doesn't immediately retry and
+            # re-saturate the account. review-one-pr.sh turns this into a short
+            # quota-pause.
+            (agent.parent.parent / "_codex_rate_limit.txt").write_text("codex 429 rate limit\n")
         return exit_code
 
     if not out_file.exists() or out_file.stat().st_size == 0:
@@ -665,7 +689,7 @@ def run_pipeline(
     # block's __exit__ to call ex.shutdown(wait=True) on a hung future and
     # the pipeline blocked indefinitely (see SPECIALIST_TIMEOUT_SEC docstring).
     # With run_codex's 45m subprocess timeout, every future now resolves.
-    with ThreadPoolExecutor(max_workers=len(SPECIALISTS) + 1) as ex:
+    with ThreadPoolExecutor(max_workers=min(WAVE_B_MAX_CONCURRENCY, len(SPECIALISTS) + 1)) as ex:
         futures = {
             ex.submit(run_specialist, specialist=s, **common_kwargs): s
             for s in SPECIALISTS

@@ -36,6 +36,15 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # ---- shared helpers (deduplicate scenario setup) ----
 
+# seed_state_dir <state_dir> — create the worker's state subdirs + empty
+# state.json that every scenario needs. (The canonical clone varies per
+# scenario — different paths, some skip it — so it stays explicit at the call
+# site.)
+seed_state_dir() {
+    mkdir -p "$1/runs" "$1/canonical-locks" "$1/locks" "$1/repos" "$1/workdirs"
+    echo "{}" > "$1/state.json"
+}
+
 # write_gh_stub <stub_path> <base_ref> <head_oid>
 #   gh pr view <N> --json baseRefName,... → returns the supplied base_ref.
 #   gh pr view <N> --json headRefOid       → returns head_oid.
@@ -307,8 +316,7 @@ git -C "$WORKING2" push -q origin feat/test:refs/pull/2/head
 # Fresh sandbox — separate STATE_DIR so the runs from scenario 1 don't
 # confuse the run-dir search.
 STATE2="$TMPDIR/state-2"
-mkdir -p "$STATE2/runs" "$STATE2/canonical-locks" "$STATE2/locks" "$STATE2/repos" "$STATE2/workdirs"
-echo "{}" > "$STATE2/state.json"
+seed_state_dir "$STATE2"
 
 CANONICAL2="$STATE2/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL2")"
@@ -475,8 +483,7 @@ git clone -q "$GITHUB_BARE3" "$WORKING3"
 PR_SHA3=$(git -C "$WORKING3" rev-parse refs/heads/feat/test)
 
 STATE3="$TMPDIR/state-3"
-mkdir -p "$STATE3/runs" "$STATE3/canonical-locks" "$STATE3/locks" "$STATE3/repos" "$STATE3/workdirs"
-echo "{}" > "$STATE3/state.json"
+seed_state_dir "$STATE3"
 
 CANONICAL3="$STATE3/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL3")"
@@ -642,8 +649,7 @@ fi
 # clone/meta.json. Flipping only REVIEWER_CONTAINER_MODE must flip to a skip.
 echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
 STATE5="$TMPDIR/state-5"
-mkdir -p "$STATE5/runs" "$STATE5/canonical-locks" "$STATE5/locks" "$STATE5/repos" "$STATE5/workdirs"
-echo "{}" > "$STATE5/state.json"
+seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
 (
     export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
@@ -777,8 +783,7 @@ STUB
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SHA"
 
 STATE6="$TMPDIR/state-6"
-mkdir -p "$STATE6/runs" "$STATE6/canonical-locks" "$STATE6/locks" "$STATE6/repos" "$STATE6/workdirs"
-echo "{}" > "$STATE6/state.json"
+seed_state_dir "$STATE6"
 CANONICAL6="$STATE6/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL6")"
 git clone -q "$GITHUB_BARE" "$CANONICAL6"
@@ -811,3 +816,69 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
 fi
 
 echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"
+
+
+# ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====
+# Fences the WHOLE 429-backoff path end-to-end: a fake `codex` emits the
+# first-party retry-exhaustion 429 on stderr → the real pipeline.py classifies
+# it (_CODEX_RATE_LIMIT_RE) and writes $RUN_DIR/_codex_rate_limit.txt →
+# review-one-pr.sh turns that sentinel into a future-epoch quota-pause + a
+# "codex rate limit (429)" placeholder body (the consumer half the Python-level
+# test can't reach). Originating incident: 2026-06-03 post-restart 429 storm,
+# where a bare 429 hard-aborted + instantly retried into a self-sustaining loop.
+#
+# Behavior asserted (user-visible): the single placeholder says "codex rate
+# limit (429)", and $STATE/quota-paused-until is a FUTURE epoch so the worker
+# backs off instead of immediately re-claiming.
+echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
+
+# Full prompts so the pipeline reaches run_codex (Wave A intent) and the fake
+# codex's 429 lands — not an early build_prompt abort.
+cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
+
+# Fake codex: emit codex's first-party 429 retry-exhaustion line to stderr
+# (err.txt) and exit non-zero, on every `exec`. pipeline.py reads err.txt for
+# the classification regex.
+cat > "$HOME/.local/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+echo "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000" >&2
+exit 1
+CODEX
+chmod +x "$HOME/.local/bin/codex"
+
+STORE7="$TMPDIR/comment-store-7.json"
+echo "[]" > "$STORE7"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
+
+STATE7="$TMPDIR/state-7"
+seed_state_dir "$STATE7"
+git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
+
+(
+    export STATE_DIR="$STATE7"
+    export STATE_FILE="$STATE7/state.json"
+    export REPOS_DIR="$STATE7/repos"
+    export WORKDIRS_DIR="$STATE7/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE7/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE7/locks"
+    write_probe_repos_conf "$STATE7/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+if ! jq -e '[.[] | select(.body | contains("codex rate limit (429)"))] | length == 1' "$STORE7" >/dev/null; then
+    echo "FAIL: scenario 7 — placeholder body missing 'codex rate limit (429)' (429 sentinel → backoff body not wired)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE7"
+    exit 1
+fi
+PAUSE_UNTIL=$(head -n1 "$STATE7/quota-paused-until" 2>/dev/null || echo 0)
+if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
+    echo "FAIL: scenario 7 — quota-paused-until=$PAUSE_UNTIL is not a future epoch (worker would re-claim immediately, no backoff)"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + codex 429 backoff)"
