@@ -811,3 +811,70 @@ if [ "$PLACEHOLDER_COUNT" != "1" ]; then
 fi
 
 echo "  PASS (6 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam)"
+
+
+# ===== Scenario 7: transient codex 429 → short backoff (not hard-abort+retry) =====
+# Fences the WHOLE 429-backoff path end-to-end: a fake `codex` emits the
+# first-party retry-exhaustion 429 on stderr → the real pipeline.py classifies
+# it (_CODEX_RATE_LIMIT_RE) and writes $RUN_DIR/_codex_rate_limit.txt →
+# review-one-pr.sh turns that sentinel into a future-epoch quota-pause + a
+# "codex rate limit (429)" placeholder body (the consumer half the Python-level
+# test can't reach). Originating incident: 2026-06-03 post-restart 429 storm,
+# where a bare 429 hard-aborted + instantly retried into a self-sustaining loop.
+#
+# Behavior asserted (user-visible): the single placeholder says "codex rate
+# limit (429)", and $STATE/quota-paused-until is a FUTURE epoch so the worker
+# backs off instead of immediately re-claiming.
+echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
+
+# Full prompts so the pipeline reaches run_codex (Wave A intent) and the fake
+# codex's 429 lands — not an early build_prompt abort.
+cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
+
+# Fake codex: emit codex's first-party 429 retry-exhaustion line to stderr
+# (err.txt) and exit non-zero, on every `exec`. pipeline.py reads err.txt for
+# the classification regex.
+cat > "$HOME/.local/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+echo "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000" >&2
+exit 1
+CODEX
+chmod +x "$HOME/.local/bin/codex"
+
+STORE7="$TMPDIR/comment-store-7.json"
+echo "[]" > "$STORE7"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
+
+STATE7="$TMPDIR/state-7"
+mkdir -p "$STATE7/runs" "$STATE7/canonical-locks" "$STATE7/locks" "$STATE7/repos" "$STATE7/workdirs"
+echo "{}" > "$STATE7/state.json"
+git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
+
+(
+    export STATE_DIR="$STATE7"
+    export STATE_FILE="$STATE7/state.json"
+    export REPOS_DIR="$STATE7/repos"
+    export WORKDIRS_DIR="$STATE7/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE7/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE7/locks"
+    write_probe_repos_conf "$STATE7/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+if ! jq -e '[.[] | select(.body | contains("codex rate limit (429)"))] | length == 1' "$STORE7" >/dev/null; then
+    echo "FAIL: scenario 7 — placeholder body missing 'codex rate limit (429)' (429 sentinel → backoff body not wired)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE7"
+    exit 1
+fi
+PAUSE_UNTIL=$(head -n1 "$STATE7/quota-paused-until" 2>/dev/null || echo 0)
+if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
+    echo "FAIL: scenario 7 — quota-paused-until=$PAUSE_UNTIL is not a future epoch (worker would re-claim immediately, no backoff)"
+    exit 1
+fi
+
+echo "  PASS (7 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + placeholder reuse anti-spam + codex 429 backoff)"
