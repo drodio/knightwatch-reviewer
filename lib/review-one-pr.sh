@@ -250,6 +250,18 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
+# Repo visibility (public|private|internal), lowercased — feeds the security
+# threat model and portability bar into the specialist prompts. `gh repo view`
+# reports visibility UPPERCASE; the prompts branch on the lowercase string.
+# Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
+# above: a metadata-lookup break must not silently downgrade a public repo to
+# the quieter private posture (under-calibrated security + portability review).
+REPO_VISIBILITY=$(gh repo view "$REPO" --json visibility --jq '.visibility' 2>/dev/null | tr '[:upper:]' '[:lower:]')
+if [ -z "$REPO_VISIBILITY" ]; then
+    log "$PR_ID: gh repo view returned no visibility — aborting before placeholder post (refusing to review under an assumed posture)"
+    exit 1
+fi
+
 # Author trust — computed once, before any placeholder/clone/codex. Container-
 # mode review gate: codex agents run sandbox-bypassed and share the privileged
 # dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
@@ -1391,6 +1403,7 @@ PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
+REPO_VISIBILITY="$REPO_VISIBILITY" \
 PR_DIFF_LOC="$PR_DIFF_LOC" \
 PROMPTS_DIR="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}" \
 LOG_FILE="$LOG_FILE" \

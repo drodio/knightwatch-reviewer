@@ -14,6 +14,10 @@ Out of scope (leave to other specialists): correctness bugs unrelated to securit
 
 If the diff touches auth, sessions, credential handling, or any HTTP surface area, investigate the call-site context beyond the diff — grep for how the touched function is invoked across the repo.
 
+**Threat model by repository visibility ({{REPO_VISIBILITY}}).** Press harder or softer based on who can reach the code:
+- **public** — assume adversarial, unauthenticated external consumers. Weight *up*: externally-reachable inputs, any new HTTP surface, dependency-chain risk (typosquats, unpinned / known-vulnerable versions), and any secret or credential that could land in public history. A hardcoded secret or a missing input-validation check at a trust boundary is `blocking` here, not a hardening nit.
+- **private / internal** — the trust boundary is the org. Still flag real secret leaks, IDOR, injection, and broken auth, but social-engineering / public-abuse / supply-chain surface is lower — don't inflate hardening-only notes to `blocking` on internal-trust paths.
+
 **Emission format:**
 
 Emit a numbered list of probe blocks per `.codex-scratch/probe-schema.md`. **Classes emitted: `bug`, `simplification`.** Severity rubric + edit/cost convention live in probe-schema.md § Class options. Domain examples for `bug` in this angle: secret leak, auth bypass, command injection, path traversal, sandbox escape, credential logging, IDOR, prototype pollution, weak crypto, missing CSRF/origin checks. Domain examples for `simplification`: extra signature checks, defense-in-depth not requested, wrap-once-then-wrap-again validation, redundant rate limits.

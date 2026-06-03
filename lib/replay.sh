@@ -195,6 +195,12 @@ PR_ID="$REPO#$PR"
 PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title | tr '\000-\037\177' ' ')"
 PR_URL="https://github.com/$REPO/pull/$PR"
 PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
+# Mirror the live worker's visibility lookup so replays render the same
+# security/portability posture production does — without it, every replay
+# falls back to pipeline.py's `private` default and a public-repo canary
+# never exercises the public prompt path this PR adds.
+REPO_VISIBILITY="$(gh repo view "$REPO" --json visibility --jq .visibility | tr '[:upper:]' '[:lower:]')"
+[ -n "$REPO_VISIBILITY" ] || { echo "replay: gh repo view --repo $REPO returned no visibility" >&2; exit 1; }
 LOG_FILE="$OUT/run.log"
 
 # `python3 lib/pipeline.py` returns a non-zero exit on any-stage failure
@@ -208,6 +214,7 @@ PR_ID="$PR_ID" \
 PR_TITLE="$PR_TITLE" \
 PR_URL="$PR_URL" \
 PR_AUTHOR="$PR_AUTHOR" \
+REPO_VISIBILITY="$REPO_VISIBILITY" \
 PROMPTS_DIR="${PROMPTS_DIR:-$LIB_DIR/../prompts}" \
 LOG_FILE="$LOG_FILE" \
 OPERATOR_NAME="${OPERATOR_NAME:-Sam}" \
