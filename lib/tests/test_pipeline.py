@@ -762,6 +762,7 @@ class TestBuildPrompt(unittest.TestCase):
         # Minimal common-header.md
         (self.prompts / "common-header.md").write_text(
             "PR: {{PR_ID}} ({{PR_TITLE}}) by {{PR_AUTHOR}}\n"
+            "Visibility: {{REPO_VISIBILITY}}\n"
             "Specialist: {{SPECIALIST_NAME}}\n"
         )
         # Minimal voice.md
@@ -791,6 +792,25 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("PR: owner/repo#42 (Add X) by alice", out)
         self.assertIn("Specialist: security", out)
         self.assertIn("Security review for owner/repo#42 as security.", out)
+
+    def test_specialist_repo_visibility_default_private(self):
+        (self.prompts / "specialists" / "security.md").write_text("body\n")
+        with patch.dict(os.environ):
+            os.environ.pop("REPO_VISIBILITY", None)
+            out = pipeline.build_prompt(
+                kind="specialist", agent="security", prompts_dir=str(self.prompts),
+                pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
+            )
+        self.assertIn("Visibility: private", out)  # default when env unset
+
+    def test_specialist_repo_visibility_env_override(self):
+        (self.prompts / "specialists" / "security.md").write_text("body\n")
+        with patch.dict(os.environ, {"REPO_VISIBILITY": "public"}):
+            out = pipeline.build_prompt(
+                kind="specialist", agent="security", prompts_dir=str(self.prompts),
+                pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
+            )
+        self.assertIn("Visibility: public", out)
 
     def test_standalone_substitutes_no_header(self):
         """intent / dead-code-search / momentum: no common-header, no SPECIALIST_NAME."""
@@ -1835,6 +1855,7 @@ class TestRealPromptsCompose(unittest.TestCase):
             )
             self.assertNotIn("{{PR_ID}}", out, f"{specialist}: PR_ID placeholder leaked")
             self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{specialist}: specialist name leaked")
+            self.assertNotIn("{{REPO_VISIBILITY}}", out, f"{specialist}: REPO_VISIBILITY placeholder leaked")
             self.assertIn(specialist, out, f"{specialist}: specialist name missing")
 
     def test_standalone_compose_against_real_prompts(self):

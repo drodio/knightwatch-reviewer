@@ -375,9 +375,11 @@ def build_prompt(
     or 'aggregator'."""
     pdir = Path(prompts_dir)
     operator_name = os.environ.get("OPERATOR_NAME", "Sam")
+    repo_visibility = os.environ.get("REPO_VISIBILITY", "private")
     base_subs = dict(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url,
         pr_author=pr_author, operator_name=operator_name,
+        repo_visibility=repo_visibility,
     )
 
     if kind == "specialist":
