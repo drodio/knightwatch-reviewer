@@ -134,6 +134,10 @@ test:
     bash lib/tests/run-just-test-isolation-smoke.sh
 
     echo ""
+    echo "=== git-global-hook isolation smoke test ==="
+    bash lib/tests/git-global-hook-isolation-smoke.sh
+
+    echo ""
     echo "=== orchestrator skip smoke test ==="
     bash lib/tests/orchestrator-skip-smoke.sh
 
