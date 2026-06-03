@@ -66,7 +66,7 @@ case "\$fields" in
         printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
         ;;
     *visibility*)
-        printf '{"visibility":"PUBLIC"}\n'
+        printf 'PUBLIC\n'
         ;;
     *headRefOid*)
         printf '{"headRefOid":"$head_oid"}\n'
@@ -728,7 +728,7 @@ if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     done
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
-        *visibility*)  printf '{"visibility":"PUBLIC"}\n' ;;
+        *visibility*)  printf 'PUBLIC\n' ;;
         *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
     esac
     exit 0
