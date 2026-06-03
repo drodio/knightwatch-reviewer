@@ -11,6 +11,18 @@ test:
     #!/usr/bin/env bash
     set -euo pipefail
 
+    # Detach the suite's git ops from the machine-global roborev post-commit
+    # hook. The smokes build throwaway git repos under /tmp and commit into
+    # them as fixtures (the materializer pins `git rev-parse HEAD` and reads
+    # `git ls-tree $sha`, so a fixture sibling MUST have a commit). On a box
+    # where the seed installed roborev's `core.hooksPath` in ~/.gitconfig,
+    # every fixture commit would otherwise fire post-commit and enqueue a
+    # review against the live daemon for a /tmp repo that vanishes on exit —
+    # polluting ~/.roborev/reviews.db with thousands of orphan repos + failed
+    # jobs. Neutralizing global git config for the test process stops the
+    # enqueue at the source (--no-verify does NOT skip post-commit).
+    export GIT_CONFIG_GLOBAL=/dev/null
+
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On
     # macOS, `brew install bash` and ensure /opt/homebrew/bin is first
