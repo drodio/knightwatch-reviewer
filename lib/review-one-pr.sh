@@ -1440,7 +1440,7 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     # usage-cap sentinel is absent (a usage cap is the more specific signal).
     RATE_LIMIT_SENTINEL="$RUN_DIR/_codex_rate_limit.txt"
     if [ ! -s "$QUOTA_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
-        BACKOFF_SECS="${CODEX_RATE_LIMIT_BACKOFF_SECS:-120}"
+        BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
         EYES_ABORT_BODY="⏸ knightwatch paused — codex rate limit (429). Backing off ~${BACKOFF_SECS}s; will retry on the next tick."
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"

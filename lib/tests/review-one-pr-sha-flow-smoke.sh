@@ -36,6 +36,15 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 # ---- shared helpers (deduplicate scenario setup) ----
 
+# seed_state_dir <state_dir> — create the worker's state subdirs + empty
+# state.json that every scenario needs. (The canonical clone varies per
+# scenario — different paths, some skip it — so it stays explicit at the call
+# site.)
+seed_state_dir() {
+    mkdir -p "$1/runs" "$1/canonical-locks" "$1/locks" "$1/repos" "$1/workdirs"
+    echo "{}" > "$1/state.json"
+}
+
 # write_gh_stub <stub_path> <base_ref> <head_oid>
 #   gh pr view <N> --json baseRefName,... → returns the supplied base_ref.
 #   gh pr view <N> --json headRefOid       → returns head_oid.
@@ -307,8 +316,7 @@ git -C "$WORKING2" push -q origin feat/test:refs/pull/2/head
 # Fresh sandbox — separate STATE_DIR so the runs from scenario 1 don't
 # confuse the run-dir search.
 STATE2="$TMPDIR/state-2"
-mkdir -p "$STATE2/runs" "$STATE2/canonical-locks" "$STATE2/locks" "$STATE2/repos" "$STATE2/workdirs"
-echo "{}" > "$STATE2/state.json"
+seed_state_dir "$STATE2"
 
 CANONICAL2="$STATE2/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL2")"
@@ -475,8 +483,7 @@ git clone -q "$GITHUB_BARE3" "$WORKING3"
 PR_SHA3=$(git -C "$WORKING3" rev-parse refs/heads/feat/test)
 
 STATE3="$TMPDIR/state-3"
-mkdir -p "$STATE3/runs" "$STATE3/canonical-locks" "$STATE3/locks" "$STATE3/repos" "$STATE3/workdirs"
-echo "{}" > "$STATE3/state.json"
+seed_state_dir "$STATE3"
 
 CANONICAL3="$STATE3/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL3")"
@@ -642,8 +649,7 @@ fi
 # clone/meta.json. Flipping only REVIEWER_CONTAINER_MODE must flip to a skip.
 echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
 STATE5="$TMPDIR/state-5"
-mkdir -p "$STATE5/runs" "$STATE5/canonical-locks" "$STATE5/locks" "$STATE5/repos" "$STATE5/workdirs"
-echo "{}" > "$STATE5/state.json"
+seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
 (
     export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
@@ -777,8 +783,7 @@ STUB
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SHA"
 
 STATE6="$TMPDIR/state-6"
-mkdir -p "$STATE6/runs" "$STATE6/canonical-locks" "$STATE6/locks" "$STATE6/repos" "$STATE6/workdirs"
-echo "{}" > "$STATE6/state.json"
+seed_state_dir "$STATE6"
 CANONICAL6="$STATE6/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL6")"
 git clone -q "$GITHUB_BARE" "$CANONICAL6"
@@ -846,8 +851,7 @@ echo "[]" > "$STORE7"
 write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
 
 STATE7="$TMPDIR/state-7"
-mkdir -p "$STATE7/runs" "$STATE7/canonical-locks" "$STATE7/locks" "$STATE7/repos" "$STATE7/workdirs"
-echo "{}" > "$STATE7/state.json"
+seed_state_dir "$STATE7"
 git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
 
 (

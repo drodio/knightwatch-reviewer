@@ -104,8 +104,8 @@ _CODEX_RATE_LIMIT_RE = re.compile(
 # Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
 # at once put ~8 concurrent calls on a single account and tripped 429s (the
 # 2026-06-03 storm); bounding peak concurrency spreads them out (the executor
-# queues the rest). Env-tunable without a code change.
-WAVE_B_MAX_CONCURRENCY = int(os.environ.get("WAVE_B_MAX_CONCURRENCY", "4"))
+# queues the rest).
+WAVE_B_MAX_CONCURRENCY = 4
 
 
 def _ts() -> str:
