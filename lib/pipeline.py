@@ -375,7 +375,10 @@ def build_prompt(
     or 'aggregator'."""
     pdir = Path(prompts_dir)
     operator_name = os.environ.get("OPERATOR_NAME", "Sam")
-    repo_visibility = os.environ.get("REPO_VISIBILITY", "private")
+    # No default — both entrypoints (review-one-pr.sh, replay.sh) fail loud and
+    # always export this, so a missing var is a contract break, not a posture to
+    # silently assume. KeyError fails fast rather than under-calibrating a review.
+    repo_visibility = os.environ["REPO_VISIBILITY"]
     base_subs = dict(
         pr_id=pr_id, pr_title=pr_title, pr_url=pr_url,
         pr_author=pr_author, operator_name=operator_name,

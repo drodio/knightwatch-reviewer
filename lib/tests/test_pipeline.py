@@ -17,6 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pipeline  # noqa: E402
 
 
+def setUpModule():
+    # build_prompt now requires REPO_VISIBILITY (no in-code default); every
+    # production entrypoint exports it. Set it once so prompt-composition tests
+    # mirror that contract. Cases that need a specific value use patch.dict.
+    os.environ["REPO_VISIBILITY"] = "private"
+
+
 @contextmanager
 def _fast_watchdog(stale=0.1, poll=0.05, timeout=5.0):
     """Shrinks the watchdog constants for the duration of a `with` block.
@@ -793,15 +800,17 @@ class TestBuildPrompt(unittest.TestCase):
         self.assertIn("Specialist: security", out)
         self.assertIn("Security review for owner/repo#42 as security.", out)
 
-    def test_specialist_repo_visibility_default_private(self):
+    def test_specialist_repo_visibility_unset_raises(self):
+        # No silent default: a missing REPO_VISIBILITY is a contract break, so
+        # build_prompt must fail fast rather than assume a posture.
         (self.prompts / "specialists" / "security.md").write_text("body\n")
         with patch.dict(os.environ):
             os.environ.pop("REPO_VISIBILITY", None)
-            out = pipeline.build_prompt(
-                kind="specialist", agent="security", prompts_dir=str(self.prompts),
-                pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
-            )
-        self.assertIn("Visibility: private", out)  # default when env unset
+            with self.assertRaises(KeyError):
+                pipeline.build_prompt(
+                    kind="specialist", agent="security", prompts_dir=str(self.prompts),
+                    pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
+                )
 
     def test_specialist_repo_visibility_env_override(self):
         (self.prompts / "specialists" / "security.md").write_text("body\n")
@@ -1724,6 +1733,7 @@ class TestPipelineCLI(unittest.TestCase):
             "PR_TITLE": "Add X",
             "PR_URL": "https://example/pull/42",
             "PR_AUTHOR": "alice",
+            "REPO_VISIBILITY": "public",
             "PROMPTS_DIR": str(self.prompts),
             "LOG_FILE": str(self.run_dir / "run.log"),
             "OPERATOR_NAME": "Sam",
