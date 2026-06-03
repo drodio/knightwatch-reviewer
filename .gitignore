@@ -262,5 +262,13 @@ docs/comparison-2026-05-02.md
 docs/plans/
 prompts.new-design/
 
+# Session-draft artifacts — knightwatch /spec + /plan working files and
+# superpowers plans. Kept on disk for the session, never committed (a `git
+# add -A` once swept them into a PR — knightwatch #137). Same intent as
+# docs/plans/ above (§ Don't Commit Plans).
+.knightwatch-plan-draft.md
+.knightwatch-spec-draft.md
+docs/superpowers/
+
 # Reviewer container secrets — live per-account creds + tokens, never committed
 docker/secrets/
