@@ -48,7 +48,7 @@ is_approve_request() {
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.
 approve_check() {
-    local REPO="$1" PR_NUM="$2" COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
+    local REPO="$1" PR_NUM="$2" PR_AUTHOR="$3" COMMENTS COMMENT BODY ID USER APPROVE_KEY APPROVE_BODY
     # On fetch failure, log loud + skip this PR for this tick rather than silently
     # treating "API broken" as "no comments". Pagination correctness lives in
     # lib/gh-comments.sh (shared) so callers can't reinvent the bug.
@@ -87,16 +87,14 @@ approve_check() {
         # as a bot post and don't reprocess.
         APPROVE_BODY="$BOT_AUTO_POST_MARKER
 Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
-        if gh pr review "$PR_NUM" --repo "$REPO" --approve --body "$APPROVE_BODY" >/dev/null 2>>"$LOG_FILE"; then
-            log "$APPROVE_KEY: approved on @${USER}'s request"
-            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY" \
-                || log "$APPROVE_KEY: WARNING — seen_set failed AFTER successful approval; next tick may post a duplicate APPROVED review"
-        else
-            # Most common: self-approve, PR already merged/closed, transient error.
-            # Mark seen so we don't retry forever; the human can re-post to retry.
-            log "$APPROVE_KEY: gh pr review --approve FAILED — see log; marking seen"
-            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"
-        fi
+        # Go through the shared approval seam (lib/auth.sh): it owns the
+        # self-approval guard (GitHub forbids approving the bot's own PRs) and
+        # loud failure logging. Mark seen regardless of outcome — approved,
+        # self-approval-skip, or failure — so we don't retry forever; the human
+        # can re-post /<prefix>-approve for another attempt.
+        submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
+        seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY" \
+            || log "$APPROVE_KEY: WARNING — seen_set failed after approval attempt; next tick may reprocess"
     done < <(echo "$COMMENTS" | jq -c '.[]')
 }
 
@@ -109,9 +107,11 @@ rerequest_check() {
         log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
         return 0
     }
-    # Latest review_requested event targeting our bot user, if any.
-    LATEST=$(printf '%s' "$TIMELINE" | jq -r --arg u "$BOT_USER" \
-        '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
+    # Latest review_requested event targeting our bot user, if any. --paginate
+    # emits one JSON array per page, so slurp (-s) + `add` merges them before
+    # selecting — otherwise a newer event on page 2 is missed.
+    LATEST=$(printf '%s' "$TIMELINE" | jq -s -r --arg u "$BOT_USER" \
+        'add | [.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
     [ -z "$LATEST" ] && return 0
     LAST_SEEN=$(seen_get "$RR_SEEN_FILE" "$PR_KEY")
     # ISO-8601 timestamps compare lexically.
@@ -133,6 +133,7 @@ ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping t
 while IFS= read -r PR_JSON; do
     REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
     PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
-    approve_check "$REPO" "$PR_NUM"
+    PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
+    approve_check "$REPO" "$PR_NUM" "$PR_AUTHOR"
     rerequest_check "$REPO" "$PR_NUM"
 done < <(echo "$ALL_PRS" | jq -c '.[]')
