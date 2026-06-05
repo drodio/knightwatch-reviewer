@@ -914,7 +914,19 @@ KID_RAN=false
 # repos.conf is absent in a test sandbox).
 KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
 if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
-    export KID_PROJECT="$KID_PROJECT_PATH"
+    # The index is mounted read-only (host kid-refresh owns it), but ChromaDB's
+    # sqlite needs write access even for a query (WAL). Query a throwaway copy in
+    # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
+    # review on the freshest host-refreshed index, and isolates the query from
+    # the shared index entirely. Falls back to the path itself if the copy fails.
+    KID_PROJECT="$LOCAL_STATE_DIR/kid-query/${REPO//\//_}"
+    if rm -rf "$KID_PROJECT" && mkdir -p "$KID_PROJECT" \
+       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_PROJECT/.keepitdry"; then
+        export KID_PROJECT
+    else
+        log "$PR_ID: kid index copy failed — querying source path directly"
+        export KID_PROJECT="$KID_PROJECT_PATH"
+    fi
     KID_STDERR=$(mktemp)
     PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
     KID_EXIT=$?
@@ -939,6 +951,7 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         fi
     fi
     rm -f "$KID_STDERR"
+    rm -rf "$LOCAL_STATE_DIR/kid-query/${REPO//\//_}"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
 elif [ -n "$KID_INPUT_DIFF" ]; then

@@ -42,6 +42,14 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # /usr/local/bin so it's on the review-loop PATH.
 RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install 'vulture==2.16'
 
+# kid (keepitdry): the semantic-search CLI behind the prior-art DRY pre-pass.
+# review-one-pr.sh shells out to knightwatch-kid/scripts/kid_dry_check.py, which
+# runs `kid find` against the host-built index mounted (read-only) at review
+# time. Pinned to the merged commit so a rebuild can't change embedding behavior
+# outside an explicit bump (matches the GH/JUST/DOCKER/codex pins).
+RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install \
+      'keepitdry @ git+https://github.com/srosro/knightwatch-kid.git@9893db6'
+
 # codex CLI (npm global) — the gpt-5.5 reviewer agents. Pinned so a rebuild
 # can't change reviewer behavior outside the PR diff (matches GH/JUST/DOCKER pins).
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
