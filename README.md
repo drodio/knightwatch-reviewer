@@ -166,5 +166,5 @@ Use it to inform collapse-or-keep decisions on specialist agents.
 
 - `review.sh` / `lib/review-one-pr.sh` — per-PR review driver
 - `prompts/` — specialist + critic + aggregator prompts
-- `systemd/` — auxiliary host timer + service units (discovery, calibration, approve, re-request, kid-refresh, bake-off)
+- `systemd/` — auxiliary host timer + service units (discovery, calibration, poll [merged approve + re-request], kid-refresh, bake-off)
 - `repos.conf.example` — tracked-repo manifest template (live `repos.conf` is per-operator, gitignored)
