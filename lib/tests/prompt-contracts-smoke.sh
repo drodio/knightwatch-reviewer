@@ -644,17 +644,20 @@ assert_grep "momentum.md should carry the read-only working directory fence" \
 assert_grep "momentum.md should fence inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/momentum.md
 
-# Bake-off timer cadence + persistence are quota-control contracts: the twice-
-# daily cadence (07:00/19:00 PT) + matching 12h walk window keep the bake-off's
-# GitHub volume bounded vs the prior hourly run, and Persistent=false matches the repo's other timer shape (the
-# walker's incremental floor handles missed runs without boot-time catch-up).
-# A regression to hourly OR Persistent=true silently re-introduces the
-# rate-limit failure mode that motivated PR #78.
+# Bake-off timer cadence + persistence are quota-control contracts: the ~45-repo
+# walk is the heaviest single draw on the shared srosro GitHub budget, so it runs
+# once daily in a low-usage window (04:00 PT) with a matching 24h walk window.
+# The 19:00 PT run was dropped because it contended with interactive sessions and
+# tripped the per-user secondary rate limit. Persistent=false matches the repo's
+# other timer shape (the walker's incremental floor backfills a missed run without
+# boot-time catch-up). A regression to hourly OR Persistent=true silently
+# re-introduces the rate-limit failure mode that motivated PR #78; keep
+# REWALK_HOURS == the inter-run gap so edits in the gap stay covered.
 echo "  asserting pr-reviewer-bakeoff.timer quota-control contract..."
-assert_grep "pr-reviewer-bakeoff.timer should run twice daily at 07:00 + 19:00 Pacific" \
-    "OnCalendar=*-*-* 07,19:00:00 America/Los_Angeles" systemd/pr-reviewer-bakeoff.timer
-assert_grep "pr-reviewer-bakeoff.service should walk a 12h window (matches the 12h cadence; halves discovery graphql)" \
-    "Environment=REWALK_HOURS=12" systemd/pr-reviewer-bakeoff.service
+assert_grep "pr-reviewer-bakeoff.timer should run once daily at 04:00 Pacific" \
+    "OnCalendar=*-*-* 04:00:00 America/Los_Angeles" systemd/pr-reviewer-bakeoff.timer
+assert_grep "pr-reviewer-bakeoff.service should walk a 24h window (matches the once-daily cadence)" \
+    "Environment=REWALK_HOURS=24" systemd/pr-reviewer-bakeoff.service
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
