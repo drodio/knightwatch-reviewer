@@ -36,29 +36,17 @@ MAX_CONCURRENT="${MAX_CONCURRENT:-4}"
 # the unit-private /tmp that the systemd unit tears down under detached
 # workers (see lib/tracked-repos.sh and PR #33 for the full why).
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
-. "$REVIEWER_LIB_DIR/tracked-repos.sh"
-. "$REVIEWER_LIB_DIR/gh-comments.sh"
+# Shared entrypoint setup: STATE_DIR (already defaulted above for LOG_FILE/
+# REPOS_DIR) + BOT_* identity defaults + the lib core (tracked-repos, auth,
+# state-io, gh-comments). $REVIEWER_LIB_DIR is the seam used both for sandboxed
+# smoke tests and the production symlink ($HOME/.pr-reviewer/lib).
+. "$REVIEWER_LIB_DIR/bootstrap.sh"
 require_tracked_targets
 # Container entrypoint (review-loop.sh) pins one in-flight review per account.
-# Re-assert AFTER config.env is sourced (just above, via tracked-repos.sh) so a
-# stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently break
-# the container contract. The host/systemd path leaves the sentinel unset.
+# Re-assert AFTER config.env is sourced (above, via bootstrap → tracked-repos.sh)
+# so a stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently
+# break the container contract. The host/systemd path leaves the sentinel unset.
 if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKERS=1; fi
-BOT_USER="${BOT_USER:-srosro}"
-BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
-# Hidden HTML-comment marker prepended to every auto-post by this repo
-# (review ack, final review, learn-from-replies ack). The orchestrator's
-# jq filter excludes any comment containing this string so the bot
-# doesn't self-trigger on its own posts. Must match the literal used in
-# lib/review-one-pr.sh and learn-from-replies.sh — a smoke-test scenario
-# catches drift.
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
-# Source helpers. $REVIEWER_LIB_DIR is the seam used both for sandboxed
-# smoke tests and the production symlink ($HOME/.pr-reviewer/lib);
-# tracked-repos.sh above already resolved it.
-. "$REVIEWER_LIB_DIR/state-io.sh"
-. "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/locking.sh"
 # run-dir.sh exposes the latest_author_visible_review_* projection family
 # — the single source of truth for "what did we last review?" state. The
@@ -205,7 +193,7 @@ refresh_queue() {
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as
-            # approve-from-replies.sh + learn-from-replies.sh.
+            # poll-pr-actions.sh + learn-from-replies.sh.
             COMMENTS_JSON=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
@@ -254,8 +242,8 @@ refresh_queue() {
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
                     # Trust gate: the slash-command trigger itself is
-                    # honored regardless of who posted it (re-request-poller
-                    # and external requesters need to keep working), but the
+                    # honored regardless of who posted it (poll-pr-actions's
+                    # re-request trigger and external requesters need to keep working), but the
                     # comment's prose only gets staged as
                     # `.codex-scratch/trigger-comment.md` when the commenter
                     # has push access. Otherwise drive-by commenters could

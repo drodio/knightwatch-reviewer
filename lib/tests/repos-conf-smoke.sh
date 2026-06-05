@@ -129,7 +129,7 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cnco
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
 # require_tracked_targets — the startup guard shared by the PR-enumeration
-# entry scripts (review.sh / approve-from-replies.sh / re-request-poller.sh).
+# entry scripts (review.sh / poll-pr-actions.sh).
 # Locks the contract that a whole-org (ORGS-only, no REPOS) manifest is
 # satisfiable, and that a wholly-empty manifest still fails loud.
 echo "  B4-targets-orgs-only: require_tracked_targets accepts ORGS with empty REPOS..."
@@ -219,13 +219,18 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; n=0; for 
 
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
+# The manifest loader can be reached directly OR transitively via
+# lib/bootstrap.sh (which sources tracked-repos.sh as its first lib). Fence the
+# indirection itself first, so accepting bootstrap.sh below stays sound.
+grep -q 'tracked-repos\.sh' "$PROJECT_ROOT/lib/bootstrap.sh" \
+    || { echo "FAIL C: lib/bootstrap.sh no longer sources lib/tracked-repos.sh — the indirection consumers rely on is broken"; exit 1; }
 # Hard list of every script that needs the manifest. Adding a new
-# consumer means adding it here AND making it source the loader.
+# consumer means adding it here AND making it source the loader (directly
+# or via bootstrap.sh).
 CONSUMERS=(
     "review.sh"
-    "re-request-poller.sh"
+    "poll-pr-actions.sh"
     "learn-from-replies.sh"
-    "approve-from-replies.sh"
     "lib/review-one-pr.sh"
     "plow-kid-refresh.sh"
     "org-sync.sh"
@@ -233,7 +238,7 @@ CONSUMERS=(
 for c in "${CONSUMERS[@]}"; do
     f="$PROJECT_ROOT/$c"
     [ -f "$f" ] || { echo "FAIL C: $c missing from repo"; exit 1; }
-    grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
+    grep -qE 'tracked-repos\.sh|bootstrap\.sh' "$f" || { echo "FAIL C: $c reaches neither lib/tracked-repos.sh nor lib/bootstrap.sh"; exit 1; }
 done
 
 # Startup-guard call-site fencing: the PR-enumeration entrypoints accept an
@@ -243,7 +248,7 @@ done
 # a calibration timer onto require_tracked_targets would make it run with no
 # REPOS to walk, so pin which guard each side calls.
 echo "  C-guard: review entrypoints use require_tracked_targets; calibration uses require_repos..."
-for c in review.sh approve-from-replies.sh re-request-poller.sh; do
+for c in review.sh poll-pr-actions.sh; do
     grep -q 'require_tracked_targets' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_tracked_targets (ORGS-or-REPOS)"; exit 1; }
 done
 for c in learn-from-replies.sh specialist-bakeoff.sh; do

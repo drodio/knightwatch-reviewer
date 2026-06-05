@@ -42,7 +42,7 @@ _pr_comments_from_json() {
     fi
 
     # BOT_USER is the GitHub login seam (review.sh:26, learn-from-replies.sh:36,
-    # approve-from-replies.sh:54). Distinct from OPERATOR_NAME (the voice/display
+    # poll-pr-actions.sh). Distinct from OPERATOR_NAME (the voice/display
     # seam in lib/pipeline.py). The bot's own auto-posts sign as $operator
     # (kw-reviewer's GH identity is the operator's account); the HTML marker
     # distinguishes bot output from human-authored replies. Comments whose

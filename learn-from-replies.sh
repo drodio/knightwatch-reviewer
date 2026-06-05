@@ -24,25 +24,14 @@ set -o pipefail
 # PATH inherited from systemd unit (system dirs first; writable user dirs
 # trailing). See review.sh for the writable-PATH security context.
 
-STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# Shared entrypoint setup: STATE_DIR + BOT_* defaults + the lib core
+# (tracked-repos, auth, state-io, gh-comments).
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/bootstrap.sh"
+require_repos
 REPLIES_SEEN_FILE="${REPLIES_SEEN_FILE:-$STATE_DIR/replies-seen.json}"
 LOG_FILE="${LOG_FILE:-$STATE_DIR/learn.log}"
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
-# Tracked-repo manifest (single source of truth in repos.conf). The
-# shared loader at lib/tracked-repos.sh is the ONE seam every consumer
-# goes through.
-REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
-. "$REVIEWER_LIB_DIR/tracked-repos.sh"
-require_repos
-BOT_USER="${BOT_USER:-srosro}"
-BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
-
-# is_trusted_repo_author() — push-access trust gate, shared with review.sh.
-# seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
-. "$REVIEWER_LIB_DIR/auth.sh"
-. "$REVIEWER_LIB_DIR/state-io.sh"
-. "$REVIEWER_LIB_DIR/gh-comments.sh"
 
 [ -f "$REPLIES_SEEN_FILE" ] || echo '{}' > "$REPLIES_SEEN_FILE"
 
@@ -70,7 +59,7 @@ for REPO in "${REPOS[@]}"; do
 
     for PR_NUM in $PR_LIST; do
         # Pagination correctness lives in lib/gh-comments.sh (shared with
-        # review.sh + approve-from-replies.sh) so any future caller of
+        # review.sh + poll-pr-actions.sh) so any future caller of
         # this endpoint can't reinvent the bug. On fetch failure, log
         # loud + skip this PR for this tick rather than silently treating
         # "API broken" as "no comments".

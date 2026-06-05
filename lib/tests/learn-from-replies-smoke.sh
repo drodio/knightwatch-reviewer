@@ -3,8 +3,8 @@
 #
 # Focused on the regression-test gap knightwatch flagged on PR #14:
 # the prior PR fixed the REPOS-after-config.env clobber bug in BOTH
-# approve-from-replies.sh and learn-from-replies.sh, but only the
-# approve script had test coverage. This smoke verifies that
+# the approve poller (now poll-pr-actions.sh) and learn-from-replies.sh, but only
+# the approve script had test coverage. This smoke verifies that
 # learn-from-replies actually honors `config.env`'s REPOS override
 # instead of clobbering it with the hardcoded default list.
 #
@@ -110,6 +110,7 @@ chmod +x "$HOME/.local/bin/gh"
 # Sandbox lib dir.
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
+cp "$PROJECT_ROOT/lib/bootstrap.sh"     "$REVIEWER_LIB_DIR/bootstrap.sh"  # sources the core below
 cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"   # auth.sh sources it
 cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"

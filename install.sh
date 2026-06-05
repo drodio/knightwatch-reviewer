@@ -12,9 +12,9 @@
 #   3. daemon-reloads systemd if anything changed.
 #   4. Enables + starts every timer that isn't already enabled+active.
 #
-# Idempotent. Re-running after merging a new poller (e.g. the
-# pr-reviewer-approve work that motivated this script) installs only the
-# new bits; existing units are left alone unless their content drifted.
+# Idempotent. Re-running after merging a poller change (e.g. the
+# pr-reviewer-poll consolidation) installs only the new bits and disables any
+# retired units; existing units are left alone unless their content drifted.
 #
 # Host-specific by design: the systemd unit ExecStart= paths bake in
 # /home/odio/.pr-reviewer/ and the User= line bakes in `odio`. Running
@@ -93,7 +93,7 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
 #      clone, or a tool raw-cp'd the template). Reject the same way; the
 #      operator hitting "already configured" silently is the bug.
-info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, approve, re-request, kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, poll [merged /srosro-approve + re-request], kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
 
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"
@@ -205,12 +205,17 @@ for unit in "${units[@]}"; do
 done
 ok "systemd units: ${#units[@]} present, $CHANGED updated"
 
-# --- 2b. Remove the retired legacy host reviewer unit -----------------------
-# The single-account host reviewer (pr-reviewer.timer/.service) was retired in
-# favor of the containerized fleet (docker-compose.yml). Its files are gone from
-# systemd/, but a prior install left copies in $SYSTEMD_DIR. Disable + remove
-# them so the orphaned units don't linger. Idempotent: a no-op once gone.
-for legacy in pr-reviewer.timer pr-reviewer.service; do
+# --- 2b. Remove retired legacy units ----------------------------------------
+# Units whose files are gone from systemd/ but a prior install left copies in
+# $SYSTEMD_DIR. Disable + remove so the orphans don't linger. Idempotent.
+#   - pr-reviewer.{timer,service}: single-account host reviewer, retired for the
+#     containerized fleet (docker-compose.yml).
+#   - pr-reviewer-approve.* / pr-reviewer-re-request.*: the separate /srosro-approve
+#     (60s) + re-request (120s) pollers, merged into pr-reviewer-poll.* (every 2min,
+#     one shared enumerate) to cut the shared-budget fetch rate.
+for legacy in pr-reviewer.timer pr-reviewer.service \
+              pr-reviewer-approve.timer pr-reviewer-approve.service \
+              pr-reviewer-re-request.timer pr-reviewer-re-request.service; do
   if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
     info "removing retired legacy unit $legacy (sudo)"
     sudo systemctl disable --now "$legacy" 2>/dev/null || true

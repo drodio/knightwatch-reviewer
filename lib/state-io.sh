@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared logger + per-tick "seen comment IDs" key-value file helpers, used
 # across the orchestrator (review.sh), the per-PR worker (review-one-pr.sh),
-# and the sister tools (learn-from-replies.sh, approve-from-replies.sh).
+# and the sister tools (learn-from-replies.sh, poll-pr-actions.sh).
 #
 # Historical note: this file once defined state_get / state_set against
 # ~/.pr-reviewer/state.json — the legacy "what did we last review?" cache.
@@ -35,7 +35,7 @@ log() {
 
 # Generic "seen comment IDs" key-value JSON file with flock + atomic-rename
 # safety. Used by both learn-from-replies.sh (memorize requests) and
-# approve-from-replies.sh (approve requests) so the same comment isn't
+# poll-pr-actions.sh (approve requests) so the same comment isn't
 # reprocessed across ticks. Args: $1=file path, $2=key. Without flock, two
 # concurrent ticks read-modify-writing the same file lose one update;
 # without atomic rename, a crash mid-write leaves a torn file.
@@ -45,25 +45,36 @@ seen_get() {
     jq -r --arg k "$key" '.[$k] // empty' "$file"
 }
 
-seen_set() {
-    local file="$1" key="$2"
+# Atomically set one key in a JSON store under flock + temp-write + atomic
+# rename, so a kill mid-write can't truncate it. $3 is the jq value expression:
+# `true` for a presence marker (seen_set) or `$v` to store the string in $4
+# (seen_set_value). The two public writers are thin wrappers over this.
+_seen_write() {
+    local file="$1" key="$2" value_expr="$3" value="${4:-}"
     [ -f "$file" ] || echo '{}' > "$file"
     local lockfile="${file}.lock"
     if ! (
         exec {fd}> "$lockfile"
         flock "$fd"
         local tmp
-        tmp=$(jq --arg k "$key" --argjson v true '.[$k] = $v' "$file") || exit 1
+        tmp=$(jq --arg k "$key" --arg v "$value" ".[\$k] = $value_expr" "$file") || exit 1
         printf '%s' "$tmp" > "${file}.tmp" || exit 1
         mv -f "${file}.tmp" "$file" || exit 1
     ); then
-        # Fail loud so callers and operators see the failure. Returning
-        # non-zero lets critical call sites (e.g. post-successful-approve)
-        # add their own warning about the consequence.
-        log "seen_set FAILED for $file key=$key — next tick may reprocess this entry"
+        # Fail loud so callers and operators see the failure. Returning non-zero
+        # lets critical call sites (e.g. post-successful-approve) add their own
+        # warning about the consequence.
+        log "seen write FAILED for $file key=$key — next tick may reprocess this entry"
         return 1
     fi
 }
+
+# Presence marker: key → true. Callers test seen_get non-emptiness.
+seen_set() { _seen_write "$1" "$2" 'true'; }
+
+# Value store: key → string (e.g. a timestamp watermark, poll-pr-actions.sh's
+# re-request last-handled event time). seen_get returns the stored string.
+seen_set_value() { _seen_write "$1" "$2" '$v' "$3"; }
 
 # Codex quota-pause protocol. When an account hits its codex usage limit the
 # worker (review-one-pr.sh) writes the reset epoch to this per-container file;
