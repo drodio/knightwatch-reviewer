@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared logger + per-tick "seen comment IDs" key-value file helpers, used
 # across the orchestrator (review.sh), the per-PR worker (review-one-pr.sh),
-# and the sister tools (learn-from-replies.sh, approve-from-replies.sh).
+# and the sister tools (learn-from-replies.sh, poll-pr-actions.sh).
 #
 # Historical note: this file once defined state_get / state_set against
 # ~/.pr-reviewer/state.json — the legacy "what did we last review?" cache.
@@ -35,7 +35,7 @@ log() {
 
 # Generic "seen comment IDs" key-value JSON file with flock + atomic-rename
 # safety. Used by both learn-from-replies.sh (memorize requests) and
-# approve-from-replies.sh (approve requests) so the same comment isn't
+# poll-pr-actions.sh (approve requests) so the same comment isn't
 # reprocessed across ticks. Args: $1=file path, $2=key. Without flock, two
 # concurrent ticks read-modify-writing the same file lose one update;
 # without atomic rename, a crash mid-write leaves a torn file.

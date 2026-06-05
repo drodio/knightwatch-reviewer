@@ -2,7 +2,7 @@
 # Smoke for fetch_issue_comments (lib/gh-comments.sh).
 #
 # This helper is the shared seam three orchestrator-level scripts go
-# through to read PR comments (review.sh, approve-from-replies.sh,
+# through to read PR comments (review.sh, poll-pr-actions.sh,
 # learn-from-replies.sh). The whole reason it exists is to prevent the
 # original bug class from recurring: a caller that forgets `--paginate`
 # silently drops every comment past page 1, which can hide
@@ -114,7 +114,7 @@ fi
 
 # ---- Scenario 3: gh failure propagates ----
 # When `gh api` exits non-zero (auth lapse, network outage, rate limit),
-# callers with `set -o pipefail` (approve-from-replies, learn-from-
+# callers with `set -o pipefail` (poll-pr-actions, learn-from-
 # replies) need to see the failure so their `|| { log; continue; }`
 # path fires. Verify the helper preserves the non-zero exit through
 # the gh→jq pipeline.

@@ -83,6 +83,9 @@ elif [ "$1" = "api" ]; then
     # comments — return an empty list for those so the approve path no-ops;
     # serve the timeline fixture for the re-request path.
     if printf '%s ' "$@" | grep -q '/timeline'; then
+        # A timeline fixture of the literal token FAIL simulates a fetch outage
+        # (file-content sentinel — MOCK_TIMELINE_FILE reliably reaches the stub).
+        [ "$(cat "$MOCK_TIMELINE_FILE" 2>/dev/null)" = "FAIL" ] && { echo "timeline API down" >&2; exit 1; }
         cat "$MOCK_TIMELINE_FILE"
     else
         echo '[]'
@@ -199,4 +202,26 @@ echo '{}' > "$SEEN_FILE"
 STUB_TRACKED_REPO="canonical/repo" run_poller
 grep -q 'PR_LIST repo=canonical/repo' "$STUB_PR_LIST_LOG" || { echo "FAIL scenario 6: canonical repos.conf not honored"; cat "$STUB_PR_LIST_LOG"; exit 1; }
 
-echo "  PASS (6 scenarios: empty-timeline-respects-override, new-event-triggers, already-seen-deduped, non-bot-ignored, post-failure-no-seen-advance, canonical-repos.conf-path)"
+# Scenario 7: timeline fetch failure → log + skip, no trigger, seen NOT advanced.
+echo "  scenario 7: timeline fetch fails — log + skip, no trigger, retried next tick..."
+# Restore the probe-repo override (scenario 6 created a repos.conf + cleared
+# config.env to test the canonical path) so enumerate finds the PR and actually
+# reaches rerequest_check.
+rm -f "$STATE_DIR/repos.conf"
+printf 'REPOS=("test-org/probe-repo")\n' > "$STATE_DIR/config.env"
+echo '{}' > "$SEEN_FILE"
+echo "FAIL" > "$MOCK_TIMELINE_FILE"     # sentinel: stub treats this as a fetch outage
+run_poller
+n=$(count_comments)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 7: expected 0 triggers on timeline-fetch failure, got $n"; cat "$STUB_COMMENT_LOG"; exit 1; }
+grep -q "timeline fetch failed — skipping re-request check this tick" "$LOG_FILE" || { echo "FAIL scenario 7: expected timeline-fetch-failure log line"; cat "$LOG_FILE"; exit 1; }
+[ -z "$(jq -r '."test-org/probe-repo#1" // empty' "$SEEN_FILE")" ] || { echo "FAIL scenario 7: seen advanced despite fetch failure"; cat "$SEEN_FILE"; exit 1; }
+# Recovery: real event back + healthy fetch posts the trigger — proves not lost.
+cat > "$MOCK_TIMELINE_FILE" <<'TL'
+[{"event":"review_requested","requested_reviewer":{"login":"srosro"},"created_at":"2026-04-29T11:00:00Z"}]
+TL
+run_poller
+n=$(count_comments)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 7: expected 1 trigger on recovery tick, got $n (event lost after transient failure)"; cat "$STUB_COMMENT_LOG"; exit 1; }
+
+echo "  PASS (7 scenarios: empty-timeline-respects-override, new-event-triggers, already-seen-deduped, non-bot-ignored, post-failure-no-seen-advance, canonical-repos.conf-path, timeline-fetch-failure-retries)"

@@ -20,7 +20,13 @@ is_trusted_repo_author() {
     local repo="$1" user="$2"
     [ -z "$user" ] && return 1
     local perm
-    perm=$(gh api "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>/dev/null)
+    # Distinguish a fetch FAILURE (return 2) from a genuine non-push author
+    # (return 1): the gh call's exit status is the assignment's status, so
+    # `|| return 2` fires on API error. Security callers use a boolean `if`, so
+    # they treat 2 exactly like 1 (untrusted → fail closed). Only a caller that
+    # records a "handled" marker (poll-pr-actions.sh's approve path) needs to tell
+    # them apart, so a transient error doesn't permanently drop a request.
+    perm=$(gh api "repos/$repo/collaborators/$user/permission" --jq '.permission' 2>/dev/null) || return 2
     case "$perm" in
         admin|write|maintain) return 0 ;;
         *) return 1 ;;

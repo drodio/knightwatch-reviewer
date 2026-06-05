@@ -136,6 +136,9 @@ elif [ "$1" = "api" ]; then
             cat "$MOCK_COMMENTS_FILE"
         fi
     elif [[ "$endpoint" == */collaborators/*/permission ]]; then
+        # MOCK_COLLAB_FAIL=1 simulates a transient permission-fetch outage so the
+        # caller must NOT treat it as a non-push author.
+        if [ -n "${MOCK_COLLAB_FAIL:-}" ]; then echo "collab API down" >&2; exit 1; fi
         user="${endpoint##*/collaborators/}"
         user="${user%/permission}"
         for trusted in ${MOCK_TRUSTED_USERS:-}; do
@@ -330,4 +333,18 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 13: expected 0 approves on api failure, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 grep -q "comments fetch failed — skipping approve check this tick" "$LOG_FILE" || { echo "FAIL scenario 13: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (13 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud)"
+# Scenario 14: permission-fetch failure must NOT silently drop a trusted approve.
+echo "  scenario 14: collaborators fetch fails — approve left unseen + retried next tick (no silent drop)..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+printf '[{"id":1014,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_TRUSTED_USERS="someuser" MOCK_COLLAB_FAIL=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 14: expected 0 approves on permission-fetch failure, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+grep -q "permission check failed (API error)" "$LOG_FILE" || { echo "FAIL scenario 14: expected permission-fetch-failure log line"; cat "$LOG_FILE"; exit 1; }
+[ -z "$(jq -r '."test-org/probe-repo#1#1014" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 14: comment marked seen despite fetch failure — would silently drop a legit approve"; cat "$APPROVES_SEEN_FILE"; exit 1; }
+# Recovery: a later tick with the API healthy approves it — proves it was not dropped.
+MOCK_TRUSTED_USERS="someuser" run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+
+echo "  PASS (14 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, permission-fetch-failure-retries)"

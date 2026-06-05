@@ -72,7 +72,14 @@ approve_check() {
                 seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue ;;
         esac
         # Trust gate: only push-access collaborators can trigger an approval.
-        if ! is_trusted_repo_author "$REPO" "$USER"; then
+        # rc 2 = the permission fetch itself failed (transient API error) — leave
+        # the comment UNSEEN so a legitimate request is retried next tick rather
+        # than silently dropped; rc 1 = genuine non-push author, mark seen + skip.
+        is_trusted_repo_author "$REPO" "$USER"; trust_rc=$?
+        if [ "$trust_rc" -eq 2 ]; then
+            log "$APPROVE_KEY: permission check failed (API error) — leaving unseen to retry next tick"
+            continue
+        elif [ "$trust_rc" -ne 0 ]; then
             log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from @$USER ignored (no push access)"
             seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue
         fi
@@ -95,11 +102,16 @@ Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
 
 # Translate a new GitHub "Re-request review" event into a /<prefix>-review trigger.
 rerequest_check() {
-    local REPO="$1" PR_NUM="$2" PR_KEY="$1#$2" LATEST LAST_SEEN
+    local REPO="$1" PR_NUM="$2" PR_KEY="$1#$2" TIMELINE LATEST LAST_SEEN
+    # Fetch + detect failure explicitly (same shape as the comment fetch) so a
+    # transient API error is logged + skipped, not silently read as "no event".
+    TIMELINE=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null) || {
+        log "$PR_KEY: timeline fetch failed — skipping re-request check this tick"
+        return 0
+    }
     # Latest review_requested event targeting our bot user, if any.
-    LATEST=$(gh api "repos/$REPO/issues/$PR_NUM/timeline" --paginate 2>/dev/null \
-        | jq -r --arg u "$BOT_USER" \
-            '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
+    LATEST=$(printf '%s' "$TIMELINE" | jq -r --arg u "$BOT_USER" \
+        '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
     [ -z "$LATEST" ] && return 0
     LAST_SEEN=$(seen_get "$RR_SEEN_FILE" "$PR_KEY")
     # ISO-8601 timestamps compare lexically.
