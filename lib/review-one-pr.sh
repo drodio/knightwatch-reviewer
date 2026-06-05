@@ -913,8 +913,20 @@ KID_RAN=false
 # KID_PATHS empty so the lookup is safe under `set -u` even if
 # repos.conf is absent in a test sandbox).
 KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
-if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
-    export KID_PROJECT="$KID_PROJECT_PATH"
+if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -n "${KWR_CLONE_ROOT:-}" ]; then
+    # The index is mounted read-only (host kid-refresh owns it), but ChromaDB's
+    # sqlite needs write access even for a query (WAL). Query a throwaway copy in
+    # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
+    # review on the freshest host-refreshed index, and isolates the query from
+    # the shared index entirely. Falls back to the path itself if the copy fails.
+    KID_QUERY_DIR="$LOCAL_STATE_DIR/kid-query/${PR_ID//[^a-zA-Z0-9]/_}"
+    if rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" \
+       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_QUERY_DIR/.keepitdry"; then
+        export KID_PROJECT="$KID_QUERY_DIR"
+    else
+        log "$PR_ID: kid index copy failed — querying source path directly"
+        export KID_PROJECT="$KID_PROJECT_PATH"
+    fi
     KID_STDERR=$(mktemp)
     PRIOR_ART=$(printf '%s' "$KID_INPUT_DIFF" | python3 "$KWR_CLONE_ROOT/knightwatch-kid/scripts/kid_dry_check.py" 2>"$KID_STDERR")
     KID_EXIT=$?
@@ -939,8 +951,11 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         fi
     fi
     rm -f "$KID_STDERR"
+    rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
+elif [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -z "${KWR_CLONE_ROOT:-}" ]; then
+    log "$PR_ID: kid index present but KWR_CLONE_ROOT unset — skipping prior-art lookup (compose override missing it)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
@@ -1470,21 +1485,24 @@ if [ "$PIPELINE_EXIT" -ne 0 ] || [ ! -s "$AGG_OUT" ]; then
     # retries against a rate limit) — not a usage cap, so no reset time. Back
     # this worker off for one rate window instead of immediately retrying and
     # re-saturating the account (the 2026-06-03 post-restart 429 storm). Reuses
-    # the quota-pause file review-loop.sh already honors; only fires when the
-    # usage-cap sentinel is absent (a usage cap is the more specific signal).
+    # the quota-pause file review-loop.sh already honors; only fires when neither
+    # the usage-cap nor the fatal-auth sentinel is present — both are more
+    # specific signals whose own handling owns the worker's stop-state (a usage
+    # cap has its own reset timer; fatal-auth takes the worker fully offline), so
+    # a transient 429 alongside either must not also stamp a 120s pause file.
     RATE_LIMIT_SENTINEL="$RUN_DIR/_codex_rate_limit.txt"
-    if [ ! -s "$QUOTA_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
+    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
+    # rotated refresh token or revoked session) — not a usage cap, so there's no
+    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
+    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
+    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
+    if [ ! -s "$QUOTA_SENTINEL" ] && [ ! -s "$AUTH_FATAL_SENTINEL" ] && [ -s "$RATE_LIMIT_SENTINEL" ]; then
         BACKOFF_SECS=120
         BACKOFF_UNTIL=$(( $(date +%s) + BACKOFF_SECS ))
         EYES_ABORT_BODY="⏸ knightwatch paused — codex rate limit (429). Backing off ~${BACKOFF_SECS}s; will retry on the next tick."
         printf '%s\n' "$BACKOFF_UNTIL" > "$(quota_pause_file)"
         log "$PR_ID: codex 429 rate-limit — backing off this worker ${BACKOFF_SECS}s (until epoch ${BACKOFF_UNTIL})"
     fi
-    # pipeline.py writes this when codex's token is FATALLY invalid (reused/
-    # rotated refresh token or revoked session) — not a usage cap, so there's no
-    # reset time. Take the worker OFFLINE until re-login instead of spin-aborting
-    # + commenting on every PR (the shared-login 401 storm of 2026-05-30).
-    AUTH_FATAL_SENTINEL="$RUN_DIR/_codex_auth_fatal.txt"
     if [ -s "$AUTH_FATAL_SENTINEL" ]; then
         EYES_ABORT_BODY="⏸ knightwatch offline — codex auth for this account is invalid (token reused/revoked, not a usage cap). Awaiting operator re-login; reviews resume automatically once re-authenticated."
         # Record the live auth.json mtime; review-loop.sh (auth_offline_active,
