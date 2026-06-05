@@ -1552,10 +1552,11 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
-# Specialist timeouts no longer abort — pipeline.py completes the review with
-# the surviving angles and names the hung ones in _wave_b_timeouts.txt.
-# Disclose them as a header warning rather than silently shipping reduced
-# coverage (shared adapter — replay.sh uses the same helper).
+# Specialist timeouts and per-call model-capacity bounces no longer abort —
+# pipeline.py completes the review with the surviving angles and names the
+# skipped ones in _wave_b_timeouts.txt (one shared soft-degrade sentinel for
+# both). Disclose them as a header warning rather than silently shipping
+# reduced coverage (shared adapter — replay.sh uses the same helper).
 TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 [ -n "$TIMEOUT_NOTE" ] && REVIEW_NOTES+=("$TIMEOUT_NOTE")
 # Symmetric pre-check disclosure: every pre-check emits one fragment

@@ -767,8 +767,8 @@ def run_pipeline(
         if spec_timed_out:
             (run / "_wave_b_timeouts.txt").write_text("\n".join(spec_timed_out) + "\n")
         log(
-            f"{pr_id}: {len(timed_out)} Wave B stage(s) timed out "
-            f"({', '.join(timed_out)}) — completing review without them"
+            f"{pr_id}: {len(timed_out)} Wave B stage(s) did not complete "
+            f"(timeout / model-at-capacity: {', '.join(timed_out)}) — completing review without them"
         )
 
     # Momentum may itself have timed out; only link a real output.
