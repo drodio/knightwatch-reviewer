@@ -3,11 +3,12 @@ Description=Plow PR reviewer specialist bake-off (twice nightly, 02:00 + 04:00 P
 
 [Timer]
 # Two fires in the dead of night, not one: the ~45-repo walk is the heaviest
-# single consumer of the shared srosro GitHub budget, so WINDOW_HOURS=12 caps
-# each run to a ~12h chunk and these two fires split the day's per-PR fetches
-# into two smaller bursts (both off-hours, away from interactive sessions that
-# hit secondary-rate-limit 403s). The walker advances the watermark by ≤12h per
-# run and backfills missed crons, so the split stays lossless.
+# single consumer of the shared srosro GitHub budget, so WINDOW_HOURS caps each
+# run's forward advance and these two fires split the day's per-PR fetches into
+# two smaller bursts (both off-hours, away from interactive sessions that hit
+# secondary-rate-limit 403s). The watermark never skips a comment; WINDOW_HOURS=16
+# gives the two fires spare daily capacity (32h vs 24h) so a missed off-hours fire
+# burns its lag down instead of lagging forever (Persistent=false, no boot catch-up).
 OnCalendar=*-*-* 02,04:00:00 America/Los_Angeles
 Persistent=false
 AccuracySec=1min

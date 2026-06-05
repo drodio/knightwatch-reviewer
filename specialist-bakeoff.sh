@@ -1,8 +1,9 @@
 #!/bin/bash
 # Twice nightly (02:00 + 04:00 PT via systemd, off-hours): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
-# regenerate ~/.pr-reviewer/specialist-bakeoff.md. WINDOW_HOURS caps each run to a
-# ~12h forward chunk (watermark advances ≤WINDOW_HOURS/run) so the two fires split
-# the day's per-PR fetches; the floor still reaches back REWALK_HOURS to refresh edits.
+# regenerate ~/.pr-reviewer/specialist-bakeoff.md. WINDOW_HOURS caps how far the
+# watermark advances per run (≤WINDOW_HOURS) so the two fires split the day's
+# per-PR fetches; production sets 16h, giving 2 fires spare daily capacity (32h vs
+# 24h) to burn down a missed fire. The floor still reaches back REWALK_HOURS to refresh edits.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
 # store, renders markdown). Per-repo, the walker fetches comments since

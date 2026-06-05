@@ -16,13 +16,16 @@ Environment=HOME=/home/odio
 # provides codex; bumping nvm node versions means updating this path in lock-step.
 # Canonical PATH rationale — the sibling pr-reviewer-* units reference this one.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
-# Split the day into two ~12h chunks (02:00 + 04:00 fires): WINDOW_HOURS caps how
-# far forward each run advances the watermark, so a run never bursts the whole
-# day's per-PR fetches. REWALK_HOURS reaches back to refresh recently-edited
-# reviews. The walker advances ≤WINDOW_HOURS/run and backfills missed crons, so
-# the split is lossless. Keep WINDOW_HOURS == REWALK_HOURS == the chunk size.
+# Split the day's per-PR fetches across the two off-hours fires (02:00 + 04:00):
+# WINDOW_HOURS caps how far forward each run advances the watermark, so a run
+# never bursts the whole day at once. WINDOW_HOURS=16 (not 12) gives 2×16=32h/day
+# of forward capacity against 24h/day of real time — ~8h/day of slack so a single
+# missed off-hours fire burns its lag down within ~2 days instead of lagging
+# forever (with Persistent=false, there is no boot-time catch-up). The watermark
+# never skips a comment, so the split stays lossless. REWALK_HOURS reaches back to
+# refresh recently-edited reviews.
 Environment=REWALK_HOURS=12
-Environment=WINDOW_HOURS=12
+Environment=WINDOW_HOURS=16
 ExecStart=/home/odio/.pr-reviewer/specialist-bakeoff.sh
 TimeoutStartSec=15min
 StandardOutput=journal

@@ -1010,6 +1010,9 @@ TS_PAST=$(hours_ago 4)  # T+16h — past the T+12h ceiling
     '1. [blocking] [from: tests] [tests] in-window. Files: src/in.py. Edit: do x.'
   build_bot_review 201 201 "$TS_PAST" tests \
     '1. [blocking] [from: tests] [tests] past-ceiling. Files: src/past.py. Edit: do y.'
+  # Trusted props PAST the ceiling, targeting the in-ceiling review (PR 200): must
+  # NOT mark it this run (it belongs to the next chunk — Pass 2 shares the cap).
+  build_feedback_comment 202 200 "$TS_PAST" '/srosro-props [from: tests] nice catch'
 } | jq -s . > "$MOCK_COMMENTS_FILE"
 printf 'src/in.py\t1\t0\nsrc/past.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
 : > "$TMPDIR_SMOKE/commits-29b.tsv"
@@ -1031,6 +1034,11 @@ GOT_WM=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_walked_a
 # only, never the past-ceiling one (Pass 2 + coverage share the capped stream).
 COV_29B=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
 [ "$COV_29B" = "1" ] || { echo "FAIL scenario 29b: coverage '$COV_29B' expected '1' (past-ceiling review must not count)"; exit 1; }
+
+# Trusted props past the ceiling must NOT mark the in-ceiling review's row — the
+# feedback is excluded from the capped stream, so Pass 2 never processes it.
+LOVED_29B=$(sqlite3 "$DB_FILE" "SELECT COALESCE(loved_positive,0) FROM specialist_runs WHERE comment_id=200 AND specialist='tests';")
+[ "$LOVED_29B" = "0" ] || { echo "FAIL scenario 29b: post-ceiling /srosro-props marked the in-ceiling review (loved_positive=$LOVED_29B, expected 0)"; exit 1; }
 
 unset MOCK_PULLS_COMMITS_FILE
 
