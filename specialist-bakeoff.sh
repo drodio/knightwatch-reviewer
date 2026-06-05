@@ -1,6 +1,9 @@
 #!/bin/bash
-# Once daily (04:00 PT via systemd, a low-usage window): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
-# regenerate ~/.pr-reviewer/specialist-bakeoff.md.
+# Twice nightly (02:00 + 04:00 PT via systemd, off-hours): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# regenerate ~/.pr-reviewer/specialist-bakeoff.md. WINDOW_HOURS caps how far the
+# watermark advances per run (≤WINDOW_HOURS) so the two fires split the day's
+# per-PR fetches; production sets 16h, giving 2 fires spare daily capacity (32h vs
+# 24h) to burn down a missed fire. The floor still reaches back REWALK_HOURS to refresh edits.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
 # store, renders markdown). Per-repo, the walker fetches comments since
@@ -20,6 +23,12 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 # SCORECARD_DAYS bounds the renderer's scorecard horizon — read from the
 # persistent store, independent of walker state.
 REWALK_HOURS="${REWALK_HOURS:-24}"
+# WINDOW_HOURS caps how far FORWARD each run advances the watermark, so the two
+# daily runs (02:00 + 04:00 PT) split the day into smaller chunks instead of one
+# big burst of per-PR fetches. Defaults to effectively unbounded so a single run
+# still covers everything unless the service opts in (the production value lives
+# in pr-reviewer-bakeoff.service); the floor still reaches back REWALK_HOURS.
+WINDOW_HOURS="${WINDOW_HOURS:-100000}"
 SCORECARD_DAYS="${SCORECARD_DAYS:-14}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
 OUT_FILE="${OUT_FILE:-$STATE_DIR/specialist-bakeoff.md}"
@@ -95,10 +104,10 @@ for repo in "${REPOS[@]}"; do
         continue
     fi
     repo_failures=0
-    # Capture the walk's start time BEFORE any gh fetch — this becomes the
-    # next cron's window_floor, so the fetch round-trip can't create a blind
-    # window for comments posted during it. Re-stamping at end-of-walk would
-    # skip everything created between fetch-start and stamp time, forever.
+    # Capture the walk's start time BEFORE any gh fetch — it caps the window
+    # ceiling (and, for a fresh repo, IS the next floor), so the fetch round-trip
+    # can't create a blind window for comments posted during it. The watermark is
+    # written from window_ceiling below (≤ this), never from end-of-walk time.
     walk_started_at=$(date -u +%FT%TZ)
     # strftime normalizes both ISO (the walker's own writes) and
     # SQLite's space-separated datetime('now') format into a single
@@ -117,12 +126,30 @@ for repo in "${REPOS[@]}"; do
     else
         window_floor="$rewalk_floor"
     fi
-    log "scanning $repo since $window_floor (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
+    # Forward ceiling: process reviews only up to last_walked + WINDOW_HOURS, and
+    # advance the watermark to the ceiling (not now) — so the two daily runs split
+    # the day into smaller chunks. Reviews past the ceiling are picked up next run.
+    # A fresh repo (no last_walked) gets ceiling = now, preserving full first-run
+    # coverage; WINDOW_HOURS only chunks once a watermark exists.
+    if [ -n "$last_walked" ]; then
+        window_ceiling=$(date -u -d "$last_walked + $WINDOW_HOURS hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -j -v "+${WINDOW_HOURS}H" -f '%Y-%m-%dT%H:%M:%SZ' "$last_walked" +%Y-%m-%dT%H:%M:%SZ)
+        [ "$window_ceiling" \> "$walk_started_at" ] && window_ceiling="$walk_started_at"
+    else
+        window_ceiling="$walk_started_at"
+    fi
+    log "scanning $repo since $window_floor through $window_ceiling (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
 
     comments_json=$(gh_api_retry --paginate \
         "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
+
+    # One ceiling-filtered stream reused by every consumer below (Pass 1 reviews,
+    # Pass 2 feedback, and the coverage tally) so the WINDOW_HOURS chunk boundary
+    # is applied consistently: a review/feedback past the ceiling belongs to the
+    # next run. Each consumer still applies its own floor and other predicates.
+    comments_capped=$(printf '%s' "$comments_json" | jq --arg c "$window_ceiling" '[.[] | select(.created_at <= $c)]')
 
     trusted_set=$(gh_api_retry --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
@@ -303,7 +330,7 @@ for repo in "${REPOS[@]}"; do
         fi
 
         walked_reviews=$((walked_reviews + 1))
-    done < <(printf '%s' "$comments_json" \
+    done < <(printf '%s' "$comments_capped" \
         | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
              ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
 
@@ -341,12 +368,13 @@ for repo in "${REPOS[@]}"; do
                 mark_critiqued "$DB_FILE" "$repo" "$target_review" "$specialist"
             done <<< "$negatives"
         fi
-    done < <(printf '%s' "$comments_json" \
+    done < <(printf '%s' "$comments_capped" \
         | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
               '.[] | select(.body | contains($marker) | not)
                    | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
-    # Coverage tally: reuse comments_json (already full-window). Numerator
+    # Coverage tally: reuse the ceiling-capped stream so the caption counts only
+    # reviews actually walked in this chunk. Numerator
     # matches the canonical roster-marker regex from lib/bakeoff-parsers.sh —
     # NOT a permissive substring check, which would falsely count bodies
     # discussing the marker token in prose. Drives the snapshot's
@@ -356,13 +384,16 @@ for repo in "${REPOS[@]}"; do
     # crons widen the scan back to last_walked_at — the metric becomes a
     # clean rolling REWALK_HOURS rate, not a variable backfill width.
     if [ "$repo_failures" -eq 0 ]; then
-        total_in_window=$(printf '%s' "$comments_json" \
+        total_in_window=$(printf '%s' "$comments_capped" \
             | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
-        with_marker_in_window=$(printf '%s' "$comments_json" \
+        with_marker_in_window=$(printf '%s' "$comments_capped" \
             | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
-        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window" "$walk_started_at"
+        # Advance the watermark to the window ceiling (≤ walk_started_at), not to
+        # now: this is what splits the day into WINDOW_HOURS chunks. The ceiling is
+        # at or before the fetch start, so it can't create a blind window either.
+        set_repo_coverage "$DB_FILE" "$repo" "$total_in_window" "$with_marker_in_window" "$window_ceiling"
     fi
 done
 

@@ -991,6 +991,57 @@ fi
 
 unset MOCK_PULLS_COMMITS_FILE
 
+# ---- scenario 29b: WINDOW_HOURS caps forward progress to one ~12h chunk ----
+# Two nightly runs (02:00 + 04:00) split the day by advancing the watermark ≤
+# WINDOW_HOURS per run. Seed last_walked_at, then a review INSIDE the 12h ceiling
+# and one PAST it: only the in-ceiling review is processed, and the watermark
+# advances to the ceiling (last_walked + 12h), NOT to now — so the next run picks
+# up the rest. This is the load-spreading contract.
+echo "    scenario 29b: WINDOW_HOURS=12 processes only the in-ceiling review + advances watermark to the ceiling..."
+rm -f "$DB_FILE"
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_driver                                  # init schema + a walks row
+T_SEED=$(hours_ago 20)
+sqlite3 "$DB_FILE" "UPDATE walks SET last_walked_at='$T_SEED' WHERE repo='test-org/bakeoff-probe';"
+
+TS_IN=$(hours_ago 16)   # T+4h — inside [T, T+12h]
+TS_PAST=$(hours_ago 4)  # T+16h — past the T+12h ceiling
+{ build_bot_review 200 200 "$TS_IN" tests \
+    '1. [blocking] [from: tests] [tests] in-window. Files: src/in.py. Edit: do x.'
+  build_bot_review 201 201 "$TS_PAST" tests \
+    '1. [blocking] [from: tests] [tests] past-ceiling. Files: src/past.py. Edit: do y.'
+  # Trusted props PAST the ceiling, targeting the in-ceiling review (PR 200): must
+  # NOT mark it this run (it belongs to the next chunk — Pass 2 shares the cap).
+  build_feedback_comment 202 200 "$TS_PAST" '/srosro-props [from: tests] nice catch'
+} | jq -s . > "$MOCK_COMMENTS_FILE"
+printf 'src/in.py\t1\t0\nsrc/past.py\t1\t0\n' > "$MOCK_PULLS_FILES_FILE"
+: > "$TMPDIR_SMOKE/commits-29b.tsv"
+export MOCK_PULLS_COMMITS_FILE="$TMPDIR_SMOKE/commits-29b.tsv"
+
+WINDOW_HOURS=12 bash "$REPO_ROOT/specialist-bakeoff.sh" >/dev/null 2>&1
+
+IN_ROWS=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs WHERE comment_id=200;")
+[ "$IN_ROWS" = "1" ] || { echo "FAIL scenario 29b: in-ceiling review created $IN_ROWS rows (expected 1)"; exit 1; }
+PAST_ROWS=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM specialist_runs WHERE comment_id=201;")
+[ "$PAST_ROWS" = "0" ] || { echo "FAIL scenario 29b: past-ceiling review created $PAST_ROWS rows (expected 0 — beyond the 12h window)"; exit 1; }
+
+EXPECT_CEIL=$(date -u -d "$T_SEED + 12 hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -j -v +12H -f '%Y-%m-%dT%H:%M:%SZ' "$T_SEED" +%Y-%m-%dT%H:%M:%SZ)
+GOT_WM=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_walked_at) FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$GOT_WM" = "$EXPECT_CEIL" ] || { echo "FAIL scenario 29b: watermark '$GOT_WM' expected ceiling '$EXPECT_CEIL' (must advance ≤12h, not to now)"; exit 1; }
+
+# Coverage tally is bound to the same ceiling — it counts the in-ceiling review
+# only, never the past-ceiling one (Pass 2 + coverage share the capped stream).
+COV_29B=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$COV_29B" = "1" ] || { echo "FAIL scenario 29b: coverage '$COV_29B' expected '1' (past-ceiling review must not count)"; exit 1; }
+
+# Trusted props past the ceiling must NOT mark the in-ceiling review's row — the
+# feedback is excluded from the capped stream, so Pass 2 never processes it.
+LOVED_29B=$(sqlite3 "$DB_FILE" "SELECT COALESCE(loved_positive,0) FROM specialist_runs WHERE comment_id=200 AND specialist='tests';")
+[ "$LOVED_29B" = "0" ] || { echo "FAIL scenario 29b: post-ceiling /srosro-props marked the in-ceiling review (loved_positive=$LOVED_29B, expected 0)"; exit 1; }
+
+unset MOCK_PULLS_COMMITS_FILE
+
 # ---- scenario 30: bare defaults — REWALK_HOURS=24, SCORECARD_DAYS=14 unset ----
 # Existing scenarios pin both vars to wider values to keep legacy fixtures in window,
 # so the production-default contract is otherwise untested. This scenario runs the

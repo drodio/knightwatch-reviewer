@@ -1,13 +1,15 @@
 [Unit]
-Description=Plow PR reviewer specialist bake-off (once daily, 04:00 Pacific — low-usage window)
+Description=Plow PR reviewer specialist bake-off (twice nightly, 02:00 + 04:00 Pacific — split low-usage windows)
 
 [Timer]
-# Once daily in the dead of night, not 07:00+19:00: the ~45-repo walk is the
-# heaviest single consumer of the shared srosro GitHub budget and the 19:00 run
-# contended with interactive sessions (secondary-rate-limit 403s). The walker
-# rewalks min(REWALK_HOURS=24h, last_walked_at) and backfills missed crons, so
-# once-daily coverage is lossless. Move to a quieter hour if 04:00 PT gets busy.
-OnCalendar=*-*-* 04:00:00 America/Los_Angeles
+# Two fires in the dead of night, not one: the ~45-repo walk is the heaviest
+# single consumer of the shared srosro GitHub budget, so WINDOW_HOURS caps each
+# run's forward advance and these two fires split the day's per-PR fetches into
+# two smaller bursts (both off-hours, away from interactive sessions that hit
+# secondary-rate-limit 403s). The watermark never skips a comment; WINDOW_HOURS=16
+# gives the two fires spare daily capacity (32h vs 24h) so a missed off-hours fire
+# burns its lag down instead of lagging forever (Persistent=false, no boot catch-up).
+OnCalendar=*-*-* 02,04:00:00 America/Los_Angeles
 Persistent=false
 AccuracySec=1min
 Unit=pr-reviewer-bakeoff.service
