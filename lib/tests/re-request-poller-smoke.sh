@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for re-request-poller.sh.
+# Smoke test for poll-pr-actions.sh (re-request path; the approve check no-ops here).
 #
 # Closes the runtime-coverage gap on the manifest consumer that
 # translates GitHub "Re-request review" timeline events into
@@ -30,6 +30,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 export STATE_DIR="$TMPDIR/state"
 export LOG_FILE="$STATE_DIR/re-request.log"
 export SEEN_FILE="$STATE_DIR/re-request-seen.json"
+export RR_SEEN_FILE="$SEEN_FILE"   # poll-pr-actions.sh reads RR_SEEN_FILE for the re-request watermark
 mkdir -p "$STATE_DIR"
 export BOT_USER="srosro"
 
@@ -78,7 +79,14 @@ elif [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
     [ -n "${MOCK_PR_COMMENT_FAIL:-}" ] && exit 1
     echo "https://github.com/$repo/issues/1#issuecomment-fake"
 elif [ "$1" = "api" ]; then
-    cat "$MOCK_TIMELINE_FILE"
+    # poll-pr-actions.sh also runs the approve check, which fetches issue
+    # comments — return an empty list for those so the approve path no-ops;
+    # serve the timeline fixture for the re-request path.
+    if printf '%s ' "$@" | grep -q '/timeline'; then
+        cat "$MOCK_TIMELINE_FILE"
+    else
+        echo '[]'
+    fi
 fi
 STUB
 chmod +x "$HOME/.local/bin/gh"
@@ -89,6 +97,11 @@ export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/pr-enumerate.sh"  "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+# poll-pr-actions.sh also sources these for its approve check (log/seen, trust,
+# comment fetch) — the merged script needs the full lib set, not just enumerate.
+cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
+cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
 
 # REPOS override via config.env. test-org/probe-repo is NOT in the
 # canonical repos.conf (cncorp/plow, ...), so honoring the override
@@ -103,7 +116,7 @@ run_poller() {
     : > "$STUB_PR_LIST_LOG"
     : > "$STUB_COMMENT_LOG"
     : > "$LOG_FILE"
-    bash "$PROJECT_ROOT/re-request-poller.sh" >/dev/null 2>&1 || true
+    bash "$PROJECT_ROOT/poll-pr-actions.sh" >/dev/null 2>&1 || true
 }
 
 count_comments() {

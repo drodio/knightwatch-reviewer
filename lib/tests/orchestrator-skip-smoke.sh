@@ -413,7 +413,7 @@ fi
 
 # Scenario 6 (trigger-comment trust gate): same SHA, /srosro-review from a
 # commenter without push access → the trigger still dispatches a worker
-# (so re-request-poller and external requesters keep working), but the
+# (so poll-pr-actions's re-request trigger and external requesters keep working), but the
 # orchestrator does NOT stage `.codex-scratch/trigger-comment.md`. The
 # bot's trigger-comment plumbing weights the comment body heavily on the
 # pipeline that ends in `gh pr review --approve`, so a drive-by
@@ -470,12 +470,12 @@ if [ -n "$leaked" ]; then
 fi
 
 # Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
-# are handled out-of-band by approve-from-replies.sh, not by the review
+# are handled out-of-band by poll-pr-actions.sh, not by the review
 # orchestrator. The orchestrator's substring filter looks for
 # /srosro-review and /srosro-update-review; /srosro-approve must not
 # match either. Guards against a future filter change that accidentally
 # triggers a re-review on every approve request.
-echo "  scenario 8: same SHA + /srosro-approve (handled by approve-from-replies, not orchestrator)..."
+echo "  scenario 8: same SHA + /srosro-approve (handled by poll-pr-actions, not orchestrator)..."
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve looks good"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)

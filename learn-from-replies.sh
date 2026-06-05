@@ -39,7 +39,7 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # is_trusted_repo_author() — push-access trust gate, shared with review.sh.
-# seen_get / seen_set + log — flock + atomic-rename, shared with approve-from-replies.sh.
+# seen_get / seen_set + log — flock + atomic-rename, shared with poll-pr-actions.sh.
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
@@ -70,7 +70,7 @@ for REPO in "${REPOS[@]}"; do
 
     for PR_NUM in $PR_LIST; do
         # Pagination correctness lives in lib/gh-comments.sh (shared with
-        # review.sh + approve-from-replies.sh) so any future caller of
+        # review.sh + poll-pr-actions.sh) so any future caller of
         # this endpoint can't reinvent the bug. On fetch failure, log
         # loud + skip this PR for this tick rather than silently treating
         # "API broken" as "no comments".

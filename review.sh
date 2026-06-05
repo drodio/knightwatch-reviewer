@@ -205,7 +205,7 @@ refresh_queue() {
             # Fail loud on a transient gh outage rather than treating
             # "API broken" as "no comments" and silently missing a
             # /srosro-update-review trigger. Same wrapper shape as
-            # approve-from-replies.sh + learn-from-replies.sh.
+            # poll-pr-actions.sh + learn-from-replies.sh.
             COMMENTS_JSON=$(fetch_issue_comments "$REPO" "$PR_NUM") || {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue

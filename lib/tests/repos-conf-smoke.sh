@@ -129,7 +129,7 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; REPO=cnco
 [ "$out" = "v=[]" ] || { echo "FAIL B4: loader output: $out"; exit 1; }
 
 # require_tracked_targets — the startup guard shared by the PR-enumeration
-# entry scripts (review.sh / approve-from-replies.sh / re-request-poller.sh).
+# entry scripts (review.sh / poll-pr-actions.sh).
 # Locks the contract that a whole-org (ORGS-only, no REPOS) manifest is
 # satisfiable, and that a wholly-empty manifest still fails loud.
 echo "  B4-targets-orgs-only: require_tracked_targets accepts ORGS with empty REPOS..."
@@ -223,9 +223,8 @@ echo "  C: every production consumer sources lib/tracked-repos.sh..."
 # consumer means adding it here AND making it source the loader.
 CONSUMERS=(
     "review.sh"
-    "re-request-poller.sh"
+    "poll-pr-actions.sh"
     "learn-from-replies.sh"
-    "approve-from-replies.sh"
     "lib/review-one-pr.sh"
     "plow-kid-refresh.sh"
     "org-sync.sh"
@@ -243,7 +242,7 @@ done
 # a calibration timer onto require_tracked_targets would make it run with no
 # REPOS to walk, so pin which guard each side calls.
 echo "  C-guard: review entrypoints use require_tracked_targets; calibration uses require_repos..."
-for c in review.sh approve-from-replies.sh re-request-poller.sh; do
+for c in review.sh poll-pr-actions.sh; do
     grep -q 'require_tracked_targets' "$PROJECT_ROOT/$c" || { echo "FAIL C-guard: $c must call require_tracked_targets (ORGS-or-REPOS)"; exit 1; }
 done
 for c in learn-from-replies.sh specialist-bakeoff.sh; do

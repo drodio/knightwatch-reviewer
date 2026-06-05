@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Smoke test for approve-from-replies.sh.
+# Smoke test for poll-pr-actions.sh (approve path; the re-request check no-ops here).
 #
 # Stubs `gh` via PATH so neither the network nor real PR infrastructure
 # is touched. Captures `gh pr review --approve` calls in a stub log so
@@ -179,7 +179,7 @@ run_approve() {
     : > "$STUB_ACTIONS_LOG"   # reset action log
     : > "$STUB_PR_LIST_LOG"   # reset pr-list log so override scenario can assert per-run
     : > "$LOG_FILE"           # reset script log
-    bash "$PROJECT_ROOT/approve-from-replies.sh" >/dev/null 2>&1 || true
+    bash "$PROJECT_ROOT/poll-pr-actions.sh" >/dev/null 2>&1 || true
 }
 
 count_approves() {
@@ -328,6 +328,6 @@ echo '[]' > "$MOCK_COMMENTS_FILE"
 MOCK_GH_API_FAIL=1 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 13: expected 0 approves on api failure, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-grep -q "comments fetch failed — skipping this PR for this tick" "$LOG_FILE" || { echo "FAIL scenario 13: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
+grep -q "comments fetch failed — skipping approve check this tick" "$LOG_FILE" || { echo "FAIL scenario 13: expected fail-loud log line on gh api failure"; cat "$LOG_FILE"; exit 1; }
 
 echo "  PASS (13 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud)"

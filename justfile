@@ -154,7 +154,7 @@ test:
     bash lib/tests/review-one-pr-pull-head-smoke.sh
 
     echo ""
-    echo "=== approve-from-replies smoke test ==="
+    echo "=== poll-pr-actions smoke test (approve path) ==="
     bash lib/tests/approve-from-replies-smoke.sh
 
     echo ""
@@ -162,7 +162,7 @@ test:
     bash lib/tests/learn-from-replies-smoke.sh
 
     echo ""
-    echo "=== re-request-poller smoke test ==="
+    echo "=== poll-pr-actions smoke test (re-request path) ==="
     bash lib/tests/re-request-poller-smoke.sh
 
     echo ""

@@ -1,0 +1,15 @@
+[Unit]
+Description=Plow PR reviewer open-PR poller (every 2 minutes)
+
+[Timer]
+# Every 2 minutes: one shared enumerate_open_prs feeds both the /srosro-approve
+# check and the re-request-review trigger. Merged from the former approve (60s)
+# + re-request (120s) timers to halve the per-PR fetch rate against the shared
+# srosro GitHub budget. Human /srosro-approve replies tolerate the ~2min latency.
+OnCalendar=*-*-* *:0/2:00
+Persistent=false
+AccuracySec=10s
+Unit=pr-reviewer-poll.service
+
+[Install]
+WantedBy=timers.target

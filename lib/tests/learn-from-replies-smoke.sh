@@ -3,8 +3,8 @@
 #
 # Focused on the regression-test gap knightwatch flagged on PR #14:
 # the prior PR fixed the REPOS-after-config.env clobber bug in BOTH
-# approve-from-replies.sh and learn-from-replies.sh, but only the
-# approve script had test coverage. This smoke verifies that
+# the approve poller (now poll-pr-actions.sh) and learn-from-replies.sh, but only
+# the approve script had test coverage. This smoke verifies that
 # learn-from-replies actually honors `config.env`'s REPOS override
 # instead of clobbering it with the hardcoded default list.
 #

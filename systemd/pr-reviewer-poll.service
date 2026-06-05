@@ -1,5 +1,5 @@
 [Unit]
-Description=Plow PR reviewer — /srosro-approve handler (post APPROVED reviews on trusted requests)
+Description=Plow PR reviewer — open-PR poller (/srosro-approve handler + re-request-review trigger)
 After=network-online.target
 Wants=network-online.target
 
@@ -10,15 +10,16 @@ Group=odio
 WorkingDirectory=/home/odio/.pr-reviewer
 Environment=HOME=/home/odio
 # PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale).
-# This unit's ReadWritePaths is narrower (~/.pr-reviewer only), but
-# keeping the same PATH order across all services makes the security
-# stance uniform and survives future ReadWritePaths widenings.
+# This unit's ReadWritePaths is narrower (~/.pr-reviewer only), but keeping the
+# same PATH order across all services makes the security stance uniform.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
-ExecStart=/home/odio/.pr-reviewer/approve-from-replies.sh
-TimeoutStartSec=5min
+ExecStart=/home/odio/.pr-reviewer/poll-pr-actions.sh
+# Does two checks per open PR (approve + re-request), so a bit more headroom than
+# the former single-purpose approve handler's 5min.
+TimeoutStartSec=10min
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=pr-reviewer-approve
+SyslogIdentifier=pr-reviewer-poll
 
 NoNewPrivileges=yes
 PrivateTmp=yes

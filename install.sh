@@ -205,12 +205,17 @@ for unit in "${units[@]}"; do
 done
 ok "systemd units: ${#units[@]} present, $CHANGED updated"
 
-# --- 2b. Remove the retired legacy host reviewer unit -----------------------
-# The single-account host reviewer (pr-reviewer.timer/.service) was retired in
-# favor of the containerized fleet (docker-compose.yml). Its files are gone from
-# systemd/, but a prior install left copies in $SYSTEMD_DIR. Disable + remove
-# them so the orphaned units don't linger. Idempotent: a no-op once gone.
-for legacy in pr-reviewer.timer pr-reviewer.service; do
+# --- 2b. Remove retired legacy units ----------------------------------------
+# Units whose files are gone from systemd/ but a prior install left copies in
+# $SYSTEMD_DIR. Disable + remove so the orphans don't linger. Idempotent.
+#   - pr-reviewer.{timer,service}: single-account host reviewer, retired for the
+#     containerized fleet (docker-compose.yml).
+#   - pr-reviewer-approve.* / pr-reviewer-re-request.*: the separate /srosro-approve
+#     (60s) + re-request (120s) pollers, merged into pr-reviewer-poll.* (every 2min,
+#     one shared enumerate) to cut the shared-budget fetch rate.
+for legacy in pr-reviewer.timer pr-reviewer.service \
+              pr-reviewer-approve.timer pr-reviewer-approve.service \
+              pr-reviewer-re-request.timer pr-reviewer-re-request.service; do
   if [[ -f "$SYSTEMD_DIR/$legacy" ]]; then
     info "removing retired legacy unit $legacy (sudo)"
     sudo systemctl disable --now "$legacy" 2>/dev/null || true
