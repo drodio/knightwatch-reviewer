@@ -919,10 +919,10 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
     # review on the freshest host-refreshed index, and isolates the query from
     # the shared index entirely. Falls back to the path itself if the copy fails.
-    KID_PROJECT="$LOCAL_STATE_DIR/kid-query/${REPO//\//_}"
-    if rm -rf "$KID_PROJECT" && mkdir -p "$KID_PROJECT" \
-       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_PROJECT/.keepitdry"; then
-        export KID_PROJECT
+    KID_QUERY_DIR="$LOCAL_STATE_DIR/kid-query/${PR_ID//[^a-zA-Z0-9]/_}"
+    if rm -rf "$KID_QUERY_DIR" && mkdir -p "$KID_QUERY_DIR" \
+       && cp -r "$KID_PROJECT_PATH/.keepitdry" "$KID_QUERY_DIR/.keepitdry"; then
+        export KID_PROJECT="$KID_QUERY_DIR"
     else
         log "$PR_ID: kid index copy failed — querying source path directly"
         export KID_PROJECT="$KID_PROJECT_PATH"
@@ -951,7 +951,7 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
         fi
     fi
     rm -f "$KID_STDERR"
-    rm -rf "$LOCAL_STATE_DIR/kid-query/${REPO//\//_}"
+    rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
 elif [ -n "$KID_INPUT_DIFF" ]; then
