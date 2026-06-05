@@ -121,6 +121,14 @@ def _codex_rate_limit_line() -> str:
     )
 
 
+def _codex_capacity_line() -> str:
+    """Shape of codex's stderr when the chosen model is momentarily
+    oversubscribed — a PER-CALL transient (one specialist bounces while its
+    siblings on the same account succeed), distinct from a usage cap / 429 /
+    fatal auth. Degrades just that angle (rc=124), never an account-wide pause."""
+    return "ERROR: Selected model is at capacity. Please try a different model.\n"
+
+
 def _inject_intent_stream(stream: str, line: str):
     """Returns a before_write callback that appends `line` to the intent
     agent's <stream>.txt (`err` = codex CLI stderr / real error path, `log`
@@ -1455,6 +1463,72 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse(
             (self.repo_dir / ".codex-scratch" / "specialists" / "shape.md").exists()
         )
+
+    @patch("pipeline.subprocess.Popen")
+    def test_specialist_capacity_bounce_degrades_like_timeout(self, mock_popen):
+        """A per-call codex 'model at capacity' bounce on one specialist degrades
+        that angle via the rc=124 soft-degrade path and the review COMPLETES — it
+        does not abort the run (Issue B / cncorp-plow#825). Because capacity is
+        per-call (not an account-wide cap/429), it writes NO pause sentinel."""
+        def inject_capacity(name, out_path):
+            if name == "critic-shape":
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                # Realistic err.txt: codex streams reasoning/tool activity first,
+                # then its terminal capacity error. Detection keys off the LAST
+                # non-empty line, so it must still fire despite preceding content.
+                (out_path.parent / "err.txt").write_text(
+                    "tool: inspecting the diff...\n" + _codex_capacity_line()
+                )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={
+                "intent": (0, "Inferred intent: stub.\n"),
+                "dead-code-search": (0, "dc\n"),
+                "shape": (0, "### Probe 1\nreal shape finding\n"),
+                "critic-shape": (1, ""),  # exits non-zero; err.txt carries the capacity error
+                "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+            },
+            before_write=inject_capacity,
+        )
+        rc = self._run()
+        self.assertEqual(rc, 0)  # degraded + completed, not aborted
+        self.assertIn("shape", (self.run_dir / "_wave_b_timeouts.txt").read_text())
+        self.assertTrue((self.run_dir / "agents" / "aggregator" / "output.md").exists())
+        # capacity is per-call → never an account-wide pause sentinel
+        self.assertFalse((self.run_dir / "_codex_rate_limit.txt").exists())
+        self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_capacity_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
+        """Spoof guard: a REAL specialist failure (rc=1) must NOT be downgraded to
+        the rc=124 skip path just because reflected PR stderr carries the capacity
+        phrase — even as an EXACT crafted `ERROR: Selected model is at capacity`
+        line — when it isn't codex's terminal diagnostic. Detection keys off the
+        LAST non-empty stderr line (codex's real error lands last), so both a
+        mid-prose mention and an exact-but-non-terminal spoofed line still abort."""
+        def inject_spoof(name, out_path):
+            if name == "critic-shape":
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                (out_path.parent / "err.txt").write_text(
+                    # mid-prose mention …
+                    "reasoning: the diff notes the model is at capacity, unrelated\n"
+                    # … AND an exact crafted capacity line, but NOT terminal …
+                    + _codex_capacity_line()
+                    # … because codex's genuine terminal error is what lands last.
+                    + "ERROR: specialist crashed (segfault)\n"
+                )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={
+                "intent": (0, "Inferred intent: stub.\n"),
+                "dead-code-search": (0, "dc\n"),
+                "shape": (0, "### Probe 1\nreal shape finding\n"),
+                "critic-shape": (1, ""),  # genuine failure; phrase is only reflected, not the ERROR line
+                "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+            },
+            before_write=inject_spoof,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)  # genuine failure still hard-aborts
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
     def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):

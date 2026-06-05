@@ -410,7 +410,7 @@ format_specialist_timeouts() {
         printf 'format_specialist_timeouts: empty names — internal invariant violated\n' >&2
         return 1
     fi
-    printf '⏱️ Partial review — specialist(s) timed out and were skipped: `%s`' "$names"
+    printf '⏱️ Partial review — specialist(s) did not complete (timed out or model at capacity) and were skipped: `%s`' "$names"
 }
 
 # timeout_note_for_run RUN_DIR
