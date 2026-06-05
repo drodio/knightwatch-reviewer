@@ -110,6 +110,7 @@ chmod +x "$HOME/.local/bin/gh"
 # Sandbox lib dir.
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
+cp "$PROJECT_ROOT/lib/bootstrap.sh"     "$REVIEWER_LIB_DIR/bootstrap.sh"  # sources the core below
 cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"   # auth.sh sources it
 cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"

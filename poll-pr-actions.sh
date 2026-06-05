@@ -16,24 +16,15 @@ set -o pipefail
 # PATH inherited from the systemd unit (system dirs first; writable user dirs
 # trailing). See review.sh for the writable-PATH security context.
 
-STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# Shared entrypoint setup: STATE_DIR + BOT_* defaults + the lib core
+# (tracked-repos, auth, state-io, gh-comments). pr-enumerate is poll-specific.
+REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
+. "$REVIEWER_LIB_DIR/bootstrap.sh"
+. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+require_tracked_targets
 LOG_FILE="${LOG_FILE:-$STATE_DIR/poll.log}"
 APPROVES_SEEN_FILE="${APPROVES_SEEN_FILE:-$STATE_DIR/approves-seen.json}"
 RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
-# Tracked-repo manifest (single source of truth in repos.conf). The shared
-# loader at lib/tracked-repos.sh is the ONE seam every consumer goes through.
-REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
-. "$REVIEWER_LIB_DIR/tracked-repos.sh"
-. "$REVIEWER_LIB_DIR/pr-enumerate.sh"
-# log() + presence seen_get/seen_set (flock + atomic rename), is_trusted_repo_author,
-# fetch_issue_comments — all shared with review.sh / learn-from-replies.sh.
-. "$REVIEWER_LIB_DIR/auth.sh"
-. "$REVIEWER_LIB_DIR/state-io.sh"
-. "$REVIEWER_LIB_DIR/gh-comments.sh"
-require_tracked_targets
-BOT_USER="${BOT_USER:-srosro}"
-BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
-BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
 # Both seen stores are created on demand by state-io's seen_set/seen_set_value
 # (presence for approves, timestamp watermark for re-request), and seen_get

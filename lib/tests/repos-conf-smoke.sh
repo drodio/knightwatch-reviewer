@@ -219,8 +219,14 @@ out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; n=0; for 
 
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
+# The manifest loader can be reached directly OR transitively via
+# lib/bootstrap.sh (which sources tracked-repos.sh as its first lib). Fence the
+# indirection itself first, so accepting bootstrap.sh below stays sound.
+grep -q 'tracked-repos\.sh' "$PROJECT_ROOT/lib/bootstrap.sh" \
+    || { echo "FAIL C: lib/bootstrap.sh no longer sources lib/tracked-repos.sh — the indirection consumers rely on is broken"; exit 1; }
 # Hard list of every script that needs the manifest. Adding a new
-# consumer means adding it here AND making it source the loader.
+# consumer means adding it here AND making it source the loader (directly
+# or via bootstrap.sh).
 CONSUMERS=(
     "review.sh"
     "poll-pr-actions.sh"
@@ -232,7 +238,7 @@ CONSUMERS=(
 for c in "${CONSUMERS[@]}"; do
     f="$PROJECT_ROOT/$c"
     [ -f "$f" ] || { echo "FAIL C: $c missing from repo"; exit 1; }
-    grep -q 'tracked-repos\.sh' "$f" || { echo "FAIL C: $c does not source lib/tracked-repos.sh"; exit 1; }
+    grep -qE 'tracked-repos\.sh|bootstrap\.sh' "$f" || { echo "FAIL C: $c reaches neither lib/tracked-repos.sh nor lib/bootstrap.sh"; exit 1; }
 done
 
 # Startup-guard call-site fencing: the PR-enumeration entrypoints accept an
