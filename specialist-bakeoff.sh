@@ -1,6 +1,8 @@
 #!/bin/bash
-# Once daily (04:00 PT via systemd, a low-usage window): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
-# regenerate ~/.pr-reviewer/specialist-bakeoff.md.
+# Twice nightly (02:00 + 04:00 PT via systemd, off-hours): walk new GitHub state into ~/.pr-reviewer/bakeoff.db and
+# regenerate ~/.pr-reviewer/specialist-bakeoff.md. WINDOW_HOURS caps each run to a
+# ~12h forward chunk (watermark advances ≤WINDOW_HOURS/run) so the two fires split
+# the day's per-PR fetches; the floor still reaches back REWALK_HOURS to refresh edits.
 #
 # Architecture: walker (writes to SQLite store) → reporter (queries the
 # store, renders markdown). Per-repo, the walker fetches comments since
@@ -141,6 +143,12 @@ for repo in "${REPOS[@]}"; do
         "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
+
+    # One ceiling-filtered stream reused by every consumer below (Pass 1 reviews,
+    # Pass 2 feedback, and the coverage tally) so the WINDOW_HOURS chunk boundary
+    # is applied consistently: a review/feedback past the ceiling belongs to the
+    # next run. Each consumer still applies its own floor and other predicates.
+    comments_capped=$(printf '%s' "$comments_json" | jq --arg c "$window_ceiling" '[.[] | select(.created_at <= $c)]')
 
     trusted_set=$(gh_api_retry --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
@@ -321,10 +329,9 @@ for repo in "${REPOS[@]}"; do
         fi
 
         walked_reviews=$((walked_reviews + 1))
-    done < <(printf '%s' "$comments_json" \
-        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" \
-               --arg window_floor "$window_floor" --arg window_ceiling "$window_ceiling" \
-             ".[] | select($SUBSTANTIVE_REVIEW_JQ and (.created_at <= \$window_ceiling)) | [.id, .issue_url, .created_at, .body] | @tsv")
+    done < <(printf '%s' "$comments_capped" \
+        | jq -r --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$window_floor" \
+             ".[] | select($SUBSTANTIVE_REVIEW_JQ) | [.id, .issue_url, .created_at, .body] | @tsv")
 
     # Pass 2: feedback comments. For each feedback signal, find the most-recent
     # substantive bot review on the same PR before the feedback's created_at,
@@ -360,12 +367,13 @@ for repo in "${REPOS[@]}"; do
                 mark_critiqued "$DB_FILE" "$repo" "$target_review" "$specialist"
             done <<< "$negatives"
         fi
-    done < <(printf '%s' "$comments_json" \
+    done < <(printf '%s' "$comments_capped" \
         | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
               '.[] | select(.body | contains($marker) | not)
                    | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
-    # Coverage tally: reuse comments_json (already full-window). Numerator
+    # Coverage tally: reuse the ceiling-capped stream so the caption counts only
+    # reviews actually walked in this chunk. Numerator
     # matches the canonical roster-marker regex from lib/bakeoff-parsers.sh —
     # NOT a permissive substring check, which would falsely count bodies
     # discussing the marker token in prose. Drives the snapshot's
@@ -375,10 +383,10 @@ for repo in "${REPOS[@]}"; do
     # crons widen the scan back to last_walked_at — the metric becomes a
     # clean rolling REWALK_HOURS rate, not a variable backfill width.
     if [ "$repo_failures" -eq 0 ]; then
-        total_in_window=$(printf '%s' "$comments_json" \
+        total_in_window=$(printf '%s' "$comments_capped" \
             | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ)] | length")
-        with_marker_in_window=$(printf '%s' "$comments_json" \
+        with_marker_in_window=$(printf '%s' "$comments_capped" \
             | jq --arg bot_user "$BOT_USER" --arg marker "$BOT_AUTO_POST_MARKER" --arg roster "$ROSTER_MARKER_REGEX" --arg window_floor "$rewalk_floor" \
                  "[.[] | select($SUBSTANTIVE_REVIEW_JQ and (.body | test(\$roster)))] | length")
         # Advance the watermark to the window ceiling (≤ walk_started_at), not to

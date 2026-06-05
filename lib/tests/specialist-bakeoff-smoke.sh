@@ -1027,6 +1027,11 @@ EXPECT_CEIL=$(date -u -d "$T_SEED + 12 hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 GOT_WM=$(sqlite3 "$DB_FILE" "SELECT strftime('%Y-%m-%dT%H:%M:%SZ', last_walked_at) FROM walks WHERE repo='test-org/bakeoff-probe';")
 [ "$GOT_WM" = "$EXPECT_CEIL" ] || { echo "FAIL scenario 29b: watermark '$GOT_WM' expected ceiling '$EXPECT_CEIL' (must advance ≤12h, not to now)"; exit 1; }
 
+# Coverage tally is bound to the same ceiling — it counts the in-ceiling review
+# only, never the past-ceiling one (Pass 2 + coverage share the capped stream).
+COV_29B=$(sqlite3 "$DB_FILE" "SELECT reviews_total_in_window FROM walks WHERE repo='test-org/bakeoff-probe';")
+[ "$COV_29B" = "1" ] || { echo "FAIL scenario 29b: coverage '$COV_29B' expected '1' (past-ceiling review must not count)"; exit 1; }
+
 unset MOCK_PULLS_COMMITS_FILE
 
 # ---- scenario 30: bare defaults — REWALK_HOURS=24, SCORECARD_DAYS=14 unset ----
