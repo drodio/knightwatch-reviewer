@@ -913,7 +913,7 @@ KID_RAN=false
 # KID_PATHS empty so the lookup is safe under `set -u` even if
 # repos.conf is absent in a test sandbox).
 KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
-if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ]; then
+if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -n "${KWR_CLONE_ROOT:-}" ]; then
     # The index is mounted read-only (host kid-refresh owns it), but ChromaDB's
     # sqlite needs write access even for a query (WAL). Query a throwaway copy in
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
@@ -954,6 +954,8 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
+elif [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -z "${KWR_CLONE_ROOT:-}" ]; then
+    log "$PR_ID: kid index present but KWR_CLONE_ROOT unset — skipping prior-art lookup (compose override missing it)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
