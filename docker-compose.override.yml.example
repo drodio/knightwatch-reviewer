@@ -1,0 +1,27 @@
+# docker-compose.override.yml.example — kid prior-art index wiring (operator-specific)
+#
+# The committed compose is deployment-agnostic. kid (the DRY prior-art pre-pass)
+# is opt-in: it only runs for repos that have a KID_PATHS entry. To enable it,
+# copy this file to docker-compose.override.yml (gitignored) and edit the host
+# paths. Each reviewer container then needs:
+#
+#   1. KWR_CLONE_ROOT — a dir containing knightwatch-kid/scripts/kid_dry_check.py
+#      (and, by convention, per-repo indices at <repo>/.keepitdry).
+#   2. The kid index(es) bind-mounted READ-ONLY. Indices are built host-side (the
+#      kid-refresh timer) and consumed read-only here; review-one-pr.sh copies the
+#      index into a writable per-container dir before querying, because ChromaDB's
+#      sqlite needs write access even for a read.
+#
+# Then set KID_PATHS in docker/secrets/repos.conf (repo → in-container index path)
+# and KID_OLLAMA_URL / KID_EMBED_MODEL in docker/secrets/config.env.
+services:
+  reviewer-1: &kid
+    environment:
+      KWR_CLONE_ROOT: /kwr
+    volumes:
+      - /abs/path/to/kid-index-root:/kwr:ro
+      # An index kept outside that root (point KID_PATHS at /kid-ro/<repo>):
+      # - /abs/path/to/some-repo-index:/kid-ro/some-repo:ro
+  reviewer-2: *kid
+  reviewer-3: *kid
+  reviewer-4: *kid
