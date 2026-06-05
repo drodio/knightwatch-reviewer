@@ -100,7 +100,7 @@ docker compose up -d
 docker compose logs -f reviewer-1
 ```
 
-The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. The containers read only `/shared/repos.conf`, never host state — two notes follow from that:
+The auxiliary host timers (`-approve`, `-re-request`, `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. The containers read only `/shared/repos.conf` and the secrets mounts — never host *state* — with one read-only exception: if the operator wires kid prior-art (see [kid prior-art](#kid-prior-art) below), the host-built `.keepitdry` indices are bind-mounted **read-only** into each reviewer. Two notes follow:
 - **Review coverage comes from `ORGS`, not `repos.conf.auto`.** Set `ORGS=(plow-pbc srosro)` in `docker/secrets/repos.conf` for whole-org review (every non-archived open PR, new repos included, via one batched search per org per tick); keep only partial orgs in `REPOS` (e.g. `cncorp/plow`). The containers never read `pr-reviewer-org-sync`'s `~/.pr-reviewer/repos.conf.auto` — and with `ORGS` they don't need to; org-sync's role is now just cloning org repos host-side for kid-prior-art.
 - **Calibration is host-only in v1.** `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md`, but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
 
@@ -128,6 +128,12 @@ REPOS=(
 ```
 
 The host auxiliary timers pick it up on their next tick. **The containerized review loop reads a separate manifest** — `docker/secrets/repos.conf` (mounted at `/shared/repos.conf`), polled every 30s — so edit *that* copy to change which repos the fleet reviews. Set `ORGS` there for whole-org coverage; reserve `REPOS` for specific repos in partially-tracked orgs. `SOURCE_PATHS` in the same file enables cross-repo grep/search-roots and `KID_PATHS` wires kid-prior-art lookup. Per-repo policy (product context, review priority, sibling allowlist, dead-code command, strict-typing command) lives in each tracked repo's `.knightwatch/` directory and is read from the base branch via `lib/knightwatch-config.sh`. See the inline comments in [`repos.conf.example`](repos.conf.example) for shapes and `lib/tracked-repos.sh` for the loader.
+
+### kid prior-art
+
+A DRY pre-pass: before the specialists run, `lib/review-one-pr.sh` runs [`kid`](https://github.com/srosro/knightwatch-kid) (`keepitdry`) against a semantic index of your canonical code and surfaces existing code similar to each new block, so the reviewer can flag duplication. It's **opt-in** — a no-op unless a repo has a `KID_PATHS` entry.
+
+Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<repo>` into `<repo>/.keepitdry`) and consumed **read-only** by the containers. To enable it: copy [`docker-compose.override.yml.example`](docker-compose.override.yml.example) to `docker-compose.override.yml`, bind-mount your kid **clone root** — the dir holding `knightwatch-kid/scripts/` and, by convention, the per-repo `.keepitdry` indices — at `/kwr` (plus any out-of-root indices), then set `KID_PATHS`, `KID_OLLAMA_URL`, and `KID_EMBED_MODEL` in `docker/secrets/`. Because ChromaDB's sqlite needs write access even for a query, the worker copies the read-only index into a per-container scratch dir before querying. Pin the mounted `knightwatch-kid` clone to the same commit as the image's `kid` binary to avoid script/binary skew.
 
 ## Use on a PR
 
