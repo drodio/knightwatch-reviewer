@@ -101,6 +101,16 @@ _CODEX_RATE_LIMIT_RE = re.compile(
     r"exceeded retry limit.{0,40}\b429\b",
     re.IGNORECASE | re.DOTALL,
 )
+# Codex prints this when the chosen model is momentarily oversubscribed server-
+# side — a PER-CALL transient (one specialist bounces while its siblings on the
+# same account succeed), NOT an account-wide cap/auth/429. So it must degrade
+# just that angle (the rc=124 soft-degrade path), never write a run-level pause
+# sentinel. Pinned to codex's first-party capacity phrase and scanned in err.txt
+# only (same spoof-resistance as the sentinels above).
+_CODEX_CAPACITY_RE = re.compile(
+    r"selected model is at capacity",
+    re.IGNORECASE,
+)
 # Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
 # at once put ~8 concurrent calls on a single account and tripped 429s (the
 # 2026-06-03 storm); bounding peak concurrency spreads them out (the executor
@@ -327,6 +337,15 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # re-saturate the account. review-one-pr.sh turns this into a short
             # quota-pause.
             (agent.parent.parent / "_codex_rate_limit.txt").write_text("codex 429 rate limit\n")
+        elif _CODEX_CAPACITY_RE.search(err_text):
+            # Per-call capacity bounce: degrade THIS angle only and let Wave B
+            # complete the review without it — never abort the run or pause the
+            # account (capacity is per-call, not account-wide, so no sentinel).
+            # Return 124, the soft-degrade rc shared with specialist timeouts, so
+            # the existing Wave-B drop-angle path + run_specialist's crit_rc==124
+            # scratch-drop handle it with no new seam.
+            log(f"{name}: model at capacity — degrading this angle (per-call transient)")
+            return 124
         return exit_code
 
     if not out_file.exists() or out_file.stat().st_size == 0:
@@ -709,8 +728,13 @@ def run_pipeline(
                 hard_failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
                 continue
             if rc == 124:
+                # 124 = soft-degrade: a specialist timeout OR a per-call codex
+                # capacity bounce (run_codex maps both here). Drop the angle and
+                # complete the review; the accurate reason is in the specialist's
+                # own log.txt, so keep this line generic rather than asserting a
+                # timeout that may have been a capacity bounce.
                 timed_out.append(name)
-                log(f"{pr_id}: specialist {name} timed out after {SPECIALIST_TIMEOUT_SEC}s")
+                log(f"{pr_id}: specialist {name} did not complete (timeout / model-at-capacity) — degrading")
             elif rc != 0:
                 # run_specialist's own log line names the failing stage's
                 # log.txt; don't second-guess with the always-specialist path.
