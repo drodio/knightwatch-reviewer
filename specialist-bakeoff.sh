@@ -23,11 +23,11 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 # SCORECARD_DAYS bounds the renderer's scorecard horizon — read from the
 # persistent store, independent of walker state.
 REWALK_HOURS="${REWALK_HOURS:-24}"
-# WINDOW_HOURS caps how far FORWARD each run advances the watermark, so two
-# daily runs (02:00 + 04:00 PT) split the day into ~12h chunks instead of one
+# WINDOW_HOURS caps how far FORWARD each run advances the watermark, so the two
+# daily runs (02:00 + 04:00 PT) split the day into smaller chunks instead of one
 # big burst of per-PR fetches. Defaults to effectively unbounded so a single run
-# still covers everything unless the service opts in (production sets 12); the
-# walker still reaches back by REWALK_HOURS to refresh recently-edited reviews.
+# still covers everything unless the service opts in (the production value lives
+# in pr-reviewer-bakeoff.service); the floor still reaches back REWALK_HOURS.
 WINDOW_HOURS="${WINDOW_HOURS:-100000}"
 SCORECARD_DAYS="${SCORECARD_DAYS:-14}"
 DB_FILE="${DB_FILE:-$STATE_DIR/bakeoff.db}"
@@ -127,10 +127,10 @@ for repo in "${REPOS[@]}"; do
         window_floor="$rewalk_floor"
     fi
     # Forward ceiling: process reviews only up to last_walked + WINDOW_HOURS, and
-    # advance the watermark to the ceiling (not now) — so two daily runs split the
-    # day into ~12h chunks. Reviews past the ceiling are picked up next run. A
-    # fresh repo (no last_walked) gets ceiling = now, preserving full first-run
-    # coverage; the production WINDOW_HOURS=12 only chunks once a watermark exists.
+    # advance the watermark to the ceiling (not now) — so the two daily runs split
+    # the day into smaller chunks. Reviews past the ceiling are picked up next run.
+    # A fresh repo (no last_walked) gets ceiling = now, preserving full first-run
+    # coverage; WINDOW_HOURS only chunks once a watermark exists.
     if [ -n "$last_walked" ]; then
         window_ceiling=$(date -u -d "$last_walked + $WINDOW_HOURS hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
             || date -u -j -v "+${WINDOW_HOURS}H" -f '%Y-%m-%dT%H:%M:%SZ' "$last_walked" +%Y-%m-%dT%H:%M:%SZ)
