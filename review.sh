@@ -261,22 +261,21 @@ refresh_queue() {
                     # has push access. Otherwise drive-by commenters could
                     # shape intent inference + aggregator on the
                     # auto-approve path.
-                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; trigger_trust_rc=$?
-                    if [ "$trigger_trust_rc" -eq 0 ]; then
+                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
+                    if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
+                        # Indeterminate → defer this PR: don't run without the
+                        # trusted trigger prose and advance the cutoff past it
+                        # (dropping it). Trigger stays unconsumed → retried next tick.
+                        log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
+                        continue
+                    fi
+                    if [ "$TRIGGER_TRUST_RC" -eq 0 ]; then
                         # Capture body now; materialize the file post-skip
                         # (below) so an unchanged-SHA /srosro-update-review
                         # never allocates a tempfile only the worker would
                         # have cleaned up. STATE_DIR/tmp is durable now
                         # (no PrivateTmp tear-down to mask the leak).
                         TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                    elif [ "$trigger_trust_rc" -eq 2 ]; then
-                        # rc 2 = the permission fetch itself failed (transient API
-                        # error). Defer the whole PR this tick rather than dispatch
-                        # without the trusted author's framing — the worker would
-                        # stamp started_at and push the trigger past the next
-                        # cutoff, silently consuming its prose. Retry next tick.
-                        log "$PR_ID: permission check failed (API error) for @$TRIGGER_USER — deferring PR to retry next tick"
-                        continue
                     else
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi
