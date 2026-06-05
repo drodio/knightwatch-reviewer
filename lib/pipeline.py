@@ -108,8 +108,15 @@ _CODEX_RATE_LIMIT_RE = re.compile(
 # sentinel. Pinned to codex's first-party capacity phrase and scanned in err.txt
 # only (same spoof-resistance as the sentinels above).
 _CODEX_CAPACITY_RE = re.compile(
-    r"selected model is at capacity",
-    re.IGNORECASE,
+    # Pinned to codex's first-party ERROR line (anchored at line start with the
+    # CLI's "ERROR: " prefix), NOT a bare substring: codex streams PR-influenced
+    # tool/reasoning activity into err.txt, so an unanchored match would let
+    # reflected stderr carrying this phrase flip a REAL specialist failure into
+    # the rc=124 skip path instead of a hard abort. Same spoof-resistance bar as
+    # the sentinels above; even so, a crafted exact-line spoof only drops one
+    # angle (the soft-degrade blast radius), never a pause/offline.
+    r"^ERROR: Selected model is at capacity\b",
+    re.IGNORECASE | re.MULTILINE,
 )
 # Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
 # at once put ~8 concurrent calls on a single account and tripped 429s (the

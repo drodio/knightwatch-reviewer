@@ -1493,6 +1493,35 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse((self.run_dir / "_codex_quota.txt").exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_capacity_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
+        """Spoof guard: a REAL specialist failure (rc=1) whose err.txt merely
+        CONTAINS the capacity phrase mid-stream (PR-influenced codex reasoning,
+        not codex's own `ERROR:` diagnostic line) must NOT be downgraded to the
+        rc=124 skip path — it still hard-aborts. `_CODEX_CAPACITY_RE` is anchored
+        to codex's first-party ERROR line precisely so reflected stderr can't
+        suppress a genuine failure."""
+        def inject_spoof(name, out_path):
+            if name == "critic-shape":
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                (out_path.parent / "err.txt").write_text(
+                    "reasoning: the diff notes the selected model is at capacity "
+                    "in a code comment, which is unrelated\n"
+                )
+        mock_popen.side_effect = _make_codex_stub(
+            plan={
+                "intent": (0, "Inferred intent: stub.\n"),
+                "dead-code-search": (0, "dc\n"),
+                "shape": (0, "### Probe 1\nreal shape finding\n"),
+                "critic-shape": (1, ""),  # genuine failure; phrase is only reflected, not the ERROR line
+                "aggregator": (0, "# Review\nVERDICT: APPROVE\n"),
+            },
+            before_write=inject_spoof,
+        )
+        rc = self._run()
+        self.assertNotEqual(rc, 0)  # genuine failure still hard-aborts
+        self.assertFalse((self.run_dir / "_wave_b_timeouts.txt").exists())
+
+    @patch("pipeline.subprocess.Popen")
     def test_hard_failure_aborts_without_timeouts_sentinel(self, mock_popen):
         """Non-timeout hard failures (rc != 0 and != 124) abort without
         writing the timeouts sentinel — bash falls back to the generic

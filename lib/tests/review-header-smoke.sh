@@ -523,6 +523,7 @@ printf 'security\nshape\n' > "$_tnfr_dir/_wave_b_timeouts.txt"
 got=$(timeout_note_for_run "$_tnfr_dir")
 assert_contains "$got" "⏱️" "adapter emits timeout note"
 assert_contains "$got" "security,shape" "adapter joins sentinel lines"
+assert_contains "$got" "capacity" "note discloses model-at-capacity (shared soft-degrade sentinel, not timeout-only)"
 rm -rf "$_tnfr_dir"
 
 # Realistic clean-PR composition: every pre-check passed. Fence the
