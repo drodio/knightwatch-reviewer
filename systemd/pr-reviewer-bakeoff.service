@@ -1,5 +1,5 @@
 [Unit]
-Description=Plow PR reviewer — specialist bake-off (once daily, 04:00 Pacific)
+Description=Plow PR reviewer — specialist bake-off (twice nightly, 02:00 + 04:00 Pacific)
 After=network-online.target
 Wants=network-online.target
 
@@ -16,11 +16,13 @@ Environment=HOME=/home/odio
 # provides codex; bumping nvm node versions means updating this path in lock-step.
 # Canonical PATH rationale — the sibling pr-reviewer-* units reference this one.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
-# Match the 24h timer cadence (04:00 once daily): each run walks a 24h window so
-# edits landing in the full inter-run gap are re-evaluated. The walker's floor is
-# min(REWALK_HOURS ago, last_walked_at), so this also backfills a missed nightly
-# run without boot-time catch-up. Keep REWALK_HOURS == the inter-run gap.
-Environment=REWALK_HOURS=24
+# Split the day into two ~12h chunks (02:00 + 04:00 fires): WINDOW_HOURS caps how
+# far forward each run advances the watermark, so a run never bursts the whole
+# day's per-PR fetches. REWALK_HOURS reaches back to refresh recently-edited
+# reviews. The walker advances ≤WINDOW_HOURS/run and backfills missed crons, so
+# the split is lossless. Keep WINDOW_HOURS == REWALK_HOURS == the chunk size.
+Environment=REWALK_HOURS=12
+Environment=WINDOW_HOURS=12
 ExecStart=/home/odio/.pr-reviewer/specialist-bakeoff.sh
 TimeoutStartSec=15min
 StandardOutput=journal
