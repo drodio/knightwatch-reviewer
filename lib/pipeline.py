@@ -108,15 +108,18 @@ _CODEX_RATE_LIMIT_RE = re.compile(
 # sentinel. Pinned to codex's first-party capacity phrase and scanned in err.txt
 # only (same spoof-resistance as the sentinels above).
 _CODEX_CAPACITY_RE = re.compile(
-    # Pinned to codex's first-party ERROR line (anchored at line start with the
-    # CLI's "ERROR: " prefix), NOT a bare substring: codex streams PR-influenced
-    # tool/reasoning activity into err.txt, so an unanchored match would let
-    # reflected stderr carrying this phrase flip a REAL specialist failure into
-    # the rc=124 skip path instead of a hard abort. Same spoof-resistance bar as
-    # the sentinels above; even so, a crafted exact-line spoof only drops one
-    # angle (the soft-degrade blast radius), never a pause/offline.
+    # Pinned to codex's first-party capacity diagnostic, and matched ONLY against
+    # the terminal (last non-empty) stderr line — see run_codex. codex emits this
+    # as its final line right before exiting, whereas the PR-influenced
+    # tool/reasoning activity codex streams into err.txt appears mid-stream. So
+    # reflected stderr — even an exact crafted line — can't occupy the terminal
+    # position of a *genuine* non-zero failure and downgrade it to the rc=124
+    # skip path: codex's own error is what lands last. Tighter than the pause
+    # sentinels above (which .search the whole err.txt) because capacity is the
+    # only one on the *suppress-a-failure* path; a spoofed quota/429 just pauses
+    # (visible, run still aborts), a spoofed capacity would silently drop an angle.
     r"^ERROR: Selected model is at capacity\b",
-    re.IGNORECASE | re.MULTILINE,
+    re.IGNORECASE,
 )
 # Cap on simultaneous Wave-B codex calls per review. Firing all 7+ specialists
 # at once put ~8 concurrent calls on a single account and tripped 429s (the
@@ -328,6 +331,11 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         # placeholder. Stdout (model reasoning) is excluded so PR-
         # controlled output can't spoof a public quota placeholder.
         err_text = err_file.read_text(errors="replace")
+        # codex's terminal diagnostic is its last non-empty stderr line; the
+        # capacity check matches only there so reflected mid-stream output can't
+        # spoof a real failure into the soft-degrade path (see _CODEX_CAPACITY_RE).
+        err_lines = [ln for ln in err_text.splitlines() if ln.strip()]
+        last_err_line = err_lines[-1] if err_lines else ""
         m = _CODEX_QUOTA_RE.search(err_text)
         if m:
             sentinel = agent.parent.parent / "_codex_quota.txt"
@@ -344,7 +352,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
             # re-saturate the account. review-one-pr.sh turns this into a short
             # quota-pause.
             (agent.parent.parent / "_codex_rate_limit.txt").write_text("codex 429 rate limit\n")
-        elif _CODEX_CAPACITY_RE.search(err_text):
+        elif _CODEX_CAPACITY_RE.search(last_err_line):
             # Per-call capacity bounce: degrade THIS angle only and let Wave B
             # complete the review without it — never abort the run or pause the
             # account (capacity is per-call, not account-wide, so no sentinel).

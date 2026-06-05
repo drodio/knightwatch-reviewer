@@ -1473,7 +1473,12 @@ class TestRunPipeline(unittest.TestCase):
         def inject_capacity(name, out_path):
             if name == "critic-shape":
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                (out_path.parent / "err.txt").write_text(_codex_capacity_line())
+                # Realistic err.txt: codex streams reasoning/tool activity first,
+                # then its terminal capacity error. Detection keys off the LAST
+                # non-empty line, so it must still fire despite preceding content.
+                (out_path.parent / "err.txt").write_text(
+                    "tool: inspecting the diff...\n" + _codex_capacity_line()
+                )
         mock_popen.side_effect = _make_codex_stub(
             plan={
                 "intent": (0, "Inferred intent: stub.\n"),
@@ -1494,18 +1499,22 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_capacity_phrase_in_pr_reflected_stderr_still_aborts(self, mock_popen):
-        """Spoof guard: a REAL specialist failure (rc=1) whose err.txt merely
-        CONTAINS the capacity phrase mid-stream (PR-influenced codex reasoning,
-        not codex's own `ERROR:` diagnostic line) must NOT be downgraded to the
-        rc=124 skip path — it still hard-aborts. `_CODEX_CAPACITY_RE` is anchored
-        to codex's first-party ERROR line precisely so reflected stderr can't
-        suppress a genuine failure."""
+        """Spoof guard: a REAL specialist failure (rc=1) must NOT be downgraded to
+        the rc=124 skip path just because reflected PR stderr carries the capacity
+        phrase — even as an EXACT crafted `ERROR: Selected model is at capacity`
+        line — when it isn't codex's terminal diagnostic. Detection keys off the
+        LAST non-empty stderr line (codex's real error lands last), so both a
+        mid-prose mention and an exact-but-non-terminal spoofed line still abort."""
         def inject_spoof(name, out_path):
             if name == "critic-shape":
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 (out_path.parent / "err.txt").write_text(
-                    "reasoning: the diff notes the selected model is at capacity "
-                    "in a code comment, which is unrelated\n"
+                    # mid-prose mention …
+                    "reasoning: the diff notes the model is at capacity, unrelated\n"
+                    # … AND an exact crafted capacity line, but NOT terminal …
+                    + _codex_capacity_line()
+                    # … because codex's genuine terminal error is what lands last.
+                    + "ERROR: specialist crashed (segfault)\n"
                 )
         mock_popen.side_effect = _make_codex_stub(
             plan={
