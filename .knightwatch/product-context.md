@@ -1,6 +1,6 @@
 # knightwatch-reviewer — Product Context
 
-**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). The review loop runs as a containerized multi-account deployment (docker-compose: per-account `reviewer`+`dind` units, a shared `claims` volume for PR-claim/`runs/` state, per-container `LOCAL_STATE_DIR` locks) — the **only** review path. The legacy single-account systemd-timer-on-one-host reviewer has been **retired** (units deleted). Auxiliary timers (learn, org-sync, approve, re-request, kid-refresh, bakeoff) still run on the host. Not a product, not a distribution target.
+**Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). The review loop runs as a containerized multi-account deployment (docker-compose: per-account `reviewer`+`dind` units, a shared `claims` volume for PR-claim/`runs/` state, per-container `LOCAL_STATE_DIR` locks) — the **only** review path. The legacy single-account systemd-timer-on-one-host reviewer has been **retired** (units deleted). Auxiliary timers (learn, org-sync, poll — merged /srosro-approve + re-request — kid-refresh, bakeoff) still run on the host. Not a product, not a distribution target.
 
 **Distribution model:** Personal / internal. No external users, no Marketplace ambitions.
 

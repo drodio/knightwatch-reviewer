@@ -254,8 +254,8 @@ refresh_queue() {
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
                     # Trust gate: the slash-command trigger itself is
-                    # honored regardless of who posted it (re-request-poller
-                    # and external requesters need to keep working), but the
+                    # honored regardless of who posted it (poll-pr-actions's
+                    # re-request trigger and external requesters need to keep working), but the
                     # comment's prose only gets staged as
                     # `.codex-scratch/trigger-comment.md` when the commenter
                     # has push access. Otherwise drive-by commenters could

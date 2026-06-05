@@ -1,8 +1,8 @@
 # Shared loader for the tracked-repos manifest.
 #
 # Single seam between the manifest file (repos.conf) and every consumer
-# (review.sh, re-request-poller.sh, learn-from-replies.sh,
-# approve-from-replies.sh, lib/review-one-pr.sh). Adding a new consumer
+# (review.sh, poll-pr-actions.sh, learn-from-replies.sh,
+# lib/review-one-pr.sh). Adding a new consumer
 # means sourcing this file — not duplicating the source-twice-then-assert
 # bootstrap that lived inline in each script before.
 #
@@ -78,7 +78,7 @@ if [ "${#REPOS[@]}" -gt 0 ]; then
 fi
 
 # Startup guard for the PR-enumeration entry scripts (review.sh,
-# approve-from-replies.sh, re-request-poller.sh): they enumerate via
+# poll-pr-actions.sh): they enumerate via
 # enumerate_open_prs, which covers whole ORGS plus per-repo REPOS, so a
 # non-empty REPOS OR a non-empty ORGS is a satisfiable config. Emits a FATAL
 # line and exits when neither is set — one copy of the message, called by all

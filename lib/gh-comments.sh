@@ -16,7 +16,7 @@
 # Why this exists: `gh api repos/<repo>/issues/<pr>/comments` returns
 # only page 1 (default 30 items) without `--paginate`. Three orchestrator-
 # level scripts consume this endpoint to scan for /srosro-* slash-command
-# triggers (review.sh, approve-from-replies.sh, learn-from-replies.sh) —
+# triggers (review.sh, poll-pr-actions.sh, learn-from-replies.sh) —
 # any divergence between them silently drops triggers on long PR threads.
 # In the original PR that surfaced this (cncorp/plow-content#1, ~30+ top-
 # level comments), review.sh missed a /srosro-update-review trigger that

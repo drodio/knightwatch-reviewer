@@ -12,9 +12,9 @@
 #   3. daemon-reloads systemd if anything changed.
 #   4. Enables + starts every timer that isn't already enabled+active.
 #
-# Idempotent. Re-running after merging a new poller (e.g. the
-# pr-reviewer-approve work that motivated this script) installs only the
-# new bits; existing units are left alone unless their content drifted.
+# Idempotent. Re-running after merging a poller change (e.g. the
+# pr-reviewer-poll consolidation) installs only the new bits and disables any
+# retired units; existing units are left alone unless their content drifted.
 #
 # Host-specific by design: the systemd unit ExecStart= paths bake in
 # /home/odio/.pr-reviewer/ and the User= line bakes in `odio`. Running
@@ -93,7 +93,7 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
 #      clone, or a tool raw-cp'd the template). Reject the same way; the
 #      operator hitting "already configured" silently is the bug.
-info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, approve, re-request, kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, poll [merged /srosro-approve + re-request], kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
 
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"

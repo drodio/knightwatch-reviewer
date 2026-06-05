@@ -65,6 +65,27 @@ seen_set() {
     fi
 }
 
+# Like seen_set, but stores an arbitrary string value instead of a presence bool
+# — same lockfile + temp-write + atomic-rename path, so a kill mid-write can't
+# truncate the store. Used for timestamp watermarks (e.g. poll-pr-actions.sh's
+# re-request last-handled event time). seen_get returns the stored string.
+seen_set_value() {
+    local file="$1" key="$2" value="$3"
+    [ -f "$file" ] || echo '{}' > "$file"
+    local lockfile="${file}.lock"
+    if ! (
+        exec {fd}> "$lockfile"
+        flock "$fd"
+        local tmp
+        tmp=$(jq --arg k "$key" --arg v "$value" '.[$k] = $v' "$file") || exit 1
+        printf '%s' "$tmp" > "${file}.tmp" || exit 1
+        mv -f "${file}.tmp" "$file" || exit 1
+    ); then
+        log "seen_set_value FAILED for $file key=$key — next tick may reprocess this entry"
+        return 1
+    fi
+}
+
 # Codex quota-pause protocol. When an account hits its codex usage limit the
 # worker (review-one-pr.sh) writes the reset epoch to this per-container file;
 # the orchestrator (review.sh) and its loop (review-loop.sh) read it to stop

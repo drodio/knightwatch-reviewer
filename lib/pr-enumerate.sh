@@ -27,7 +27,7 @@
 # `|| { log; continue; }` short-circuit.
 #
 # Why this exists: each tick of the high-frequency pollers (review.sh,
-# re-request-poller.sh, approve-from-replies.sh) was doing 41× `gh pr
+# poll-pr-actions.sh) was doing 41× `gh pr
 # list --json` = 164 GraphQL points/tick — combined ~19,800 pts/hr
 # against GitHub's 5000/hr per-user GraphQL quota, causing recurring
 # exhaustion (cncorp/plow#642's "review aborted before completion" was

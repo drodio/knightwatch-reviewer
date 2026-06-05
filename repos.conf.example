@@ -7,8 +7,7 @@
 # unless you're updating the documented shape.
 #
 # Single source of truth at runtime — sourced by review.sh,
-# learn-from-replies.sh, approve-from-replies.sh, re-request-poller.sh,
-# and lib/review-one-pr.sh.
+# learn-from-replies.sh, poll-pr-actions.sh, and lib/review-one-pr.sh.
 #
 # Whole-org review coverage comes from ORGS (see below): list an org there
 # and every non-archived open PR in it is reviewed — new repos included, no

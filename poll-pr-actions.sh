@@ -35,20 +35,9 @@ BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 
-[ -f "$APPROVES_SEEN_FILE" ] || echo '{}' > "$APPROVES_SEEN_FILE"
-[ -f "$RR_SEEN_FILE" ] || echo '{}' > "$RR_SEEN_FILE"
-
-# re-request tracks a per-PR timestamp watermark (latest handled event), not a
-# presence marker, so it keeps its own value-storing seen helpers — state-io's
-# seen_set only records presence (true). Named rr_* to avoid shadowing those.
-rr_seen_get() { jq -r --arg k "$1" '.[$k] // empty' "$RR_SEEN_FILE"; }
-rr_seen_set() {
-    local tmp
-    tmp=$(jq --arg k "$1" --arg v "$2" '.[$k] = $v' "$RR_SEEN_FILE") || {
-        log "rr_seen_set FAILED for key=$1 — next tick may repost this trigger"; return 1
-    }
-    printf '%s' "$tmp" > "$RR_SEEN_FILE"
-}
+# Both seen stores are created on demand by state-io's seen_set/seen_set_value
+# (presence for approves, timestamp watermark for re-request), and seen_get
+# returns either shape — so no explicit init or per-store helper is needed.
 
 # Opt-in signal: comment body must START with /<prefix>-approve on a line
 # (optional leading whitespace, optional trailing args). A substring match would
@@ -112,7 +101,7 @@ rerequest_check() {
         | jq -r --arg u "$BOT_USER" \
             '[.[] | select(.event == "review_requested" and .requested_reviewer.login == $u)] | last | .created_at // empty')
     [ -z "$LATEST" ] && return 0
-    LAST_SEEN=$(rr_seen_get "$PR_KEY")
+    LAST_SEEN=$(seen_get "$RR_SEEN_FILE" "$PR_KEY")
     # ISO-8601 timestamps compare lexically.
     if [ -n "$LAST_SEEN" ] && [ ! "$LATEST" \> "$LAST_SEEN" ]; then
         return 0
@@ -121,7 +110,7 @@ rerequest_check() {
     # Bare command only — extra prose would be treated as requester framing by
     # the trigger-comment.md prompts.
     if gh pr comment "$PR_NUM" --repo "$REPO" --body "/${BOT_CMD_PREFIX}-review" >/dev/null 2>&1; then
-        rr_seen_set "$PR_KEY" "$LATEST"
+        seen_set_value "$RR_SEEN_FILE" "$PR_KEY" "$LATEST"
     else
         log "$PR_KEY: failed to post /${BOT_CMD_PREFIX}-review trigger comment"
     fi
