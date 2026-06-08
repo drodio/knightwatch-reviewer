@@ -168,6 +168,21 @@ REEVAL_EOF
 PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
     || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
+
+# SEED-convention detection + staging mirrors production (review-one-pr.sh) via
+# the SAME shared predicate (is_seed_repo, lib/knightwatch-config.sh) — no
+# open-coded copy, so replay can't drift from the live worker. Read from the
+# trusted base ref (origin/$BASE_REF), never the replayed PR-head SHA. When it's
+# a SEED repo, stage seed-convention.md so the specialists review by the SEED
+# grammar, and replace the generic test-results.md stub with the SEED-aware note
+# (the gate is `## Verification`/ref/verify.sh, not a justfile) so a SEED replay
+# reproduces what production shows the tests specialist.
+if is_seed_repo "$REPO" "$REPO_DIR" "origin/$BASE_REF"; then
+    SEED_CONVENTION_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/conventions/seed.md"
+    [ -f "$SEED_CONVENTION_SRC" ] || { echo "replay: seed-convention.md missing at $SEED_CONVENTION_SRC — incomplete checkout" >&2; exit 1; }
+    write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_SRC")"
+    write_scratch "$REPO_DIR" "test-results.md" "**Result:** not run — SEED repo: \`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`. The reviewer does NOT execute \`ref/verify.sh\` — evaluate prose↔ref correspondence by reading."
+fi
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke

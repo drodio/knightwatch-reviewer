@@ -94,3 +94,37 @@ resolve_product_context() {
     [ "$rc" = 2 ] && return 2
     [ -n "$content" ] && printf '%s' "$content" || default_product_context
 }
+
+# is_seed_repo <repo_slug> <repo_dir> <base_ref>
+#   exit 0 — this is a SEED-convention repo; review it by the SEED grammar
+#            (prose `SEED.md`/`README.md` authoritative, `## Verification` is the
+#            test gate, no root justfile/unit harness expected).
+#   exit 1 — not a SEED repo.
+#
+# Two detectors, OR'd:
+#   1. Slug fast-path: the repo slug (owner/repo) matches `seed-*` or `openseed`
+#      — the org naming convention for SEED repos.
+#   2. Authority: a root `SEED.md` exists at <base_ref>. Read from the TRUSTED
+#      base ref (a SHA snapshotted before any PR-controlled code), never PR head
+#      — a PR that *adds* SEED.md on its head must not flip detection and silence
+#      the reviewer's general-repo instincts mid-onboarding.
+# Shared by production staging (lib/review-one-pr.sh) and operator-bench replay
+# (lib/replay.sh) so the two paths can't drift — same predicate, same staging.
+is_seed_repo() {
+    local repo_slug="$1" repo_dir="$2" base_ref="$3"
+    # Slug fast-path: match the repo name component (or full slug) against the
+    # SEED naming convention. case-glob, no regex dependency.
+    case "${repo_slug##*/}" in
+        seed-*|openseed) return 0 ;;
+    esac
+    case "$repo_slug" in
+        seed-*|openseed) return 0 ;;
+    esac
+    # Authority: root SEED.md at the trusted base ref. ls-tree gives presence via
+    # non-empty stdout; a git error (bad ref) is treated as "not a SEED repo"
+    # here — detection is advisory staging, not a trust gate, so it fails soft.
+    local listing
+    listing=$(git -C "$repo_dir" ls-tree "$base_ref" -- SEED.md 2>/dev/null) || return 1
+    [ -n "$listing" ] && return 0
+    return 1
+}

@@ -267,4 +267,51 @@ out=$(resolve_product_context "$WORK" "origin/does-not-exist") && rc=0 || rc=$?
 [ "$rc" = 2 ] || { echo "FAIL: resolve bad-ref → expected rc 2, got rc=$rc"; exit 1; }
 [ -z "$out" ] || { echo "FAIL: resolve bad-ref → expected no output, got: $out"; exit 1; }
 
-echo "  PASS (8 read_knightwatch_file scenarios + 3 resolve_product_context: present, absent-default, bad-ref)"
+# --- is_seed_repo: slug fast-path / SEED.md authority / non-seed miss /
+#     head-only SEED.md must-NOT-trigger -------------------------------------
+# The predicate that flips a review into SEED-convention mode (prose authoritative,
+# `## Verification`/ref/verify.sh is the test gate, no root justfile expected).
+# It must (a) fast-path on the `seed-*` / `openseed` slug convention, (b) detect
+# a root SEED.md at the TRUSTED base ref, (c) miss a plain repo, and (d) NOT flip
+# when SEED.md exists only on the PR head — same base-branch trust the config
+# reads enforce (a PR adding SEED.md must not silence general-repo review).
+echo "  is_seed_repo: slug fast-path (seed-* / openseed)..."
+# Slug-only detectors: repo_dir/base_ref irrelevant when the slug matches.
+is_seed_repo "plow-pbc/seed-life-dashboard" "$WORK" "origin/main" \
+    || { echo "FAIL: seed-life-dashboard slug should be a SEED repo"; exit 1; }
+is_seed_repo "plow-pbc/openseed" "$WORK" "origin/main" \
+    || { echo "FAIL: openseed slug should be a SEED repo"; exit 1; }
+
+echo "  is_seed_repo: SEED.md at base ref → authority hit (non-seed slug)..."
+git -C "$SOURCE" checkout -q main
+printf '# Purpose\n\n[[README#Purpose]]\n' > "$SOURCE/SEED.md"
+git -C "$SOURCE" add SEED.md
+git -C "$SOURCE" commit -qm "main: add root SEED.md"
+git -C "$WORK" fetch -q origin main
+SEED_MAIN_SHA=$(git -C "$WORK" rev-parse origin/main)
+is_seed_repo "acme/some-app" "$WORK" "$SEED_MAIN_SHA" \
+    || { echo "FAIL: root SEED.md at base ref should mark a SEED repo even with a non-seed slug"; exit 1; }
+
+echo "  is_seed_repo: plain repo (non-seed slug, no SEED.md) → miss..."
+# Use the NOPC fixture (built above for resolve): non-seed slug, no SEED.md.
+if is_seed_repo "acme/some-app" "$NOPC" "main"; then
+    echo "FAIL: a repo with neither a seed slug nor a base-ref SEED.md must NOT be a SEED repo"
+    exit 1
+fi
+
+echo "  is_seed_repo: SEED.md on PR head only → must NOT trigger (base-ref trust)..."
+# Add SEED.md on the feature branch only; against an OLD base SHA (before main's
+# SEED.md was committed) the predicate must still miss — a PR that adds SEED.md
+# on its head cannot flip detection. BASE_SHA was captured in scenario 6 at the
+# pre-SEED.md main commit.
+git -C "$SOURCE" checkout -q feature
+printf '# Purpose\n\n[[README#Purpose]]\n' > "$SOURCE/SEED.md"
+git -C "$SOURCE" add SEED.md
+git -C "$SOURCE" commit -qm "feature: add SEED.md on PR head only"
+git -C "$WORK" fetch -q origin feature
+if is_seed_repo "acme/some-app" "$WORK" "$BASE_SHA"; then
+    echo "FAIL: SEED.md present only on PR head must NOT flip detection against the base SHA"
+    exit 1
+fi
+
+echo "  PASS (8 read_knightwatch_file scenarios + 3 resolve_product_context: present, absent-default, bad-ref + 5 is_seed_repo: 2 slug, SEED.md authority, non-seed miss, head-only-trust)"
