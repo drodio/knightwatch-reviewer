@@ -181,7 +181,7 @@ if is_seed_repo "$REPO" "$REPO_DIR" "origin/$BASE_REF"; then
     SEED_CONVENTION_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/conventions/seed.md"
     [ -f "$SEED_CONVENTION_SRC" ] || { echo "replay: seed-convention.md missing at $SEED_CONVENTION_SRC — incomplete checkout" >&2; exit 1; }
     write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_SRC")"
-    write_scratch "$REPO_DIR" "test-results.md" "**Result:** not run — SEED repo: \`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`. The reviewer does NOT execute \`ref/verify.sh\` — evaluate prose↔ref correspondence by reading."
+    write_scratch "$REPO_DIR" "test-results.md" "**Result:** $(seed_test_summary)"
 fi
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the

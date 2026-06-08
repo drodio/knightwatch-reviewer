@@ -448,6 +448,26 @@ assert_tests_note "true" "TIMED OUT (>30m)" "🧪 Tests timed out (>30m)" "timeo
 echo "  format_tests_note: not run (no justfile) → 🧪 Tests not run..."
 assert_tests_note "false" "not run (no justfile in repo root)" "🧪 Tests not run" "no justfile"
 
+# SEED repos have no root justfile by design — the SEED-aware summary
+# (seed_test_summary) carries a `not run — SEED repo:` prefix. The public
+# header must say the gate is `## Verification` / `ref/verify.sh`, NOT collapse
+# to the generic "Tests not run" (which reads as a coverage gap). Keyed on the
+# summary PREFIX so the long SEED literal can evolve without breaking this.
+echo "  format_tests_note: not run — SEED repo → SEED-specific gate fragment (not generic 'Tests not run')..."
+assert_tests_note "false" \
+    "not run — SEED repo: \`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`. The reviewer does NOT execute \`ref/verify.sh\` — evaluate prose↔ref correspondence by reading." \
+    "🧪 SEED repo: gate is \`## Verification\` / \`ref/verify.sh\` (no \`just test\`)" \
+    "SEED repo no-justfile gate"
+
+echo "  format_tests_note: SEED fragment must NOT collapse to generic 'Tests not run' wording..."
+result=$(format_tests_note "false" "not run — SEED repo: anything trailing here")
+if [ "$result" = "🧪 Tests not run" ]; then
+    echo "FAIL: SEED summary collapsed to generic 'Tests not run' — public header mis-frames the SEED gate"
+    echo "  got: $result"
+    exit 1
+fi
+assert_contains "$result" "ref/verify.sh" "SEED fragment names the real gate"
+
 echo "  format_tests_note: not run (pre-recipe failure) → 🧪 Tests not run..."
 assert_tests_note "false" "not run (just pre-recipe failure: see test-results below)" "🧪 Tests not run" "pre-recipe failure"
 

@@ -825,7 +825,7 @@ if [ -n "$JUST_TEST_SKIP_REASON" ]; then
     # doesn't read a missing justfile as a missing harness. (Only the no-justfile
     # skip; an untrusted-author skip still reports its security reason.)
     if [ "$IS_SEED_REPO" = true ] && [ -z "$JUST_FILE" ]; then
-        TEST_SUMMARY="not run — SEED repo: \`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`. The reviewer does NOT execute \`ref/verify.sh\` — evaluate prose↔ref correspondence by reading."
+        TEST_SUMMARY="$(seed_test_summary)"
     else
         TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
     fi

@@ -163,8 +163,12 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 # Stage installed prompts the worker fail-fast-checks for. probe-schema.md
 # is the only one currently required (lib/review-one-pr.sh:962); install.sh
 # would symlink the whole prompts/ dir on a real host.
-mkdir -p "$HOME/.pr-reviewer/prompts"
+mkdir -p "$HOME/.pr-reviewer/prompts/conventions"
 cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
+# seed.md is fail-fast-required by the worker's SEED-convention staging (review-
+# one-pr.sh: SEED_CONVENTION_PATH). Stage it so the base-SEED scenario below can
+# exercise the real staging path instead of hitting the incomplete-install abort.
+cp "$PROJECT_ROOT/prompts/conventions/seed.md" "$HOME/.pr-reviewer/prompts/conventions/seed.md"
 
 # ---- repos.conf with this repo declared (worker reads it) ----
 write_probe_repos_conf "$STATE_DIR/repos.conf"
@@ -1038,4 +1042,93 @@ if [ -f "$STATE8/quota-paused-until" ]; then
     exit 1
 fi
 
-echo "  PASS (9 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence)"
+# ===== Scenario 9: base-SEED repo (SEED.md at base, no justfile) — scratch staging =====
+# The is_seed_repo predicate has unit coverage, but nothing proved the WORKER
+# actually stages what Codex consumes for a SEED repo:
+#   - inputs/seed-convention.md (so specialists review by the SEED grammar)
+#   - inputs/test-results.md carrying the SEED-aware "not run" note (the gate is
+#     `## Verification` / ref/verify.sh, NOT a missing justfile)
+# Detection is via a root SEED.md at the TRUSTED base ref (slug stays
+# test-org/probe-repo — the SEED.md-authority path, not the slug fast-path), and
+# the fixture has no justfile so the no-justfile SEED test note fires.
+echo "  scenario: base-SEED repo (SEED.md@base, no justfile) — seed-convention.md + SEED-aware test-results.md staged into inputs/..."
+
+GITHUB_BARE9="$TMPDIR/github-side-9.git"
+git init -q --bare -b main "$GITHUB_BARE9"
+
+WORKING9="$TMPDIR/working-9"
+git clone -q "$GITHUB_BARE9" "$WORKING9"
+(
+    cd "$WORKING9"
+    git config user.email t@t
+    git config user.name t
+    git config commit.gpgsign false
+    # SEED.md at base → is_seed_repo authority detector trips (read from the
+    # trusted base ref). No justfile anywhere → the no-justfile SEED test note.
+    printf '# A SEED\n\n## Verification\n\nRun `ref/verify.sh`.\n' > SEED.md
+    echo "readme" > README.md
+    git add SEED.md README.md
+    git commit -qm "init: SEED repo"
+    git push -q origin main
+    git checkout -qb feat/test
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit -qm "PR feature on a SEED repo"
+)
+PR_SHA9=$(git -C "$WORKING9" rev-parse HEAD)
+git -C "$WORKING9" push -q origin feat/test:refs/pull/9/head
+
+STATE9="$TMPDIR/state-9"
+seed_state_dir "$STATE9"
+git clone -q "$GITHUB_BARE9" "$STATE9/repos/test-org_probe-repo"
+
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA9"
+
+(
+    export STATE_DIR="$STATE9"
+    export STATE_FILE="$STATE9/state.json"
+    export REPOS_DIR="$STATE9/repos"
+    export WORKDIRS_DIR="$STATE9/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE9/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE9/locks"
+    write_probe_repos_conf "$STATE9/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR9=$(find "$STATE9/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR9" ]; then
+    echo "FAIL: scenario 9 — worker produced no run dir under $STATE9/runs"
+    exit 1
+fi
+LOG9="$RUN_DIR9/run.log"
+
+# seed-convention.md must be staged so specialists review by the SEED grammar.
+if [ ! -s "$RUN_DIR9/inputs/seed-convention.md" ]; then
+    echo "FAIL: scenario 9 — $RUN_DIR9/inputs/seed-convention.md not staged (SEED repo detection or staging regressed)"
+    [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
+    exit 1
+fi
+
+# test-results.md must carry the SEED-aware note — the gate is `## Verification`
+# / ref/verify.sh, NOT the generic "no justfile" coverage-gap framing.
+TEST_RESULTS_MD9="$RUN_DIR9/inputs/test-results.md"
+if [ ! -f "$TEST_RESULTS_MD9" ]; then
+    echo "FAIL: scenario 9 — $TEST_RESULTS_MD9 not staged"
+    [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
+    exit 1
+fi
+if ! grep -q "SEED repo" "$TEST_RESULTS_MD9"; then
+    echo "FAIL: scenario 9 — test-results.md missing SEED-aware note (expected 'SEED repo' framing, not generic no-justfile)"
+    cat "$TEST_RESULTS_MD9"
+    exit 1
+fi
+if ! grep -q "ref/verify.sh" "$TEST_RESULTS_MD9"; then
+    echo "FAIL: scenario 9 — test-results.md does not name the real SEED gate (ref/verify.sh)"
+    cat "$TEST_RESULTS_MD9"
+    exit 1
+fi
+
+echo "  PASS (10 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + base-SEED scratch staging)"

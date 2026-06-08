@@ -113,11 +113,10 @@ resolve_product_context() {
 is_seed_repo() {
     local repo_slug="$1" repo_dir="$2" base_ref="$3"
     # Slug fast-path: match the repo name component (or full slug) against the
-    # SEED naming convention. case-glob, no regex dependency.
+    # SEED naming convention. `${repo_slug##*/}` strips any `owner/` prefix, so
+    # this one case covers `owner/seed-*`, `owner/openseed`, AND bare repo-name
+    # inputs (`seed-*`, `openseed`) — no separate full-slug case needed.
     case "${repo_slug##*/}" in
-        seed-*|openseed) return 0 ;;
-    esac
-    case "$repo_slug" in
         seed-*|openseed) return 0 ;;
     esac
     # Authority: root SEED.md at the trusted base ref. ls-tree gives presence via
@@ -127,4 +126,18 @@ is_seed_repo() {
     listing=$(git -C "$repo_dir" ls-tree "$base_ref" -- SEED.md 2>/dev/null) || return 1
     [ -n "$listing" ] && return 0
     return 1
+}
+
+# seed_test_summary
+#
+# The single source of truth for the TEST_SUMMARY a SEED repo (no root justfile)
+# carries: `just test` is N/A — the gate is the `## Verification` prompts /
+# `ref/verify.sh`, which the reviewer evaluates by reading prose↔ref
+# correspondence, never by executing. Consumed by BOTH the live worker
+# (lib/review-one-pr.sh) and operator-bench replay (lib/replay.sh) so the
+# production and replay strings can't drift. The prefix `not run — SEED repo:`
+# is also the discriminator format_tests_note (lib/run-dir.sh) keys on to emit
+# the SEED-specific public-header fragment.
+seed_test_summary() {
+    printf 'not run — SEED repo: `just test` is N/A; the gate is the `## Verification` prompts / `ref/verify.sh`. The reviewer does NOT execute `ref/verify.sh` — evaluate prose↔ref correspondence by reading.'
 }
