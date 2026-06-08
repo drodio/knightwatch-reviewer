@@ -95,49 +95,7 @@ resolve_product_context() {
     [ -n "$content" ] && printf '%s' "$content" || default_product_context
 }
 
-# is_seed_repo <repo_slug> <repo_dir> <base_ref>
-#   exit 0 — this is a SEED-convention repo; review it by the SEED grammar
-#            (prose `SEED.md`/`README.md` authoritative, `## Verification` is the
-#            test gate, no root justfile/unit harness expected).
-#   exit 1 — not a SEED repo.
-#
-# Two detectors, OR'd:
-#   1. Slug fast-path: the repo slug (owner/repo) matches `seed-*` or `openseed`
-#      — the org naming convention for SEED repos.
-#   2. Authority: a root `SEED.md` exists at <base_ref>. Read from the TRUSTED
-#      base ref (a SHA snapshotted before any PR-controlled code), never PR head
-#      — a PR that *adds* SEED.md on its head must not flip detection and silence
-#      the reviewer's general-repo instincts mid-onboarding.
-# Shared by production staging (lib/review-one-pr.sh) and operator-bench replay
-# (lib/replay.sh) so the two paths can't drift — same predicate, same staging.
-is_seed_repo() {
-    local repo_slug="$1" repo_dir="$2" base_ref="$3"
-    # Slug fast-path: match the repo name component (or full slug) against the
-    # SEED naming convention. `${repo_slug##*/}` strips any `owner/` prefix, so
-    # this one case covers `owner/seed-*`, `owner/openseed`, AND bare repo-name
-    # inputs (`seed-*`, `openseed`) — no separate full-slug case needed.
-    case "${repo_slug##*/}" in
-        seed-*|openseed) return 0 ;;
-    esac
-    # Authority: root SEED.md at the trusted base ref. ls-tree gives presence via
-    # non-empty stdout; a git error (bad ref) is treated as "not a SEED repo"
-    # here — detection is advisory staging, not a trust gate, so it fails soft.
-    local listing
-    listing=$(git -C "$repo_dir" ls-tree "$base_ref" -- SEED.md 2>/dev/null) || return 1
-    [ -n "$listing" ] && return 0
-    return 1
-}
-
-# seed_test_summary
-#
-# The single source of truth for the TEST_SUMMARY a SEED repo (no root justfile)
-# carries: `just test` is N/A — the gate is the `## Verification` prompts /
-# `ref/verify.sh`, which the reviewer evaluates by reading prose↔ref
-# correspondence, never by executing. Consumed by BOTH the live worker
-# (lib/review-one-pr.sh) and operator-bench replay (lib/replay.sh) so the
-# production and replay strings can't drift. The prefix `not run — SEED repo:`
-# is also the discriminator format_tests_note (lib/run-dir.sh) keys on to emit
-# the SEED-specific public-header fragment.
-seed_test_summary() {
-    printf 'not run — SEED repo: `just test` is N/A; the gate is the `## Verification` prompts / `ref/verify.sh`. The reviewer does NOT execute `ref/verify.sh` — evaluate prose↔ref correspondence by reading.'
-}
+# Convention detection/staging (formerly is_seed_repo/seed_test_summary, which
+# hardcoded SEED) now lives in lib/conventions.sh as a convention-agnostic
+# resolver driven by the operator's kwr-config repo. SEED is one operator-supplied
+# convention, not an engine literal.

@@ -34,6 +34,8 @@ mkdir -p "$STATE_DIR"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+# org-sync.sh sources conventions.sh (kwr-config pull helper) before tracked-repos.
+cp "$PROJECT_ROOT/lib/conventions.sh" "$REVIEWER_LIB_DIR/conventions.sh"
 
 # Provide a flock(1) stub on platforms where the binary is missing
 # (notably brew on macOS, which excludes flock from util-linux). The

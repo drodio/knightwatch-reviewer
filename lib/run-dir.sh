@@ -348,18 +348,18 @@ classify_just_test_outcome() {
 # Pure function. Returns 1 on unrecognized inputs (fail-fast — silent
 # fallback would publish a wrong outcome to the author).
 format_tests_note() {
-    local tests_ran="$1" summary="$2"
+    local tests_ran="$1" summary="$2" convention_header="${3:-}"
     if [ "$tests_ran" = "false" ]; then
-        # SEED repos have no root justfile by design — `just test` is N/A and the
-        # generic "Tests not run" reads as a coverage gap. The SEED-aware summary
-        # (seed_test_summary, lib/knightwatch-config.sh) carries the
-        # `not run — SEED repo:` prefix; surface a fragment that states the real
-        # gate so the public header doesn't mis-frame the expected shape.
-        case "$summary" in
-            "not run — SEED repo:"*)
-                printf '🧪 SEED repo: gate is `## Verification` / `ref/verify.sh` (no `just test`)'
-                return ;;
-        esac
+        # A convention repo (operator-defined via kwr-config) may declare its own
+        # test gate instead of a root justfile — e.g. a SEED's `## Verification`/
+        # `ref/verify.sh`. When the caller passes that convention's `test-header`
+        # (only when there's no justfile), surface it so the public header states
+        # the real gate instead of the generic "Tests not run", which would read
+        # as a coverage gap. Convention-agnostic: the text comes from kwr-config.
+        if [ -n "$convention_header" ]; then
+            printf '🧪 %s' "$convention_header"
+            return
+        fi
         printf '🧪 Tests not run'
         return
     fi

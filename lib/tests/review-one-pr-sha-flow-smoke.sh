@@ -163,12 +163,8 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 # Stage installed prompts the worker fail-fast-checks for. probe-schema.md
 # is the only one currently required (lib/review-one-pr.sh:962); install.sh
 # would symlink the whole prompts/ dir on a real host.
-mkdir -p "$HOME/.pr-reviewer/prompts/conventions"
+mkdir -p "$HOME/.pr-reviewer/prompts"
 cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
-# seed.md is fail-fast-required by the worker's SEED-convention staging (review-
-# one-pr.sh: SEED_CONVENTION_PATH). Stage it so the base-SEED scenario below can
-# exercise the real staging path instead of hitting the incomplete-install abort.
-cp "$PROJECT_ROOT/prompts/conventions/seed.md" "$HOME/.pr-reviewer/prompts/conventions/seed.md"
 
 # ---- repos.conf with this repo declared (worker reads it) ----
 write_probe_repos_conf "$STATE_DIR/repos.conf"
@@ -1042,16 +1038,34 @@ if [ -f "$STATE8/quota-paused-until" ]; then
     exit 1
 fi
 
-# ===== Scenario 9: base-SEED repo (SEED.md at base, no justfile) — scratch staging =====
-# The is_seed_repo predicate has unit coverage, but nothing proved the WORKER
-# actually stages what Codex consumes for a SEED repo:
-#   - inputs/seed-convention.md (so specialists review by the SEED grammar)
-#   - inputs/test-results.md carrying the SEED-aware "not run" note (the gate is
-#     `## Verification` / ref/verify.sh, NOT a missing justfile)
-# Detection is via a root SEED.md at the TRUSTED base ref (slug stays
-# test-org/probe-repo — the SEED.md-authority path, not the slug fast-path), and
-# the fixture has no justfile so the no-justfile SEED test note fires.
-echo "  scenario: base-SEED repo (SEED.md@base, no justfile) — seed-convention.md + SEED-aware test-results.md staged into inputs/..."
+# ===== Scenario 9: convention repo (kwr-config binding, no justfile) — staging =====
+# resolve_binding has unit coverage (conventions-smoke.sh), but nothing proved the
+# WORKER actually stages what Codex consumes for a convention repo:
+#   - inputs/convention.md (so specialists review by that convention's grammar)
+#   - inputs/test-results.md carrying the convention's test-note (the gate is the
+#     convention's own — here ref/verify.sh — NOT a missing justfile)
+# The operator's kwr-config (a local fixture here) binds org `test-org` + a root
+# `SEED.md` marker → conventions/seed.md. Detection reads the marker at the
+# TRUSTED base ref; the fixture has no justfile so the convention's test-note fires.
+echo "  scenario: convention repo (kwr-config binding, SEED.md@base, no justfile) — convention.md + test-note staged into inputs/..."
+
+# kwr-config fixture: a binding (marker SEED.md in org test-org) → a convention
+# doc whose frontmatter declares the test gate. The worker reads this cache; only
+# org-sync pulls it, so a fixture dir + KWR_CONFIG_REPO/_DIR env is enough.
+KWRCFG9="$TMPDIR/kwr-config-9"
+mkdir -p "$KWRCFG9/conventions"
+cat > "$KWRCFG9/config.json" <<'JSON'
+{ "bindings": [ { "match": {"org":"test-org","marker":"SEED.md"}, "doc":"conventions/seed.md" } ] }
+JSON
+cat > "$KWRCFG9/conventions/seed.md" <<'MD'
+---
+test-note: "`just test` is N/A; the gate is the `## Verification` prompts / `ref/verify.sh`. Evaluate prose↔ref correspondence by reading."
+test-header: "gate is `## Verification` / `ref/verify.sh` (no `just test`)"
+---
+# SEED-convention repo — how to review this PR
+
+Review by the SEED grammar: the prose spec is authoritative.
+MD
 
 GITHUB_BARE9="$TMPDIR/github-side-9.git"
 git init -q --bare -b main "$GITHUB_BARE9"
@@ -1063,8 +1077,8 @@ git clone -q "$GITHUB_BARE9" "$WORKING9"
     git config user.email t@t
     git config user.name t
     git config commit.gpgsign false
-    # SEED.md at base → is_seed_repo authority detector trips (read from the
-    # trusted base ref). No justfile anywhere → the no-justfile SEED test note.
+    # SEED.md at base → the binding's marker detector trips (read from the trusted
+    # base ref). No justfile anywhere → the convention's no-justfile test note.
     printf '# A SEED\n\n## Verification\n\nRun `ref/verify.sh`.\n' > SEED.md
     echo "readme" > README.md
     git add SEED.md README.md
@@ -1091,6 +1105,10 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA9"
     export WORKDIRS_DIR="$STATE9/workdirs"
     export CANONICAL_LOCKS_DIR="$STATE9/canonical-locks"
     export PR_REVIEW_LOCK_DIR="$STATE9/locks"
+    # Wire the operator kwr-config: non-empty REPO marks it active; DIR points at
+    # the local fixture cache (no pull — that's org-sync's job).
+    export KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git"
+    export KWR_CONFIG_DIR="$KWRCFG9"
     write_probe_repos_conf "$STATE9/repos.conf"
     TRIGGER_COMMENT_FILE="" \
         bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
@@ -1105,30 +1123,30 @@ if [ -z "$RUN_DIR9" ]; then
 fi
 LOG9="$RUN_DIR9/run.log"
 
-# seed-convention.md must be staged so specialists review by the SEED grammar.
-if [ ! -s "$RUN_DIR9/inputs/seed-convention.md" ]; then
-    echo "FAIL: scenario 9 — $RUN_DIR9/inputs/seed-convention.md not staged (SEED repo detection or staging regressed)"
+# convention.md must be staged so specialists review by the convention's grammar.
+if [ ! -s "$RUN_DIR9/inputs/convention.md" ]; then
+    echo "FAIL: scenario 9 — $RUN_DIR9/inputs/convention.md not staged (binding detection or staging regressed)"
     [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
     exit 1
 fi
+# Frontmatter must be stripped from the staged body (it's prose for the specialists).
+if grep -q '^test-note:' "$RUN_DIR9/inputs/convention.md"; then
+    echo "FAIL: scenario 9 — convention.md still carries frontmatter (convention_body did not strip it)"
+    exit 1
+fi
 
-# test-results.md must carry the SEED-aware note — the gate is `## Verification`
-# / ref/verify.sh, NOT the generic "no justfile" coverage-gap framing.
+# test-results.md must carry the convention's test-note — the gate is the
+# convention's own (ref/verify.sh), NOT the generic "no justfile" coverage gap.
 TEST_RESULTS_MD9="$RUN_DIR9/inputs/test-results.md"
 if [ ! -f "$TEST_RESULTS_MD9" ]; then
     echo "FAIL: scenario 9 — $TEST_RESULTS_MD9 not staged"
     [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
     exit 1
 fi
-if ! grep -q "SEED repo" "$TEST_RESULTS_MD9"; then
-    echo "FAIL: scenario 9 — test-results.md missing SEED-aware note (expected 'SEED repo' framing, not generic no-justfile)"
-    cat "$TEST_RESULTS_MD9"
-    exit 1
-fi
 if ! grep -q "ref/verify.sh" "$TEST_RESULTS_MD9"; then
-    echo "FAIL: scenario 9 — test-results.md does not name the real SEED gate (ref/verify.sh)"
+    echo "FAIL: scenario 9 — test-results.md does not name the convention's gate (ref/verify.sh)"
     cat "$TEST_RESULTS_MD9"
     exit 1
 fi
 
-echo "  PASS (10 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + base-SEED scratch staging)"
+echo "  PASS (10 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging)"

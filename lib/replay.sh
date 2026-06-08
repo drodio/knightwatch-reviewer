@@ -76,6 +76,7 @@ jq -n \
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
+. "$LIB_DIR/conventions.sh"
 # Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: the SPECIALISTS
 # ∥ momentum-on-re-review → aggregator) is implemented in lib/pipeline.py.
 # Replay invokes it as a subprocess below after staging scratch inputs.
@@ -169,20 +170,21 @@ PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
     || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
-# SEED-convention detection + staging mirrors production (review-one-pr.sh) via
-# the SAME shared predicate (is_seed_repo, lib/knightwatch-config.sh) — no
+# Convention detection + staging mirrors production (review-one-pr.sh) via the
+# SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
 # open-coded copy, so replay can't drift from the live worker. Read from the
-# trusted base ref (origin/$BASE_REF), never the replayed PR-head SHA. When it's
-# a SEED repo, stage seed-convention.md so the specialists review by the SEED
-# grammar, and replace the generic test-results.md stub with the SEED-aware note
-# (the gate is `## Verification`/ref/verify.sh, not a justfile) so a SEED replay
-# reproduces what production shows the tests specialist.
-if is_seed_repo "$REPO" "$REPO_DIR" "origin/$BASE_REF"; then
-    SEED_CONVENTION_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/conventions/seed.md"
-    [ -f "$SEED_CONVENTION_SRC" ] || { echo "replay: seed-convention.md missing at $SEED_CONVENTION_SRC — incomplete checkout" >&2; exit 1; }
-    write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_SRC")"
-    write_scratch "$REPO_DIR" "test-results.md" "**Result:** $(seed_test_summary)"
-fi
+# trusted base ref (origin/$BASE_REF), never the replayed PR-head SHA. On a match,
+# stage convention.md so the specialists review by that convention's grammar, and
+# (when the convention declares a test-note) replace the generic test-results.md
+# stub with it so the replay reproduces what production shows the tests specialist.
+_CONV_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "origin/$BASE_REF"); _conv_rc=$?
+case $_conv_rc in
+    0)  stage_convention "$REPO_DIR" "$_CONV_DOC"
+        _conv_note=$(convention_frontmatter "$_CONV_DOC" "test-note")
+        [ -n "$_conv_note" ] && write_scratch "$REPO_DIR" "test-results.md" "**Result:** not run — convention repo: $_conv_note" ;;
+    1)  : ;;
+    2)  echo "replay: kwr-config binding matched $REPO but its doc is missing — incomplete config — aborting" >&2; exit 1 ;;
+esac
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke

@@ -68,6 +68,21 @@ for _k in "${!KID_PATHS[@]}"; do
 done
 unset _MANUAL_KID_KEYS _k
 
+# kwr-config overlay: when the operator wired an external kwr-config repo
+# (KWR_CONFIG_REPO), its config.json orgs/repos are unioned into ORGS/REPOS
+# (deduped below). The local cache is kept fresh by org-sync.sh; every other
+# consumer here only READS the cached config.json. Unset → no-op (the built-in
+# repos.conf path, unchanged). Machine-local wiring (KID_PATHS/SOURCE_PATHS)
+# stays in repos.conf — it's filesystem paths, not portable config.
+if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+    _KWRCFG="${KWR_CONFIG_DIR:-$HOME/services/kwr-config}/config.json"
+    if [ -f "$_KWRCFG" ] && command -v jq >/dev/null 2>&1; then
+        while IFS= read -r _o; do [ -n "$_o" ] && ORGS+=("$_o"); done < <(jq -r '.orgs[]?'  "$_KWRCFG" 2>/dev/null)
+        while IFS= read -r _r; do [ -n "$_r" ] && REPOS+=("$_r"); done < <(jq -r '.repos[]?' "$_KWRCFG" 2>/dev/null)
+    fi
+    unset _KWRCFG _o _r
+fi
+
 # Dedup REPOS preserving order. Bash indexed arrays have no
 # "append-only-if-missing" primitive, so the auto file's REPOS+=("...")
 # is unconditional. During the operator-promotion window (manual entry
@@ -75,6 +90,11 @@ unset _MANUAL_KID_KEYS _k
 # the slug twice and consumers iterating it would double-process.
 if [ "${#REPOS[@]}" -gt 0 ]; then
     mapfile -t REPOS < <(printf '%s\n' "${REPOS[@]}" | awk '!seen[$0]++')
+fi
+# Same order-preserving dedup for ORGS — the kwr-config overlay can union a repo
+# org that repos.conf's ORGS already lists; a duplicate would double-enumerate.
+if [ "${#ORGS[@]}" -gt 0 ]; then
+    mapfile -t ORGS < <(printf '%s\n' "${ORGS[@]}" | awk '!seen[$0]++')
 fi
 
 # Startup guard for the PR-enumeration entry scripts (review.sh,

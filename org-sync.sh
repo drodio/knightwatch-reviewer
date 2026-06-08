@@ -32,13 +32,30 @@ LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
 CONF="${CONF:-$STATE_DIR/repos.conf}"
 AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
+CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
+
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+mkdir -p "$STATE_DIR"
+
+# Pull the operator's kwr-config repo FIRST (when wired) so tracked-repos.sh's
+# overlay below reads a fresh config.json. config.env carries KWR_CONFIG_REPO;
+# source it explicitly here (tracked-repos.sh sources it again, harmlessly).
+# Errexit-safe if/then/fi — a bare `[ -f X ] && . X` would exit under `set -e`
+# when X is absent. A transient pull failure is non-fatal: ff-only sync_kwr_config
+# (lib/conventions.sh) keeps the last-good cache rather than blanking config.
+if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
+. "$REVIEWER_LIB_DIR/conventions.sh"
+if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+    if sync_kwr_config >>"$LOG" 2>&1; then
+        log "synced kwr-config"
+    else
+        log "WARN: kwr-config sync failed — using last-good cache (if any)"
+    fi
+fi
 
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
-log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
-
 command -v flock >/dev/null 2>&1 || { log "FATAL: flock not on PATH (util-linux)"; exit 1; }
-mkdir -p "$STATE_DIR"
 exec 9>"$LOCK"
 if ! flock -n 9; then
     log "sync already running (lock $LOCK held) — skipping"

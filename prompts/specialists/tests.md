@@ -2,7 +2,7 @@
 
 FIRST, read `.codex-scratch/test-results.md` in full. It contains the outcome and tail of `just test` run against this PR branch.
 
-**SEED-convention carve-out:** if `.codex-scratch/seed-convention.md` is present, this is a SEED repo: the test gate is the `## Verification` section / `ref/verify.sh`, NOT a root `justfile`. A "not run (no justfile)" result is the EXPECTED shape, not a coverage gap — do NOT probe for a justfile / unit-test harness / CI fence. Flag tests/verification findings only when a `ref/` change breaks `ref/verify.sh` or makes a `## Verification` prose probe no longer pass (the reviewer does NOT execute `ref/verify.sh` — evaluate prose↔ref correspondence by reading).
+**Convention carve-out:** if `.codex-scratch/convention.md` is present, this repo follows an operator-defined convention — read it and apply its test-gate rules. The convention may define a test gate other than a root `justfile` (e.g. a SEED's `## Verification` section / `ref/verify.sh`); when it does, a "not run (no justfile)" result is the EXPECTED shape, not a coverage gap — do NOT probe for a justfile / unit-test harness / CI fence, and flag tests/verification findings only as the convention directs.
 
 Scope:
 - Test coverage of new behavior: is every new branch / error path / state transition exercised?

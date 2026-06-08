@@ -82,6 +82,10 @@ test:
     bash lib/tests/knightwatch-config-smoke.sh
 
     echo ""
+    echo "=== conventions smoke test ==="
+    bash lib/tests/conventions-smoke.sh
+
+    echo ""
     echo "=== sibling-symlinks smoke test ==="
     bash lib/tests/sibling-symlinks-smoke.sh
 
