@@ -350,6 +350,16 @@ classify_just_test_outcome() {
 format_tests_note() {
     local tests_ran="$1" summary="$2"
     if [ "$tests_ran" = "false" ]; then
+        # SEED repos have no root justfile by design — `just test` is N/A and the
+        # generic "Tests not run" reads as a coverage gap. The SEED-aware summary
+        # (seed_test_summary, lib/knightwatch-config.sh) carries the
+        # `not run — SEED repo:` prefix; surface a fragment that states the real
+        # gate so the public header doesn't mis-frame the expected shape.
+        case "$summary" in
+            "not run — SEED repo:"*)
+                printf '🧪 SEED repo: gate is `## Verification` / `ref/verify.sh` (no `just test`)'
+                return ;;
+        esac
         printf '🧪 Tests not run'
         return
     fi

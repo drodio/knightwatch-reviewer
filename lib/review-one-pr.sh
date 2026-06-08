@@ -802,6 +802,14 @@ for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
 done
 
+# SEED-convention detection (shared predicate, lib/knightwatch-config.sh) — read
+# from the trusted BASE_REF_SHA, never PR head. A SEED's test gate is its
+# `## Verification` section / `ref/verify.sh`, NOT a root justfile, so the
+# "no justfile" test note below and the seed-convention.md staging both branch
+# on this. Mirrored in lib/replay.sh.
+IS_SEED_REPO=false
+is_seed_repo "$REPO" "$REPO_DIR" "$BASE_REF_SHA" && IS_SEED_REPO=true
+
 # `just test` runs PR-controlled code. Skip it when there's no justfile, or when
 # the author is untrusted (no push access) — on EVERY path. Untrusted test code
 # would otherwise run with the reviewer's home-dir read access (~/.ssh, the gh
@@ -811,7 +819,16 @@ JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
 if [ -n "$JUST_TEST_SKIP_REASON" ]; then
     log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
     TESTS_RAN=false
-    TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
+    # For a SEED repo with no justfile, "not run (no justfile)" is the EXPECTED
+    # shape, not a coverage gap — the test gate is the `## Verification` section /
+    # ref/verify.sh. Make the note say so explicitly so the tests specialist
+    # doesn't read a missing justfile as a missing harness. (Only the no-justfile
+    # skip; an untrusted-author skip still reports its security reason.)
+    if [ "$IS_SEED_REPO" = true ] && [ -z "$JUST_FILE" ]; then
+        TEST_SUMMARY="$(seed_test_summary)"
+    else
+        TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
+    fi
     : > "$TEST_LOG"
 else
     # Global concurrency cap on `just test` (MAX_CONCURRENT_TESTS slots,
@@ -1281,6 +1298,24 @@ PRIORITY_EOF
     *) log "$PR_ID: knightwatch-config error reading review-priority.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
+
+# seed-convention.md — staged ONLY for SEED-convention repos (detected from the
+# trusted BASE_REF_SHA above). It tells every specialist to review by the SEED
+# grammar: prose SEED.md/README.md authoritative, `## Verification`/ref/verify.sh
+# is the test gate, and a missing root justfile / "just test not run" is the
+# EXPECTED shape — not a coverage gap to probe for a justfile / unit harness.
+# Sourced from prompts/conventions/seed.md (same PROMPTS_DIR loader the probe
+# schema uses); missing on disk is fail-fast — an incomplete deploy, not opt-out.
+if [ "$IS_SEED_REPO" = true ]; then
+    SEED_CONVENTION_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/conventions/seed.md"
+    if [ ! -f "$SEED_CONVENTION_PATH" ]; then
+        log "$PR_ID: seed-convention.md missing at $SEED_CONVENTION_PATH — incomplete install — aborting"
+        rm -rf "$REPO_DIR"
+        exit 1
+    fi
+    write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_PATH")"
+    log "$PR_ID: SEED-convention repo — staged seed-convention.md (review by SEED grammar; \`## Verification\`/ref/verify.sh is the test gate)"
+fi
 
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
