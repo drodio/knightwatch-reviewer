@@ -86,6 +86,15 @@ out=$(resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA") || fail "seed-f
 out=$(resolve_binding "plow-pbc/openseed" "$PLAIN" "$PLAIN_SHA") || fail "openseed slug should match"
 [ "$out" = "$CFG/conventions/seed.md" ] || fail "openseed → expected seed.md, got '$out'"
 
+echo "  resolve_binding: slug-glob is NOT pathname-expanded against the cwd..."
+# Regression: a bare `for g in $slug_glob` globs the patterns against the cwd, so
+# a repo dir containing a `seed-*` file would expand `seed-*` to that filename and
+# break detection. Run from a cwd polluted with a matching file; must still match.
+GLOBDIR="$T/globtrap"; mkdir -p "$GLOBDIR"; : > "$GLOBDIR/seed-decoy"
+out=$(cd "$GLOBDIR" && resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA") \
+    || fail "slug-glob match must survive a cwd containing a seed-* file (rc=$?)"
+[ "$out" = "$CFG/conventions/seed.md" ] || fail "cwd-glob regression → expected seed.md, got '$out'"
+
 echo "  resolve_binding: marker at base ref matches a non-glob slug..."
 out=$(resolve_binding "plow-pbc/myapp" "$REPO" "$BASE_SHA") || fail "myapp w/ SEED.md@base should match (rc=$?)"
 [ "$out" = "$CFG/conventions/seed.md" ] || fail "marker → expected seed.md, got '$out'"
@@ -143,4 +152,4 @@ echo "  resolve_standards: uses kwr-config standards/ when active..."
 std=$(resolve_standards)
 echo "$std" | grep -q 'Operator standards' || fail "resolve_standards did not include kwr-config standards/"
 
-echo "  PASS (conventions: 3 active-state + 11 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 3 active-state + 12 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"

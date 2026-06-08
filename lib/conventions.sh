@@ -104,7 +104,7 @@ resolve_binding() {
         return 1
     fi
 
-    local b match_org slug_glob marker doc g matched listing
+    local b match_org slug_glob marker doc g matched listing _globs
     while IFS= read -r b; do
         [ -n "$b" ] || continue
         match_org=$(jq -r '.match.org // ""' <<<"$b")
@@ -113,8 +113,12 @@ resolve_binding() {
         slug_glob=$(jq -r '.match["slug-glob"] // ""' <<<"$b")
         if [ -n "$slug_glob" ]; then
             matched=0
-            for g in $slug_glob; do
-                # shellcheck disable=SC2053  — glob match, not literal
+            # read -ra splits on whitespace WITHOUT pathname expansion — a bare
+            # `for g in $slug_glob` would glob the patterns (`seed-*`) against the
+            # cwd, so a repo containing a `seed-*` file would break detection.
+            read -ra _globs <<<"$slug_glob"
+            for g in "${_globs[@]}"; do
+                # shellcheck disable=SC2053  — $g is a glob pattern matched against $name
                 [[ "$name" == $g ]] && { matched=1; break; }
             done
             [ "$matched" = 1 ] || continue
