@@ -188,20 +188,24 @@ EXPECTED_KID_RW_PATHS=$(
 # lib/tracked-repos.sh. The sandboxed HOME is $TMPDIR/home; install.sh
 # substitutes the resolved literal path into the unit template.
 EXPECTED_KWR_CLONE_ROOT="$HOME/services/kwr-repos"
+# KWR_CONFIG_DIR is HOME-relative (sibling of kwr-repos), like KWR_CLONE_ROOT —
+# stable across overlays, so the org-sync unit renders identically each scenario.
+EXPECTED_KWR_CONFIG_DIR="$HOME/services/kwr-config"
 
 # Every unit file copied
 for unit in "${PROD_UNITS[@]}"; do
     name="$(basename "$unit")"
     [ -f "$SYSTEMD_DIR/$name" ] || { echo "FAIL scenario 1: $SYSTEMD_DIR/$name missing"; exit 1; }
-    if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+    if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$unit"; then
         # Templated unit — compare against rendered version.
         rendered_expected="$TMPDIR/${name}.expected"
         sed -e "s|@KID_RW_PATHS@|$EXPECTED_KID_RW_PATHS|g" \
             -e "s|@KWR_CLONE_ROOT@|$EXPECTED_KWR_CLONE_ROOT|g" \
+            -e "s|@KWR_CONFIG_DIR@|$EXPECTED_KWR_CONFIG_DIR|g" \
             "$unit" > "$rendered_expected"
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
-        grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
+        grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
@@ -217,6 +221,10 @@ done
 # actual directive ships broken — the exact gap knightwatch flagged on PR #41.
 declare -A REQUIRED_PLACEHOLDER=(
     [pr-reviewer-kid-refresh.service]='@KID_RW_PATHS@'
+    # org-sync writes the kwr-config cache under HOME (~/services/kwr-config),
+    # which ProtectHome=read-only would block without this RW grant; pin it so a
+    # future edit can't silently drop it and break the cache pull at activation.
+    [pr-reviewer-org-sync.service]='@KWR_CONFIG_DIR@'
 )
 for required in "${!REQUIRED_PLACEHOLDER[@]}"; do
     placeholder="${REQUIRED_PLACEHOLDER[$required]}"
@@ -380,4 +388,78 @@ done
 MOCK_TIMERS_ENABLED=1 run_install "$OVERLAY_LEGACY/install.sh" || { echo "FAIL scenario 4: install.sh exited non-zero on idempotent rerun"; cat "$STUB_LOG"; exit 1; }
 [ "$(count_stub 'SYSTEMCTL disable --now pr-reviewer')" = "0" ] || { echo "FAIL scenario 4: legacy disable fired again once units were gone (branch not guarded by -f)"; cat "$STUB_LOG"; exit 1; }
 
-echo "  PASS (4 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal)"
+# --- Scenario 5: cold-cache activation (KWR_CONFIG_REPO set, no cache yet) ------
+# Fences the producer/consumer ordering: install.sh must create+populate the
+# kwr-config cache BEFORE sourcing tracked-repos.sh, whose overlay fail-louds on a
+# cold cache when KWR_CONFIG_REPO is set. Pre-fix, install aborted before the
+# initial clone could run, so first-time activation could never bootstrap.
+echo "  scenario 5: cold-cache activation — install clones the kwr-config cache before tracked-repos consumes it..."
+COLD_OVERLAY="$TMPDIR/repo-overlay-cold"
+make_install_overlay "$COLD_OVERLAY"
+KCFG_SRC5="$TMPDIR/kwrcfg5-src"; git init -q -b main "$KCFG_SRC5"
+git -C "$KCFG_SRC5" config user.email t@t; git -C "$KCFG_SRC5" config user.name t; git -C "$KCFG_SRC5" config commit.gpgsign false
+printf '{"orgs":["coldorg"],"bindings":[]}\n' > "$KCFG_SRC5/config.json"
+git -C "$KCFG_SRC5" add config.json; git -C "$KCFG_SRC5" commit -qm init
+KCFG_BARE5="$TMPDIR/kwrcfg5.git"; git clone -q --bare "$KCFG_SRC5" "$KCFG_BARE5"
+mkdir -p "$INSTALL_DIR"
+printf 'export KWR_CONFIG_REPO="%s"\n' "$KCFG_BARE5" > "$INSTALL_DIR/config.env"   # install.sh sources this first
+rm -rf "$HOME/services/kwr-config"                                                 # cold: no pre-existing cache
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 5: cold-cache install aborted (producer/consumer ordering regressed?)"; cat "$STUB_LOG"; exit 1; }
+[ -f "$HOME/services/kwr-config/config.json" ] || { echo "FAIL scenario 5: install did not populate the kwr-config cache before tracked-repos consumed it"; exit 1; }
+grep -q 'coldorg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 5: cached config.json missing expected content"; exit 1; }
+rm -f "$INSTALL_DIR/config.env"   # don't perturb other scenarios' assertions
+
+# --- Scenario 6: deploy-time origin swap (warm cache, KWR_CONFIG_REPO repointed) -
+# install.sh OWNS origin swaps (the hourly org-sync path keeps last-good): a warm
+# cache from a DIFFERENT repo must be dropped + re-cloned to the new origin here.
+# Scenario 5 left $HOME/services/kwr-config cloned from KCFG_BARE5 (coldorg).
+echo "  scenario 6: deploy-time origin swap — install drops the stale-origin cache + clones the new repo..."
+[ -f "$HOME/services/kwr-config/config.json" ] || { echo "FAIL scenario 6: precondition — scenario 5's cache missing"; exit 1; }
+KCFG2_SRC="$TMPDIR/kwrcfg6-src"; git init -q -b main "$KCFG2_SRC"
+git -C "$KCFG2_SRC" config user.email t@t; git -C "$KCFG2_SRC" config user.name t; git -C "$KCFG2_SRC" config commit.gpgsign false
+printf '{"orgs":["neworg"],"bindings":[]}\n' > "$KCFG2_SRC/config.json"
+git -C "$KCFG2_SRC" add config.json; git -C "$KCFG2_SRC" commit -qm init
+KCFG2_BARE="$TMPDIR/kwrcfg6.git"; git clone -q --bare "$KCFG2_SRC" "$KCFG2_BARE"
+printf 'export KWR_CONFIG_REPO="%s"\n' "$KCFG2_BARE" > "$INSTALL_DIR/config.env"   # repoint to a new origin
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 6: install aborted on origin swap"; cat "$STUB_LOG"; exit 1; }
+grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 6: install did not adopt the new origin (still serving the old cache)"; cat "$HOME/services/kwr-config/config.json"; exit 1; }
+grep -q 'coldorg' "$HOME/services/kwr-config/config.json" && { echo "FAIL scenario 6: stale old-origin content survived the deploy-time swap"; exit 1; }
+
+# --- Scenario 7: ordinary redeploy, origin UNCHANGED (the common path) ---------
+# The most-common install path: warm cache, KWR_CONFIG_REPO still at the SAME repo.
+# install must NOT rm+reclone — it ff-syncs in place, preserving the cache dir
+# (a needless reclone swaps the bind-mount inode under running containers). An
+# untracked sentinel survives an in-place sync but dies in an rm -rf reclone, so
+# its survival proves the no-op path didn't drop the cache. (config.env from
+# scenario 6 still points at KCFG2_BARE — matching origin.)
+echo "  scenario 7: redeploy with unchanged origin — install preserves the warm cache (no needless reclone)..."
+touch "$HOME/services/kwr-config/.kwr-no-op-sentinel"
+run_install "$COLD_OVERLAY/install.sh" || { echo "FAIL scenario 7: install aborted on a matching-origin redeploy"; cat "$STUB_LOG"; exit 1; }
+[ -f "$HOME/services/kwr-config/.kwr-no-op-sentinel" ] || { echo "FAIL scenario 7: matching-origin redeploy dropped the cache (sentinel gone — needless rm -rf + reclone)"; exit 1; }
+grep -q 'neworg' "$HOME/services/kwr-config/config.json" || { echo "FAIL scenario 7: cache content lost across a no-op redeploy"; exit 1; }
+rm -f "$INSTALL_DIR/config.env"
+
+# --- Scenario 8: contended org-sync.lock → install fails fast (not a long block) -
+# The serialization guard's POINT is the contended path: if an org-sync run holds
+# the lock, install must fail loud quickly, not block forever. Pre-hold the lock on
+# a background fd, run install with ORG_SYNC_LOCK_WAIT=1, and assert it exits
+# non-zero with the timeout message. (run_install swallows output, so invoke
+# install directly here to capture stderr.)
+echo "  scenario 8: contended org-sync.lock — install fails fast with the timeout message..."
+( exec 8>"$INSTALL_DIR/org-sync.lock"; flock 8; touch "$TMPDIR/s8-lock-held"; sleep 10 ) &
+s8_holder=$!
+for _ in $(seq 1 100); do if [ -e "$TMPDIR/s8-lock-held" ]; then break; fi; sleep 0.05; done
+[ -e "$TMPDIR/s8-lock-held" ] || { echo "FAIL scenario 8: lock holder never signalled"; kill "$s8_holder" 2>/dev/null; exit 1; }
+# set +e to capture install's non-zero rc — under set -e the assignment from a
+# failing command substitution would abort the suite before $? is read.
+set +e
+s8_out=$(ORG_SYNC_LOCK_WAIT=1 PATH="$STUB_BIN:$PATH" bash "$COLD_OVERLAY/install.sh" 2>&1)
+s8_rc=$?
+set -e
+kill "$s8_holder" 2>/dev/null || true; wait "$s8_holder" 2>/dev/null || true
+rm -f "$TMPDIR/s8-lock-held"
+[ "$s8_rc" -ne 0 ] || { echo "FAIL scenario 8: install succeeded despite a held org-sync.lock — serialization is a no-op"; exit 1; }
+printf '%s\n' "$s8_out" | grep -q 'could not acquire' \
+  || { echo "FAIL scenario 8: install did not fail-loud with the lock-timeout message"; printf '%s\n' "$s8_out" | tail -5; exit 1; }
+
+echo "  PASS (8 scenarios: first-run, idempotent-rerun, new-unit-incremental-enables-new-timer, retired-legacy-unit-removal, cold-cache-activation, deploy-time-origin-swap, unchanged-origin-redeploy-noop, contended-lock-fail-fast)"

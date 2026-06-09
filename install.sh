@@ -173,8 +173,62 @@ shopt -u nullglob
 # ReadWritePaths to exist at namespace setup (before ExecStart runs),
 # so the mkdir below has to run at install time, not first-clone time.
 STATE_DIR="$INSTALL_DIR"
+CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$INSTALL_DIR/config.env}"
+
+# kwr-config cache — the PRODUCER, and it MUST run BEFORE tracked-repos.sh below:
+# that loader's overlay fail-louds on a cold cache when KWR_CONFIG_REPO is set, so
+# the cache has to exist first (the cold-cache first-activation ordering). Source
+# config.env (for KWR_CONFIG_REPO) + conventions.sh (for sync_kwr_config), create +
+# populate the cache, THEN source tracked-repos.sh — its overlay now sees a valid
+# config.json. HOME-relative (sibling of $KWR_CLONE_ROOT, NOT clone-path-relative)
+# so the rendered systemd ReadWritePaths is stable across prod-clone moves. Created
+# unconditionally so the org-sync unit's ReadWritePaths target exists at namespace
+# setup; populated now (before the containers come up) when KWR_CONFIG_REPO is set
+# — a missing cache would make the containers fail loud.
+if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
+# shellcheck disable=SC1091
+. "$REPO_DIR/lib/conventions.sh"
+KWR_CONFIG_DIR="$HOME/services/kwr-config"
+export KWR_CONFIG_DIR
+mkdir -p "$KWR_CONFIG_DIR"
+# Serialize cache mutation + the tracked-repos overlay read against the hourly
+# org-sync writer, which already guards the SAME kwr-config checkout + the
+# repos.conf.auto rewrite behind this exact lock (org-sync.sh:31). Without it an
+# org-sync tick firing mid-install would race install's clone/rm/pull and the
+# auto-file rewrite. Blocking with a bound (not org-sync's -n skip): a deploy
+# should wait a tick out, not skip the activation — but fail loud if it can't
+# acquire (a stuck org-sync run), rather than block forever. Released right after
+# the overlay source; the remaining systemd render is install-local.
+command -v flock >/dev/null 2>&1 || fail "flock not on PATH (util-linux) — needed to serialize kwr-config sync against org-sync"
+# Same var org-sync.sh derives its lock from (STATE_DIR, =INSTALL_DIR here) so the
+# two stay the SAME file by construction, not by coincident literals. Timeout is
+# overridable so the contended fail-loud path is testable (install-smoke pre-holds
+# the lock with ORG_SYNC_LOCK_WAIT=1).
+exec 9>"$STATE_DIR/org-sync.lock"
+flock -w "${ORG_SYNC_LOCK_WAIT:-120}" 9 || fail "could not acquire $STATE_DIR/org-sync.lock within ${ORG_SYNC_LOCK_WAIT:-120}s — an org-sync run may be stuck; investigate before re-running install"
+if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+  # Deploy-time origin swap (install.sh OWNS this; the hourly org-sync path keeps
+  # last-good on a mismatch). If the cache is from a DIFFERENT repo, drop it so
+  # sync_kwr_config's fresh-clone path adopts the new origin — safe here because the
+  # deploy restarts the reviewer fleet right after, so the cache dir inode swap
+  # doesn't strand running containers.
+  if [ -d "$KWR_CONFIG_DIR/.git" ]; then
+    cache_origin="$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
+    # if/then over `[ … ] && rm` — matches org-sync.sh's documented set -e idiom.
+    if [ "$cache_origin" != "$KWR_CONFIG_REPO" ]; then rm -rf "$KWR_CONFIG_DIR"; fi
+  fi
+  if sync_kwr_config; then
+    ok "kwr-config cache synced ($KWR_CONFIG_DIR)"
+  elif kwr_config_valid; then
+    info "kwr-config sync failed — proceeding on last-good cache"
+  else
+    fail "kwr-config sync failed and no cache present — the reviewer containers fail loud on a missing cache; fix KWR_CONFIG_REPO/creds and re-run"
+  fi
+fi
+
 # shellcheck disable=SC1091
 . "$REPO_DIR/lib/tracked-repos.sh"
+exec 9>&-   # release the org-sync lock — the remaining systemd render is install-local
 mkdir -p "$KWR_CLONE_ROOT"
 
 # Dedupe + sort for stable rendering across runs so cmp-based idempotency
@@ -188,10 +242,11 @@ for unit in "${units[@]}"; do
   name="$(basename "$unit")"
   dst="$SYSTEMD_DIR/$name"
   rendered="$unit"
-  if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT)@' "$unit"; then
+  if grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$unit"; then
     rendered="$(mktemp)"
     sed -e "s|@KID_RW_PATHS@|$KID_RW_PATHS|g" \
         -e "s|@KWR_CLONE_ROOT@|$KWR_CLONE_ROOT|g" \
+        -e "s|@KWR_CONFIG_DIR@|$KWR_CONFIG_DIR|g" \
         "$unit" > "$rendered"
   fi
   if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then

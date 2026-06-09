@@ -177,13 +177,15 @@ ln -s "$T/sym-target.txt" "$SYM/conventions/sneak.md" # VALID symlink INSIDE the
 printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"conventions/sneak.md" } ] }\n' > "$SYM/config.json"
 ( export KWR_CONFIG_DIR="$SYM"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "symlinked doc escaping the repo must be rejected with rc 2"
 
-echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token) / query / fragment URLs..."
-for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
+echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token + ssh) / query / fragment URLs..."
+for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" \
+              "ssh://user:tok@example.com/o/r.git" "ssh://ghp_xxx@example.com/o/r.git" \
+              "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
     err=$( ( export KWR_CONFIG_REPO="$badurl" KWR_CONFIG_DIR="$T/wont-clone"; sync_kwr_config ) 2>&1 )
-    echo "$err" | grep -qiE 'must not (contain|embed)' || fail "unsafe URL not rejected by hygiene guard: $badurl"
+    echo "$err" | grep -qiE 'must not (contain|embed)|looks like a token' || fail "unsafe URL not rejected by hygiene guard: $badurl"
     [ -d "$T/wont-clone" ] && fail "hygiene guard let a clone proceed for: $badurl"
 done
-echo "  sync_kwr_config: origin change → re-clone (not a stale ff-pull of the old repo)..."
+echo "  sync_kwr_config: origin change (hourly path) → keep last-good + non-zero (deploy adopts, not the tick)..."
 for r in A B; do
     s="$T/repo$r.src"; mkdir -p "$s"; git -C "$s" init -q -b main
     git -C "$s" config user.email t@t; git -C "$s" config user.name t; git -C "$s" config commit.gpgsign false
@@ -193,9 +195,13 @@ done
 OCACHE="$T/origin-cache"
 ( export KWR_CONFIG_REPO="$T/repoA.git" KWR_CONFIG_DIR="$OCACHE"; sync_kwr_config ) || fail "initial clone (repoA) failed"
 grep -q 'ORG_A' "$OCACHE/config.json" || fail "initial cache should carry repoA content"
-( export KWR_CONFIG_REPO="$T/repoB.git" KWR_CONFIG_DIR="$OCACHE"; sync_kwr_config ) || fail "re-clone on origin change failed"
-grep -q 'ORG_B' "$OCACHE/config.json" || fail "origin change must re-clone repoB content"
-grep -q 'ORG_A' "$OCACHE/config.json" && fail "stale repoA content survived an origin change (re-clone regressed to ff-pull)"
+# Point at a DIFFERENT repo: the hourly helper must NOT touch the bind-mounted cache
+# — keep last-good (repoA), return non-zero. (Adopting the new origin is install.sh's
+# deploy-time job; covered in install-smoke.)
+orc=0; ( export KWR_CONFIG_REPO="$T/repoB.git" KWR_CONFIG_DIR="$OCACHE"; sync_kwr_config ) >/dev/null 2>&1 || orc=$?
+[ "$orc" -ne 0 ] || fail "origin mismatch must return non-zero (keep last-good, defer swap to deploy)"
+grep -q 'ORG_A' "$OCACHE/config.json" || fail "origin mismatch must KEEP the last-good repoA cache"
+grep -q 'ORG_B' "$OCACHE/config.json" && fail "hourly sync must NOT adopt the new origin (that's install.sh's deploy-time job)"
 
 echo "  sync_kwr_config: plain https + scp-style ssh URLs are NOT rejected by the hygiene guard..."
 # Occupied dir → `git clone` fails on its dest check BEFORE any network/SSH, so we
@@ -203,7 +209,10 @@ echo "  sync_kwr_config: plain https + scp-style ssh URLs are NOT rejected by th
 OCC="$T/occupied"; mkdir -p "$OCC"; : > "$OCC/x"
 for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@example.com/o/r.git"; do
     err=$( ( export KWR_CONFIG_REPO="$okurl" KWR_CONFIG_DIR="$OCC"; sync_kwr_config ) 2>&1 )
-    echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
+    # Match the SAME rejection patterns as the negative rows (incl. the token path)
+    # so a future _ui/scp-pattern tweak that misclassifies bare key-auth as
+    # credential-bearing is caught — silently breaking private-repo clones otherwise.
+    echo "$err" | grep -qiE 'must not (contain|embed)|looks like a token' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
 echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + origin-change-reclone + 2 frontmatter + 2 body + 1 stage + 2 standards)"
