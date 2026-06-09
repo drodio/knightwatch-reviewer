@@ -217,6 +217,39 @@ expected="promoted=/var/operator/custom other=$HOME/services/kwr-repos/other"
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; n=0; for r in \"\${REPOS[@]}\"; do [ \"\$r\" = acme/promoted ] && n=\$((n+1)); done; echo \"count=\$n\"")
 [ "$out" = "count=1" ] || { echo "FAIL B5: REPOS contains acme/promoted $out times (expected exactly 1)"; exit 1; }
 
+# ----- Contract B6: kwr-config overlay (orgs/repos externalization) --------
+# When KWR_CONFIG_REPO is wired, the loader unions config.json orgs/repos onto
+# whatever repos.conf declares, deduped (an org/repo in both appears once). When
+# unset, config.json is ignored — the open-source / current-deploy default.
+echo "  B6: kwr-config overlay unions config.json orgs/repos into ORGS/REPOS, deduped..."
+rm -f "$SAND_STATE/repos.conf" "$SAND_STATE/repos.conf.auto" "$SAND_STATE/config.env"
+cat > "$SAND_STATE/repos.conf" <<'CONF'
+ORGS=("plow-pbc")
+REPOS=("cncorp/plow")
+CONF
+KWRCFG="$SAND_STATE/kwr-config"; mkdir -p "$KWRCFG"
+cat > "$KWRCFG/config.json" <<'JSON'
+{ "orgs": ["plow-pbc", "srosro"], "repos": ["cncorp/plow", "cncorp/plow-content"] }
+JSON
+out=$(STATE_DIR="$SAND_STATE" KWR_CONFIG_REPO="x" KWR_CONFIG_DIR="$KWRCFG" \
+    bash -c "set -euo pipefail; . '$LOADER'; printf 'ORGS=%s REPOS=%s\n' \"\${ORGS[*]}\" \"\${REPOS[*]}\"")
+[ "$out" = "ORGS=plow-pbc srosro REPOS=cncorp/plow cncorp/plow-content" ] \
+    || { echo "FAIL B6: kwr-config overlay/dedup wrong: $out"; exit 1; }
+
+echo "  B6b: KWR_CONFIG_REPO unset → no overlay (config.json ignored)..."
+out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; printf 'ORGS=%s REPOS=%s\n' \"\${ORGS[*]}\" \"\${REPOS[*]}\"")
+[ "$out" = "ORGS=plow-pbc REPOS=cncorp/plow" ] \
+    || { echo "FAIL B6b: overlay fired without KWR_CONFIG_REPO set: $out"; exit 1; }
+
+echo "  B6c: KWR_CONFIG_REPO set + missing config.json → loader fails loud (no silent skip)..."
+# Active-but-broken must fail loud in the loader too, matching org-sync + the
+# worker resolver — a silent skip would drop kwr-config-only orgs from enumeration.
+if STATE_DIR="$SAND_STATE" KWR_CONFIG_REPO="x" KWR_CONFIG_DIR="$SAND_STATE/nope-cfg" \
+    bash -c "set -euo pipefail; . '$LOADER'; echo REACHED" >/dev/null 2>&1; then
+    echo "FAIL B6c: loader should fail loud on active-but-broken kwr-config (REPO set, no config.json)"; exit 1
+fi
+rm -rf "$KWRCFG"; rm -f "$SAND_STATE/repos.conf"
+
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
 # The manifest loader can be reached directly OR transitively via

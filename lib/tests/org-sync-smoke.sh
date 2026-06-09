@@ -34,6 +34,8 @@ mkdir -p "$STATE_DIR"
 export REVIEWER_LIB_DIR="$TMPDIR/lib"
 mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
+# org-sync.sh sources conventions.sh (kwr-config pull helper) before tracked-repos.
+cp "$PROJECT_ROOT/lib/conventions.sh" "$REVIEWER_LIB_DIR/conventions.sh"
 
 # Provide a flock(1) stub on platforms where the binary is missing
 # (notably brew on macOS, which excludes flock from util-linux). The
@@ -342,4 +344,75 @@ assert_auto_unchanged "$SHA"
 grep -q 'sync already running' "$LOG" || { echo "FAIL scenario 11: expected 'sync already running' log line"; cat "$LOG"; exit 1; }
 exec 8>&-  # Release the background lock.
 
-echo "  PASS (11 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers)"
+# ---- scenario 12: kwr-config overlay — cache pulled + config.json org enumerated
+# Exercises the production KWR_CONFIG_REPO path end-to-end: org-sync clones the
+# operator's kwr-config (inside the sync lock), and tracked-repos.sh unions its
+# config.json orgs onto repos.conf's, so the overlay org is discovered.
+echo "  scenario 12: kwr-config overlay — cache cloned + config.json org enumerated..."
+KCFG_SRC="$TMPDIR/kwr-config-src"; git init -q -b main "$KCFG_SRC"
+(
+    cd "$KCFG_SRC"; git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    printf '{ "orgs": ["overlayorg"], "repos": [] }\n' > config.json
+    git add config.json; git commit -qm init
+)
+KCFG_BARE="$TMPDIR/kwr-config.git"; git clone -q --bare "$KCFG_SRC" "$KCFG_BARE"
+git -C "$KCFG_SRC" remote add origin "$KCFG_BARE"   # so a later commit can push an update
+KCFG_CACHE="$TMPDIR/kwr-config-cache"
+cat > "$STATE_DIR/config.env" <<ENV
+export KWR_CONFIG_REPO="$KCFG_BARE"
+export KWR_CONFIG_DIR="$KCFG_CACHE"
+ENV
+write_baseline_conf "baseorg"
+export MOCK_GH_LIST_baseorg="baseorg/a" MOCK_GH_LIST_overlayorg="overlayorg/b"
+run_sync || { echo "FAIL scenario 12: sync exited non-zero"; cat "$LOG"; exit 1; }
+[ -f "$KCFG_CACHE/config.json" ] || { echo "FAIL scenario 12: kwr-config cache not cloned"; cat "$LOG"; exit 1; }
+grep -q "^GH repo list overlayorg" "$STUB_GH_LOG" || { echo "FAIL scenario 12: config.json overlay org not enumerated"; cat "$STUB_GH_LOG"; exit 1; }
+grep -q "^GH repo list baseorg"   "$STUB_GH_LOG" || { echo "FAIL scenario 12: repos.conf base org not enumerated"; exit 1; }
+grep -q 'overlayorg/b' "$AUTO_CONF" || { echo "FAIL scenario 12: overlay repo not written to auto file"; cat "$AUTO_CONF"; exit 1; }
+
+# 12b: steady-state `git pull --ff-only` — operator edits to kwr-config (here a
+# new org) must reach the cache on the next tick, not just first-clone.
+(
+    cd "$KCFG_SRC"
+    printf '{ "orgs": ["overlayorg", "overlay2"], "repos": [] }\n' > config.json
+    git add config.json; git commit -qm "add overlay2"; git push -q origin main
+)
+export MOCK_GH_LIST_overlay2="overlay2/c"
+run_sync || { echo "FAIL scenario 12b: re-sync exited non-zero"; cat "$LOG"; exit 1; }
+grep -q '"overlay2"' "$KCFG_CACHE/config.json" || { echo "FAIL scenario 12b: cache not refreshed by ff-only pull"; cat "$KCFG_CACHE/config.json"; exit 1; }
+grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12b: steady-state pull did not enumerate the newly-added org"; cat "$STUB_GH_LOG"; exit 1; }
+
+# 12c: transient pull failure → WARN-and-continue on the last-good cache. Remove
+# the remote so the same-origin ff-pull fails; the cached config.json (last-good)
+# must still drive enumeration, and the tick must exit 0 (not fatal).
+echo "  scenario 12c: pull failure → WARN, last-good cache reused (zero exit, overlay still enumerated)..."
+rm -rf "$KCFG_BARE"
+export MOCK_GH_LIST_baseorg="baseorg/a" MOCK_GH_LIST_overlayorg="overlayorg/b" MOCK_GH_LIST_overlay2="overlay2/c"
+run_sync || { echo "FAIL scenario 12c: sync must exit 0 on transient pull failure (last-good cache)"; cat "$LOG"; exit 1; }
+grep -q 'kwr-config sync failed' "$LOG" || { echo "FAIL scenario 12c: expected WARN log on pull failure"; cat "$LOG"; exit 1; }
+grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12c: last-good cached overlay org not enumerated after pull failure"; cat "$STUB_GH_LOG"; exit 1; }
+unset MOCK_GH_LIST_overlayorg MOCK_GH_LIST_overlay2
+
+# ---- scenario 13: active-but-broken kwr-config → fail loud, no auto mutation
+# A set KWR_CONFIG_REPO whose config.json is malformed must abort BEFORE the
+# ORGS-empty prune can erase a valid repos.conf.auto (data-integrity probe).
+echo "  scenario 13: KWR_CONFIG_REPO set + malformed config.json → fail loud, auto file untouched..."
+KCFG_BAD_SRC="$TMPDIR/kwr-bad-src"; git init -q -b main "$KCFG_BAD_SRC"
+(
+    cd "$KCFG_BAD_SRC"; git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    printf '{ not json\n' > config.json; git add config.json; git commit -qm bad
+)
+KCFG_BAD_BARE="$TMPDIR/kwr-bad.git"; git clone -q --bare "$KCFG_BAD_SRC" "$KCFG_BAD_BARE"
+cat > "$STATE_DIR/config.env" <<ENV
+export KWR_CONFIG_REPO="$KCFG_BAD_BARE"
+export KWR_CONFIG_DIR="$TMPDIR/kwr-bad-cache"
+ENV
+SHA_BEFORE=$(auto_sha)
+if MOCK_GH_LIST_baseorg="baseorg/a" run_sync; then
+    echo "FAIL scenario 13: sync should have failed loud on malformed config.json"; cat "$LOG"; exit 1
+fi
+grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG" || { echo "FAIL scenario 13: expected FATAL log line"; cat "$LOG"; exit 1; }
+[ "$(auto_sha)" = "$SHA_BEFORE" ] || { echo "FAIL scenario 13: auto file mutated despite fail-loud abort"; exit 1; }
+rm -f "$STATE_DIR/config.env"
+
+echo "  PASS (13 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"

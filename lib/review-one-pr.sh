@@ -126,6 +126,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 
 # --- knightwatch-config helper (per-repo .knightwatch/ reads) ---
 . "$_LIB_DIR/knightwatch-config.sh"
+. "$_LIB_DIR/conventions.sh"
 
 # --- search-roots coverage-state helper ---
 . "$_LIB_DIR/search-roots.sh"
@@ -802,13 +803,33 @@ for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
 done
 
-# SEED-convention detection (shared predicate, lib/knightwatch-config.sh) — read
-# from the trusted BASE_REF_SHA, never PR head. A SEED's test gate is its
-# `## Verification` section / `ref/verify.sh`, NOT a root justfile, so the
-# "no justfile" test note below and the seed-convention.md staging both branch
-# on this. Mirrored in lib/replay.sh.
-IS_SEED_REPO=false
-is_seed_repo "$REPO" "$REPO_DIR" "$BASE_REF_SHA" && IS_SEED_REPO=true
+# Convention DETECTION (lib/conventions.sh) — operator-defined via the kwr-config
+# repo, read from the trusted BASE_REF_SHA, never PR head (a PR adding a marker on
+# its head must not flip detection). A convention repo may declare its own test
+# gate (e.g. a SEED's `## Verification`/`ref/verify.sh`) instead of a root justfile,
+# so the "no justfile" note below branches on a match. Same predicate in
+# lib/replay.sh. NOTE: detection here, but the convention.md WRITE is deferred to
+# the write_scratch block below — staging it now would be wiped by the redirect-safe
+# .codex-scratch reset that runs after PR-controlled code (so specialists, which
+# read the symlink, would never see it).
+CONVENTION_DOC=""
+CONVENTION_TEST_NOTE=""
+CONVENTION_TEST_HEADER=""
+CONVENTION_BODY=""
+CONVENTION_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "$BASE_REF_SHA"); _conv_rc=$?
+case $_conv_rc in
+    0)  # Read the body NOW, in the same moment as the frontmatter — the kwr-config
+        # cache is mutable (org-sync git-pulls it), so reading body + note/header
+        # together avoids staging a body from a different convention revision than
+        # the test note/header. The stored body is written after the scratch reset.
+        CONVENTION_TEST_NOTE=$(convention_frontmatter "$CONVENTION_DOC" "test-note")
+        CONVENTION_TEST_HEADER=$(convention_frontmatter "$CONVENTION_DOC" "test-header")
+        CONVENTION_BODY=$(convention_body "$CONVENTION_DOC")
+        log "$PR_ID: convention repo — will stage convention.md from $CONVENTION_DOC (review by its grammar)" ;;
+    1)  : ;;  # no convention applies — review as a general repo
+    2)  log "$PR_ID: kwr-config active but broken (or a matched binding's doc missing) — failing loud, aborting"
+        rm -rf "$REPO_DIR"; exit 1 ;;
+esac
 
 # `just test` runs PR-controlled code. Skip it when there's no justfile, or when
 # the author is untrusted (no push access) — on EVERY path. Untrusted test code
@@ -819,13 +840,14 @@ JUST_TEST_SKIP_REASON=$(just_test_skip_reason "$JUST_FILE" "$IS_TRUSTED_AUTHOR")
 if [ -n "$JUST_TEST_SKIP_REASON" ]; then
     log "$PR_ID: skipping \`just test\` — $JUST_TEST_SKIP_REASON (author $PR_AUTHOR)"
     TESTS_RAN=false
-    # For a SEED repo with no justfile, "not run (no justfile)" is the EXPECTED
-    # shape, not a coverage gap — the test gate is the `## Verification` section /
-    # ref/verify.sh. Make the note say so explicitly so the tests specialist
-    # doesn't read a missing justfile as a missing harness. (Only the no-justfile
-    # skip; an untrusted-author skip still reports its security reason.)
-    if [ "$IS_SEED_REPO" = true ] && [ -z "$JUST_FILE" ]; then
-        TEST_SUMMARY="$(seed_test_summary)"
+    # For a convention repo whose convention declares a test-gate (test-note) and
+    # that has no justfile, "not run (no justfile)" is the EXPECTED shape, not a
+    # coverage gap — the gate is the convention's own (e.g. a SEED's
+    # `## Verification`/ref/verify.sh). Surface the convention's note so the tests
+    # specialist doesn't read a missing justfile as a missing harness. (Only the
+    # no-justfile skip; an untrusted-author skip still reports its security reason.)
+    if [ -n "$CONVENTION_TEST_NOTE" ] && [ -z "$JUST_FILE" ]; then
+        TEST_SUMMARY="$CONVENTION_TEST_NOTE"
     else
         TEST_SUMMARY="not run ($JUST_TEST_SKIP_REASON)"
     fi
@@ -907,14 +929,10 @@ ${TEST_LOG_TAIL:-(no output captured)}
 \`\`\`"
 
 # ---- standards ----
-STANDARDS=""
-[ -f ~/.claude/CODING_STANDARDS.md ]     && STANDARDS+=$(cat ~/.claude/CODING_STANDARDS.md)
-STANDARDS+=$'\n\n'
-[ -f ~/.claude/REVIEW_PRACTICES.md ]     && STANDARDS+=$(cat ~/.claude/REVIEW_PRACTICES.md)
-STANDARDS+=$'\n\n'
-[ -f ~/.claude/TESTING.md ]              && STANDARDS+=$(cat ~/.claude/TESTING.md)
-STANDARDS+=$'\n\n'
-[ -f ~/.claude/COMMENT_REVIEW_MISTAKES.md ] && STANDARDS+="## Known Review Mistakes (avoid repeating these)\n"$(cat ~/.claude/COMMENT_REVIEW_MISTAKES.md)
+# resolve_standards (lib/conventions.sh): the operator's kwr-config standards/*.md
+# when an external kwr-config is active, else the ~/.claude bundle (back-compat
+# for the current deploy + the open-source no-config default).
+STANDARDS=$(resolve_standards)
 
 # ---- kid prior-art ----
 PRIOR_ART=""
@@ -1199,6 +1217,12 @@ write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
+# convention.md — staged HERE (after the redirect-safe reset above), not at
+# detection time, so the .codex-scratch symlink survives for the specialists.
+# Write the BODY READ AT DETECTION (CONVENTION_BODY), not a fresh read of the
+# mutable cache, so the staged body matches the test note/header read earlier
+# (org-sync may have git-pulled the cache to a new revision in between).
+[ -n "$CONVENTION_DOC" ] && write_scratch "$REPO_DIR" "convention.md" "$CONVENTION_BODY"
 
 # ---- probe schema ----
 # probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
@@ -1299,23 +1323,9 @@ PRIORITY_EOF
 esac
 write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
 
-# seed-convention.md — staged ONLY for SEED-convention repos (detected from the
-# trusted BASE_REF_SHA above). It tells every specialist to review by the SEED
-# grammar: prose SEED.md/README.md authoritative, `## Verification`/ref/verify.sh
-# is the test gate, and a missing root justfile / "just test not run" is the
-# EXPECTED shape — not a coverage gap to probe for a justfile / unit harness.
-# Sourced from prompts/conventions/seed.md (same PROMPTS_DIR loader the probe
-# schema uses); missing on disk is fail-fast — an incomplete deploy, not opt-out.
-if [ "$IS_SEED_REPO" = true ]; then
-    SEED_CONVENTION_PATH="${PROMPTS_DIR:-$HOME/.pr-reviewer/prompts}/conventions/seed.md"
-    if [ ! -f "$SEED_CONVENTION_PATH" ]; then
-        log "$PR_ID: seed-convention.md missing at $SEED_CONVENTION_PATH — incomplete install — aborting"
-        rm -rf "$REPO_DIR"
-        exit 1
-    fi
-    write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_PATH")"
-    log "$PR_ID: SEED-convention repo — staged seed-convention.md (review by SEED grammar; \`## Verification\`/ref/verify.sh is the test gate)"
-fi
+# convention.md (if any) was detected + staged earlier from the trusted
+# BASE_REF_SHA (see the convention-detection block above), alongside the
+# TEST_SUMMARY / test-header it drives.
 
 # loc-trend.md — per-round LOC trajectory for the momentum specialist
 # and aggregator's loop-breaker mode (see § Broken-Glass Test).
@@ -1640,7 +1650,12 @@ TIMEOUT_NOTE=$(timeout_note_for_run "$RUN_DIR")
 # bogus inputs runs through the explicit `if ! ...; then ... exit 1`
 # guards below (worker is `set -u` only, no `-e`) — silent header
 # omission is the BCR class these guards exist to fence.
-if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY"); then
+# A convention's test-header replaces the generic "Tests not run" fragment only
+# when there's no justfile (the convention gate stands in for the absent one); a
+# convention repo that DOES have a justfile gets normal test handling.
+_CONV_HEADER=""
+[ -z "$JUST_FILE" ] && _CONV_HEADER="$CONVENTION_TEST_HEADER"
+if ! TESTS_NOTE=$(format_tests_note "$TESTS_RAN" "$TEST_SUMMARY" "$_CONV_HEADER"); then
     log "$PR_ID: format_tests_note failed (ran='$TESTS_RAN', summary='$TEST_SUMMARY') — internal invariant violated, aborting"
     rm -rf "$REPO_DIR"
     exit 1

@@ -82,6 +82,10 @@ test:
     bash lib/tests/knightwatch-config-smoke.sh
 
     echo ""
+    echo "=== conventions smoke test ==="
+    bash lib/tests/conventions-smoke.sh
+
+    echo ""
     echo "=== sibling-symlinks smoke test ==="
     bash lib/tests/sibling-symlinks-smoke.sh
 
@@ -192,6 +196,10 @@ test:
     echo ""
     echo "=== replay smoke test ==="
     bash lib/tests/replay-smoke.sh
+
+    echo ""
+    echo "=== replay-staging smoke test ==="
+    bash lib/tests/replay-staging-smoke.sh
 
     echo ""
     echo "=== replay-verify smoke test ==="

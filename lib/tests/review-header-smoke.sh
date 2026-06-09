@@ -423,10 +423,10 @@ echo "  cap_test_timeout: budget below reserve → empty (caller skips the test)
 # classify_just_test_outcome emits is fenced here.
 
 assert_tests_note() {
-    local tests_ran="$1" summary="$2" want="$3" desc="$4" got
-    got=$(format_tests_note "$tests_ran" "$summary")
+    local tests_ran="$1" summary="$2" want="$3" desc="$4" convention_header="${5:-}" got
+    got=$(format_tests_note "$tests_ran" "$summary" "$convention_header")
     if [ "$got" != "$want" ]; then
-        echo "FAIL: format_tests_note($tests_ran, '$summary') — $desc"
+        echo "FAIL: format_tests_note($tests_ran, '$summary', '$convention_header') — $desc"
         echo "  expected: $want"
         echo "  got:      $got"
         exit 1
@@ -448,25 +448,29 @@ assert_tests_note "true" "TIMED OUT (>30m)" "🧪 Tests timed out (>30m)" "timeo
 echo "  format_tests_note: not run (no justfile) → 🧪 Tests not run..."
 assert_tests_note "false" "not run (no justfile in repo root)" "🧪 Tests not run" "no justfile"
 
-# SEED repos have no root justfile by design — the SEED-aware summary
-# (seed_test_summary) carries a `not run — SEED repo:` prefix. The public
-# header must say the gate is `## Verification` / `ref/verify.sh`, NOT collapse
-# to the generic "Tests not run" (which reads as a coverage gap). Keyed on the
-# summary PREFIX so the long SEED literal can evolve without breaking this.
-echo "  format_tests_note: not run — SEED repo → SEED-specific gate fragment (not generic 'Tests not run')..."
+# A convention repo (operator-defined via kwr-config) may have no root justfile
+# by design. When the worker passes the convention's `test-header` (3rd arg, only
+# when there's no justfile), the public header must state that real gate — NOT
+# collapse to the generic "Tests not run" (which reads as a coverage gap). The
+# header text is convention-supplied (here a SEED's), not an engine literal.
+echo "  format_tests_note: convention header (no justfile) → that gate fragment, not generic 'Tests not run'..."
 assert_tests_note "false" \
-    "not run — SEED repo: \`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`. The reviewer does NOT execute \`ref/verify.sh\` — evaluate prose↔ref correspondence by reading." \
-    "🧪 SEED repo: gate is \`## Verification\` / \`ref/verify.sh\` (no \`just test\`)" \
-    "SEED repo no-justfile gate"
+    "\`just test\` is N/A; the gate is the \`## Verification\` prompts / \`ref/verify.sh\`." \
+    "🧪 gate is \`## Verification\` / \`ref/verify.sh\` (no \`just test\`)" \
+    "convention no-justfile gate" \
+    "gate is \`## Verification\` / \`ref/verify.sh\` (no \`just test\`)"
 
-echo "  format_tests_note: SEED fragment must NOT collapse to generic 'Tests not run' wording..."
-result=$(format_tests_note "false" "not run — SEED repo: anything trailing here")
+echo "  format_tests_note: convention header must NOT collapse to generic 'Tests not run'..."
+result=$(format_tests_note "false" "any summary the convention set" "gate is \`ref/verify.sh\`")
 if [ "$result" = "🧪 Tests not run" ]; then
-    echo "FAIL: SEED summary collapsed to generic 'Tests not run' — public header mis-frames the SEED gate"
+    echo "FAIL: convention header collapsed to generic 'Tests not run' — public header mis-frames the gate"
     echo "  got: $result"
     exit 1
 fi
-assert_contains "$result" "ref/verify.sh" "SEED fragment names the real gate"
+assert_contains "$result" "ref/verify.sh" "convention fragment names the real gate"
+
+echo "  format_tests_note: empty convention header → generic 'Tests not run' (non-convention repo)..."
+assert_tests_note "false" "not run (no justfile in repo root)" "🧪 Tests not run" "empty header falls through" ""
 
 echo "  format_tests_note: not run (pre-recipe failure) → 🧪 Tests not run..."
 assert_tests_note "false" "not run (just pre-recipe failure: see test-results below)" "🧪 Tests not run" "pre-recipe failure"

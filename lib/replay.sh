@@ -76,6 +76,7 @@ jq -n \
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"
+. "$LIB_DIR/conventions.sh"
 # Pipeline shape (Wave A: intent ∥ dead-code-search → Wave B: the SPECIALISTS
 # ∥ momentum-on-re-review → aggregator) is implemented in lib/pipeline.py.
 # Replay invokes it as a subprocess below after staging scratch inputs.
@@ -169,33 +170,43 @@ PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
     || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 
-# SEED-convention detection + staging mirrors production (review-one-pr.sh) via
-# the SAME shared predicate (is_seed_repo, lib/knightwatch-config.sh) — no
+# Convention detection + staging mirrors production (review-one-pr.sh) via the
+# SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
 # open-coded copy, so replay can't drift from the live worker. Read from the
-# trusted base ref (origin/$BASE_REF), never the replayed PR-head SHA. When it's
-# a SEED repo, stage seed-convention.md so the specialists review by the SEED
-# grammar, and replace the generic test-results.md stub with the SEED-aware note
-# (the gate is `## Verification`/ref/verify.sh, not a justfile) so a SEED replay
-# reproduces what production shows the tests specialist.
-if is_seed_repo "$REPO" "$REPO_DIR" "origin/$BASE_REF"; then
-    SEED_CONVENTION_SRC="${PROMPTS_DIR:-$LIB_DIR/../prompts}/conventions/seed.md"
-    [ -f "$SEED_CONVENTION_SRC" ] || { echo "replay: seed-convention.md missing at $SEED_CONVENTION_SRC — incomplete checkout" >&2; exit 1; }
-    write_scratch "$REPO_DIR" "seed-convention.md" "$(cat "$SEED_CONVENTION_SRC")"
-    write_scratch "$REPO_DIR" "test-results.md" "**Result:** $(seed_test_summary)"
+# trusted base ref (origin/$BASE_REF), never the replayed PR-head SHA. On a match,
+# stage convention.md so the specialists review by that convention's grammar, and
+# (when the convention declares a test-note) replace the generic test-results.md
+# stub with it so the replay reproduces what production shows the tests specialist.
+# stage_convention_run (lib/conventions.sh) is errexit-safe: replay runs under
+# `set -euo pipefail`, where a bare `$(resolve_binding ...)` would abort on the
+# COMMON rc-1 (no-convention) path. The `if` suppresses errexit for the condition;
+# the inner test-note write is an explicit `if`, not `[ -n ] && cmd` (whose false
+# branch returns 1 and would trip errexit). Covered by replay-staging-smoke.
+if _conv_note=$(stage_convention_run "$REPO_DIR" "$REPO" "origin/$BASE_REF"); then
+    if [ -n "$_conv_note" ]; then
+        write_scratch "$REPO_DIR" "test-results.md" "**Result:** $_conv_note"
+    fi
+else
+    _conv_rc=$?
+    if [ "$_conv_rc" = 2 ]; then
+        echo "replay: kwr-config binding matched $REPO but its doc is missing/unsafe — incomplete config — aborting" >&2
+        exit 1
+    fi
+    # rc 1: no convention applies — review as a general repo
 fi
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke
 # (lib/tests/prompt-contracts-smoke.sh, Section 4) is the contract test for Path 2.
-# standards.md content lives in operator-private ~/.claude/CODING_STANDARDS.md
-# in production (review-one-pr.sh:677). Replay can't rely on that — try the
-# operator's home tree if available, otherwise mark as unstaged like the
-# other deferred inputs above. The PROBE-SCHEMA fallback was incorrect
-# (probe-schema is shape, not standards content).
-STANDARDS_CONTENT="(replay: not staged — set ~/.claude/CODING_STANDARDS.md to ground specialists)"
-if [ -f "$HOME/.claude/CODING_STANDARDS.md" ]; then
-    STANDARDS_CONTENT="$(cat "$HOME/.claude/CODING_STANDARDS.md")"
-fi
+# standards.md — use the SAME resolver production does (resolve_standards,
+# lib/conventions.sh): the operator's kwr-config standards/ when an external
+# config is active, else the full ~/.claude bundle. Sharing it keeps a replay's
+# specialists grounded by the same standards bytes production used (the prior
+# CODING_STANDARDS.md-only staging diverged from production's whole bundle).
+# Keep a replay sentinel only if the resolver emits nothing (e.g. a CI box with
+# neither source).
+STANDARDS_CONTENT="$(resolve_standards)"
+[ -n "$STANDARDS_CONTENT" ] || STANDARDS_CONTENT="(replay: not staged — set ~/.claude/*.md or wire kwr-config to ground specialists)"
 write_scratch "$REPO_DIR" "standards.md" "$STANDARDS_CONTENT"
 
 # probe-schema.md is the canonical Class-options + render contract; specialists
