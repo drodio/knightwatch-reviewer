@@ -181,7 +181,7 @@ _CONV_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "origin/$BASE_REF"); _conv_rc=$?
 case $_conv_rc in
     0)  stage_convention "$REPO_DIR" "$_CONV_DOC"
         _conv_note=$(convention_frontmatter "$_CONV_DOC" "test-note")
-        [ -n "$_conv_note" ] && write_scratch "$REPO_DIR" "test-results.md" "**Result:** not run — convention repo: $_conv_note" ;;
+        [ -n "$_conv_note" ] && write_scratch "$REPO_DIR" "test-results.md" "**Result:** $_conv_note" ;;
     1)  : ;;
     2)  echo "replay: kwr-config binding matched $REPO but its doc is missing — incomplete config — aborting" >&2; exit 1 ;;
 esac

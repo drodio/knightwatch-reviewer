@@ -116,24 +116,19 @@ resolve_binding() {
     local bindings
     bindings=$(jq -c '.bindings[]?' "$cfg")
 
-    local b match_org slug_glob marker doc g matched listing _globs
+    local b match_org slug_glob marker doc listing
     while IFS= read -r b; do
         [ -n "$b" ] || continue
         match_org=$(jq -r '.match.org // ""' <<<"$b")
         [ "$match_org" = "$owner" ] || continue
 
+        # One glob per binding (aliases are separate first-match-wins bindings).
+        # Matched in [[ ]] where the RHS pattern is NOT pathname-expanded — so no
+        # cwd-glob hazard, and no whitespace-split mini-language to carry.
         slug_glob=$(jq -r '.match["slug-glob"] // ""' <<<"$b")
         if [ -n "$slug_glob" ]; then
-            matched=0
-            # read -ra splits on whitespace WITHOUT pathname expansion — a bare
-            # `for g in $slug_glob` would glob the patterns (`seed-*`) against the
-            # cwd, so a repo containing a `seed-*` file would break detection.
-            read -ra _globs <<<"$slug_glob"
-            for g in "${_globs[@]}"; do
-                # shellcheck disable=SC2053  — $g is a glob pattern matched against $name
-                [[ "$name" == $g ]] && { matched=1; break; }
-            done
-            [ "$matched" = 1 ] || continue
+            # shellcheck disable=SC2053  — $slug_glob is a glob pattern vs $name
+            [[ "$name" == $slug_glob ]] || continue
         fi
 
         marker=$(jq -r '.match.marker // ""' <<<"$b")
@@ -143,7 +138,10 @@ resolve_binding() {
         fi
 
         doc=$(jq -r '.doc // ""' <<<"$b")
-        [ -n "$doc" ] || continue
+        if [ -z "$doc" ]; then
+            echo "conventions: binding matched $repo_slug but declares no doc — broken config, failing loud" >&2
+            return 2
+        fi
         if ! _config_path_safe "$KWR_CONFIG_DIR/$doc"; then
             echo "conventions: binding matched $repo_slug but doc is missing or escapes the config repo (must be a regular file under $KWR_CONFIG_DIR): $doc" >&2
             return 2

@@ -43,12 +43,14 @@ HEADONLY_HEAD=$(git -C "$HEADONLY" rev-parse HEAD)
 CFG="$T/kwr-config"; mkdir -p "$CFG/conventions" "$CFG/standards"
 cat > "$CFG/config.json" <<'JSON'
 { "bindings": [
-  { "match": {"org":"plow-pbc","slug-glob":"seed-* openseed"}, "doc":"conventions/seed.md" },
-  { "match": {"org":"plow-pbc","marker":"SEED.md"},            "doc":"conventions/seed.md" },
-  { "match": {"org":"acme"},                                   "doc":"conventions/house.md" },
-  { "match": {"org":"dup","slug-glob":"app-*"},               "doc":"conventions/first.md" },
-  { "match": {"org":"dup","marker":"SEED.md"},                "doc":"conventions/second.md" },
-  { "match": {"org":"brokenorg","marker":"SEED.md"},          "doc":"conventions/missing.md" }
+  { "match": {"org":"plow-pbc","slug-glob":"seed-*"},   "doc":"conventions/seed.md" },
+  { "match": {"org":"plow-pbc","slug-glob":"openseed"}, "doc":"conventions/seed.md" },
+  { "match": {"org":"plow-pbc","marker":"SEED.md"},     "doc":"conventions/seed.md" },
+  { "match": {"org":"acme"},                            "doc":"conventions/house.md" },
+  { "match": {"org":"dup","slug-glob":"app-*"},        "doc":"conventions/first.md" },
+  { "match": {"org":"dup","marker":"SEED.md"},         "doc":"conventions/second.md" },
+  { "match": {"org":"nodocorg","marker":"SEED.md"} },
+  { "match": {"org":"brokenorg","marker":"SEED.md"},   "doc":"conventions/missing.md" }
 ] }
 JSON
 cat > "$CFG/conventions/seed.md" <<'MD'
@@ -89,15 +91,6 @@ out=$(resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA") || fail "seed-f
 out=$(resolve_binding "plow-pbc/openseed" "$PLAIN" "$PLAIN_SHA") || fail "openseed slug should match"
 [ "$out" = "$CFG/conventions/seed.md" ] || fail "openseed → expected seed.md, got '$out'"
 
-echo "  resolve_binding: slug-glob is NOT pathname-expanded against the cwd..."
-# Regression: a bare `for g in $slug_glob` globs the patterns against the cwd, so
-# a repo dir containing a `seed-*` file would expand `seed-*` to that filename and
-# break detection. Run from a cwd polluted with a matching file; must still match.
-GLOBDIR="$T/globtrap"; mkdir -p "$GLOBDIR"; : > "$GLOBDIR/seed-decoy"
-out=$(cd "$GLOBDIR" && resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA") \
-    || fail "slug-glob match must survive a cwd containing a seed-* file (rc=$?)"
-[ "$out" = "$CFG/conventions/seed.md" ] || fail "cwd-glob regression → expected seed.md, got '$out'"
-
 echo "  resolve_binding: marker at base ref matches a non-glob slug..."
 out=$(resolve_binding "plow-pbc/myapp" "$REPO" "$BASE_SHA") || fail "myapp w/ SEED.md@base should match (rc=$?)"
 [ "$out" = "$CFG/conventions/seed.md" ] || fail "marker → expected seed.md, got '$out'"
@@ -123,6 +116,9 @@ out=$(resolve_binding "plow-pbc/myapp" "$HEADONLY" "$HEADONLY_HEAD") || fail "ma
 
 echo "  resolve_binding: matched binding but doc missing on disk → rc 2 (fail loud)..."
 resolve_binding "brokenorg/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1; [ "$?" -eq 2 ] || fail "missing doc expected rc 2"
+
+echo "  resolve_binding: matched binding declares NO doc → rc 2 (fail loud, not silent fallback)..."
+resolve_binding "nodocorg/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1; [ "$?" -eq 2 ] || fail "empty-doc binding expected rc 2"
 
 echo "  resolve_binding: inactive (KWR_CONFIG_REPO unset) → rc 1..."
 ( unset KWR_CONFIG_REPO; resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA" >/dev/null ); [ "$?" -eq 1 ] || fail "inactive expected rc 1"
@@ -164,6 +160,12 @@ ESC="$T/esc-config"; mkdir -p "$ESC/conventions"
 printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"../escape.txt" } ] }\n' > "$ESC/config.json"
 ( export KWR_CONFIG_DIR="$ESC"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "traversal doc (../escape.txt) must be rejected with rc 2"
 
+echo "  resolve_binding: a doc that is a SYMLINK escaping the config repo → rc 2 (path guard)..."
+SYM="$T/sym-config"; mkdir -p "$SYM/conventions"
+ln -s "$T/escape.txt" "$SYM/conventions/sneak.md"     # symlink INSIDE the repo → file OUTSIDE
+printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"conventions/sneak.md" } ] }\n' > "$SYM/config.json"
+( export KWR_CONFIG_DIR="$SYM"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "symlinked doc escaping the repo must be rejected with rc 2"
+
 echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token) / query / fragment URLs..."
 for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
     err=$( ( export KWR_CONFIG_REPO="$badurl" KWR_CONFIG_DIR="$T/wont-clone"; sync_kwr_config ) 2>&1 )
@@ -179,4 +181,4 @@ for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@
     echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
-echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"
