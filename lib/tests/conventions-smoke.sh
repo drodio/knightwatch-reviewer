@@ -183,6 +183,20 @@ for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.co
     echo "$err" | grep -qiE 'must not (contain|embed)' || fail "unsafe URL not rejected by hygiene guard: $badurl"
     [ -d "$T/wont-clone" ] && fail "hygiene guard let a clone proceed for: $badurl"
 done
+echo "  sync_kwr_config: origin change → re-clone (not a stale ff-pull of the old repo)..."
+for r in A B; do
+    s="$T/repo$r.src"; mkdir -p "$s"; git -C "$s" init -q -b main
+    git -C "$s" config user.email t@t; git -C "$s" config user.name t; git -C "$s" config commit.gpgsign false
+    printf '{"orgs":["ORG_%s"]}\n' "$r" > "$s/config.json"; git -C "$s" add config.json; git -C "$s" commit -qm "$r"
+    git clone -q --bare "$s" "$T/repo$r.git"
+done
+OCACHE="$T/origin-cache"
+( export KWR_CONFIG_REPO="$T/repoA.git" KWR_CONFIG_DIR="$OCACHE"; sync_kwr_config ) || fail "initial clone (repoA) failed"
+grep -q 'ORG_A' "$OCACHE/config.json" || fail "initial cache should carry repoA content"
+( export KWR_CONFIG_REPO="$T/repoB.git" KWR_CONFIG_DIR="$OCACHE"; sync_kwr_config ) || fail "re-clone on origin change failed"
+grep -q 'ORG_B' "$OCACHE/config.json" || fail "origin change must re-clone repoB content"
+grep -q 'ORG_A' "$OCACHE/config.json" && fail "stale repoA content survived an origin change (re-clone regressed to ff-pull)"
+
 echo "  sync_kwr_config: plain https + scp-style ssh URLs are NOT rejected by the hygiene guard..."
 # Occupied dir → `git clone` fails on its dest check BEFORE any network/SSH, so we
 # isolate the (pre-clone) hygiene guard without a real clone attempt.
@@ -192,4 +206,4 @@ for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@
     echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
-echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 2 standards)"
+echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + origin-change-reclone + 2 frontmatter + 2 body + 1 stage + 2 standards)"

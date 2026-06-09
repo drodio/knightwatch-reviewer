@@ -246,23 +246,21 @@ sync_kwr_config() {
     esac
     if [ -d "$KWR_CONFIG_DIR/.git" ]; then
         _cur=$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")
-        if [ "$_cur" != "$KWR_CONFIG_REPO" ]; then
-            # The cache is from a DIFFERENT repo than the configured one (operator
-            # changed KWR_CONFIG_REPO, or the cache carries a stale/credential
-            # origin). Re-clone rather than ff-pull — a pull would fail on unrelated
-            # histories and silently keep serving the OLD repo's conventions/orgs,
-            # and re-cloning from the hygiene-checked URL also drops any credential
-            # origin so it can't leak into the org-sync log.
-            rm -rf "$KWR_CONFIG_DIR"
-            mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
-            git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
-        else
+        if [ "$_cur" = "$KWR_CONFIG_REPO" ]; then
             # Same origin → ordinary ff-pull (keeps the last-good cache on a
-            # transient failure rather than blanking it).
+            # transient failure rather than blanking it). `return` propagates the
+            # pull's exit so the caller can WARN-and-continue.
             git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
+            return
         fi
-    else
-        mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
-        git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
+        # Different origin (operator changed KWR_CONFIG_REPO, or a stale/credential
+        # origin): drop the wrong-repo cache and fall through to a fresh clone — a
+        # pull would fail on unrelated histories and silently keep serving the OLD
+        # repo's conventions/orgs; re-cloning from the hygiene-checked URL also
+        # drops any credential origin so it can't leak into the org-sync log.
+        rm -rf "$KWR_CONFIG_DIR"
     fi
+    # Fresh clone: no cache, or the wrong-origin cache just dropped above.
+    mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
+    git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
 }
