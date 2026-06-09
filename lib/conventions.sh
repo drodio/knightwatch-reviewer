@@ -64,6 +64,19 @@ convention_frontmatter() {
     ' "$doc"
 }
 
+# _config_path_safe <path> — 0 iff <path> is a regular, non-symlink file whose
+# canonical path stays under $KWR_CONFIG_DIR. Guards a config.json `doc` (or a
+# planted symlink) from escaping the config repo via `..`/absolute paths to stage
+# root-only host files — e.g. the GH_TOKEN config.env mounted at /root/.kwr — into
+# the Codex-readable scratch. Used for both binding docs and standards reads.
+_config_path_safe() {
+    local p="$1" real base
+    [ -f "$p" ] && [ ! -L "$p" ] || return 1
+    real=$(realpath -- "$p" 2>/dev/null)               || return 1
+    base=$(realpath -- "$KWR_CONFIG_DIR" 2>/dev/null)  || return 1
+    case "$real/" in "$base/"*) return 0 ;; *) return 1 ;; esac
+}
+
 # convention_body <doc_path>
 #   Echo the doc with any leading `---` frontmatter fence stripped. A doc
 #   without frontmatter is echoed verbatim.
@@ -131,8 +144,8 @@ resolve_binding() {
 
         doc=$(jq -r '.doc // ""' <<<"$b")
         [ -n "$doc" ] || continue
-        if [ ! -f "$KWR_CONFIG_DIR/$doc" ]; then
-            echo "conventions: binding matched $repo_slug but doc missing: $KWR_CONFIG_DIR/$doc" >&2
+        if ! _config_path_safe "$KWR_CONFIG_DIR/$doc"; then
+            echo "conventions: binding matched $repo_slug but doc is missing or escapes the config repo (must be a regular file under $KWR_CONFIG_DIR): $doc" >&2
             return 2
         fi
         printf '%s\n' "$KWR_CONFIG_DIR/$doc"
@@ -165,7 +178,7 @@ resolve_standards() {
     if kwr_config_valid; then
         local f any=0
         for f in "$KWR_CONFIG_DIR"/standards/*.md; do
-            [ -f "$f" ] || continue
+            _config_path_safe "$f" || continue
             cat "$f"; printf '\n\n'; any=1
         done
         [ "$any" -eq 1 ] && return 0
@@ -185,6 +198,17 @@ resolve_standards() {
 #   clone/pull failure for the caller to log.
 sync_kwr_config() {
     [ -n "${KWR_CONFIG_REPO:-}" ] || return 0
+    # Clone-URL hygiene (same rule the SEED convention enforces): reject a URL
+    # carrying userinfo / query / fragment. `git clone <url>` puts the whole URL in
+    # process argv (visible via /proc and shell history) and sync_kwr_config's
+    # output is captured into the persistent org-sync log — so a `user:token@`
+    # config URL would leak the token. Auth private config repos via the git
+    # credential helper, not an inline-credential URL.
+    case "$KWR_CONFIG_REPO" in
+        *@*@*|*"?"*|*"#"*|*://*:*@*)
+            echo "conventions: KWR_CONFIG_REPO must not contain userinfo/query/fragment (argv+log leak) — use a plain https/ssh URL + credential helper" >&2
+            return 1 ;;
+    esac
     if [ -d "$KWR_CONFIG_DIR/.git" ]; then
         git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
     else

@@ -158,4 +158,17 @@ echo "  resolve_standards: uses kwr-config standards/ when active..."
 std=$(resolve_standards)
 echo "$std" | grep -q 'Operator standards' || fail "resolve_standards did not include kwr-config standards/"
 
-echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  resolve_binding: a doc path escaping the config repo (../) → rc 2 (path guard)..."
+printf 'root-only secret\n' > "$T/escape.txt"          # a real file OUTSIDE the config repo
+ESC="$T/esc-config"; mkdir -p "$ESC/conventions"
+printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"../escape.txt" } ] }\n' > "$ESC/config.json"
+( export KWR_CONFIG_DIR="$ESC"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "traversal doc (../escape.txt) must be rejected with rc 2"
+
+echo "  sync_kwr_config: rejects credential-bearing / query / fragment URLs (argv+log leak)..."
+for badurl in "https://user:tok@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
+    err=$( ( export KWR_CONFIG_REPO="$badurl" KWR_CONFIG_DIR="$T/wont-clone"; sync_kwr_config ) 2>&1 )
+    echo "$err" | grep -q 'must not contain userinfo/query/fragment' || fail "unsafe URL not rejected by hygiene guard: $badurl"
+    [ -d "$T/wont-clone" ] && fail "hygiene guard let a clone proceed for: $badurl"
+done
+
+echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"

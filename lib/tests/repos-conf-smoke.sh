@@ -240,6 +240,14 @@ echo "  B6b: KWR_CONFIG_REPO unset → no overlay (config.json ignored)..."
 out=$(STATE_DIR="$SAND_STATE" bash -c "set -euo pipefail; . '$LOADER'; printf 'ORGS=%s REPOS=%s\n' \"\${ORGS[*]}\" \"\${REPOS[*]}\"")
 [ "$out" = "ORGS=plow-pbc REPOS=cncorp/plow" ] \
     || { echo "FAIL B6b: overlay fired without KWR_CONFIG_REPO set: $out"; exit 1; }
+
+echo "  B6c: KWR_CONFIG_REPO set + missing config.json → loader fails loud (no silent skip)..."
+# Active-but-broken must fail loud in the loader too, matching org-sync + the
+# worker resolver — a silent skip would drop kwr-config-only orgs from enumeration.
+if STATE_DIR="$SAND_STATE" KWR_CONFIG_REPO="x" KWR_CONFIG_DIR="$SAND_STATE/nope-cfg" \
+    bash -c "set -euo pipefail; . '$LOADER'; echo REACHED" >/dev/null 2>&1; then
+    echo "FAIL B6c: loader should fail loud on active-but-broken kwr-config (REPO set, no config.json)"; exit 1
+fi
 rm -rf "$KWRCFG"; rm -f "$SAND_STATE/repos.conf"
 
 # ----- Contract C: every production consumer goes through the loader ------

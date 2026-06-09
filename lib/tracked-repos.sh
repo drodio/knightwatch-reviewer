@@ -75,11 +75,18 @@ unset _MANUAL_KID_KEYS _k
 # repos.conf path, unchanged). Machine-local wiring (KID_PATHS/SOURCE_PATHS)
 # stays in repos.conf — it's filesystem paths, not portable config.
 if [ -n "${KWR_CONFIG_REPO:-}" ]; then
-    _KWRCFG="${KWR_CONFIG_DIR:-$HOME/services/kwr-config}/config.json"
-    if [ -f "$_KWRCFG" ] && command -v jq >/dev/null 2>&1; then
-        while IFS= read -r _o; do [ -n "$_o" ] && ORGS+=("$_o"); done < <(jq -r '.orgs[]?'  "$_KWRCFG" 2>/dev/null)
-        while IFS= read -r _r; do [ -n "$_r" ] && REPOS+=("$_r"); done < <(jq -r '.repos[]?' "$_KWRCFG" 2>/dev/null)
+    # shellcheck disable=SC1090
+    . "$(dirname "${BASH_SOURCE[0]}")/conventions.sh"   # kwr_config_valid (shared predicate)
+    # Active-but-broken must FAIL LOUD here too, matching org-sync + the worker
+    # resolver. A silent skip would drop kwr-config-only orgs/repos behind whatever
+    # repos.conf happens to list — those PRs would vanish from enumeration unseen.
+    if ! kwr_config_valid; then
+        echo "FATAL: KWR_CONFIG_REPO set but config unusable (missing/malformed config.json or jq absent) — refusing to load tracked targets" >&2
+        exit 1
     fi
+    _KWRCFG="$KWR_CONFIG_DIR/config.json"
+    while IFS= read -r _o; do [ -n "$_o" ] && ORGS+=("$_o"); done < <(jq -r '.orgs[]?'  "$_KWRCFG")
+    while IFS= read -r _r; do [ -n "$_r" ] && REPOS+=("$_r"); done < <(jq -r '.repos[]?' "$_KWRCFG")
     unset _KWRCFG _o _r
 fi
 

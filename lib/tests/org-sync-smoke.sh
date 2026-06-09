@@ -356,6 +356,7 @@ KCFG_SRC="$TMPDIR/kwr-config-src"; git init -q -b main "$KCFG_SRC"
     git add config.json; git commit -qm init
 )
 KCFG_BARE="$TMPDIR/kwr-config.git"; git clone -q --bare "$KCFG_SRC" "$KCFG_BARE"
+git -C "$KCFG_SRC" remote add origin "$KCFG_BARE"   # so a later commit can push an update
 KCFG_CACHE="$TMPDIR/kwr-config-cache"
 cat > "$STATE_DIR/config.env" <<ENV
 export KWR_CONFIG_REPO="$KCFG_BARE"
@@ -368,7 +369,19 @@ run_sync || { echo "FAIL scenario 12: sync exited non-zero"; cat "$LOG"; exit 1;
 grep -q "^GH repo list overlayorg" "$STUB_GH_LOG" || { echo "FAIL scenario 12: config.json overlay org not enumerated"; cat "$STUB_GH_LOG"; exit 1; }
 grep -q "^GH repo list baseorg"   "$STUB_GH_LOG" || { echo "FAIL scenario 12: repos.conf base org not enumerated"; exit 1; }
 grep -q 'overlayorg/b' "$AUTO_CONF" || { echo "FAIL scenario 12: overlay repo not written to auto file"; cat "$AUTO_CONF"; exit 1; }
-unset MOCK_GH_LIST_overlayorg
+
+# 12b: steady-state `git pull --ff-only` — operator edits to kwr-config (here a
+# new org) must reach the cache on the next tick, not just first-clone.
+(
+    cd "$KCFG_SRC"
+    printf '{ "orgs": ["overlayorg", "overlay2"], "repos": [] }\n' > config.json
+    git add config.json; git commit -qm "add overlay2"; git push -q origin main
+)
+export MOCK_GH_LIST_overlay2="overlay2/c"
+run_sync || { echo "FAIL scenario 12b: re-sync exited non-zero"; cat "$LOG"; exit 1; }
+grep -q '"overlay2"' "$KCFG_CACHE/config.json" || { echo "FAIL scenario 12b: cache not refreshed by ff-only pull"; cat "$KCFG_CACHE/config.json"; exit 1; }
+grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12b: steady-state pull did not enumerate the newly-added org"; cat "$STUB_GH_LOG"; exit 1; }
+unset MOCK_GH_LIST_overlayorg MOCK_GH_LIST_overlay2
 
 # ---- scenario 13: active-but-broken kwr-config → fail loud, no auto mutation
 # A set KWR_CONFIG_REPO whose config.json is malformed must abort BEFORE the

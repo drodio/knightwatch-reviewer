@@ -1098,7 +1098,25 @@ git clone -q "$GITHUB_BARE9" "$STATE9/repos/test-org_probe-repo"
 
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA9"
 
+# codex stub: observe .codex-scratch at the EXACT moment specialists read it
+# (codex runs `codex exec -C <workdir>`), record the dir listing, then exit
+# non-zero so the worker aborts like an absent LLM (as the other scenarios rely
+# on). This is the only honest observation point for the staging-order bug — the
+# worker tears down the workdir on abort, so inspecting it afterwards can't tell a
+# staged-then-wiped convention.md (bug) from a correctly-staged one.
+CODEX_STUB_DIR="$TMPDIR/codex-stub-9"; mkdir -p "$CODEX_STUB_DIR"
+SCRATCH_SNAPSHOT9="$STATE9/scratch-at-codex.txt"
+cat > "$CODEX_STUB_DIR/codex" <<STUB
+#!/bin/bash
+d=""; prev=""
+for a in "\$@"; do [ "\$prev" = "-C" ] && d="\$a"; prev="\$a"; done
+[ -n "\$d" ] && ls "\$d/.codex-scratch" > "$SCRATCH_SNAPSHOT9" 2>/dev/null || true
+exit 1
+STUB
+chmod +x "$CODEX_STUB_DIR/codex"
+
 (
+    export PATH="$CODEX_STUB_DIR:$PATH"
     export STATE_DIR="$STATE9"
     export STATE_FILE="$STATE9/state.json"
     export REPOS_DIR="$STATE9/repos"
@@ -1146,6 +1164,24 @@ fi
 if ! grep -q "ref/verify.sh" "$TEST_RESULTS_MD9"; then
     echo "FAIL: scenario 9 — test-results.md does not name the convention's gate (ref/verify.sh)"
     cat "$TEST_RESULTS_MD9"
+    exit 1
+fi
+
+# The .codex-scratch SYMLINK (what specialists actually read) must be present when
+# codex runs. Regression fence for the staging-order bug: staging convention.md at
+# detection time (before the redirect-safe `.codex-scratch` reset) leaves
+# inputs/convention.md intact — so the inputs/ checks above still pass — but wipes
+# the symlink, so specialists never see it. The codex stub captured the dir listing
+# at specialist-run time; standards.md is the control (always staged post-reset).
+if [ ! -f "$SCRATCH_SNAPSHOT9" ]; then
+    echo "FAIL: scenario 9 — codex stub never ran (worker aborted before specialists) — can't verify convention.md visibility"
+    [ -f "$LOG9" ] && { echo "--- run.log ---"; tail -n 30 "$LOG9"; }
+    exit 1
+fi
+grep -qx "standards.md" "$SCRATCH_SNAPSHOT9" || { echo "FAIL: scenario 9 — control standards.md not in .codex-scratch at codex-time (snapshot invalid)"; cat "$SCRATCH_SNAPSHOT9"; exit 1; }
+if ! grep -qx "convention.md" "$SCRATCH_SNAPSHOT9"; then
+    echo "FAIL: scenario 9 — convention.md NOT in .codex-scratch at codex-time (staged before the redirect-safe reset → specialists never see it)"
+    cat "$SCRATCH_SNAPSHOT9"
     exit 1
 fi
 

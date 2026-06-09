@@ -803,23 +803,25 @@ for n in justfile Justfile JUSTFILE .justfile .Justfile .JUSTFILE; do
     [ -f "$REPO_DIR/$n" ] && { JUST_FILE="$REPO_DIR/$n"; break; }
 done
 
-# Convention detection + staging (lib/conventions.sh) — operator-defined via the
-# kwr-config repo, read from the trusted BASE_REF_SHA, never PR head (a PR adding
-# a marker on its head must not flip detection). A convention repo may declare its
-# own test gate (e.g. a SEED's `## Verification`/`ref/verify.sh`) instead of a root
-# justfile, so the "no justfile" note below and the convention.md staging both
-# branch on a match. Same predicate in lib/replay.sh.
+# Convention DETECTION (lib/conventions.sh) — operator-defined via the kwr-config
+# repo, read from the trusted BASE_REF_SHA, never PR head (a PR adding a marker on
+# its head must not flip detection). A convention repo may declare its own test
+# gate (e.g. a SEED's `## Verification`/`ref/verify.sh`) instead of a root justfile,
+# so the "no justfile" note below branches on a match. Same predicate in
+# lib/replay.sh. NOTE: detection here, but the convention.md WRITE is deferred to
+# the write_scratch block below — staging it now would be wiped by the redirect-safe
+# .codex-scratch reset that runs after PR-controlled code (so specialists, which
+# read the symlink, would never see it).
 CONVENTION_DOC=""
 CONVENTION_TEST_NOTE=""
 CONVENTION_TEST_HEADER=""
 CONVENTION_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "$BASE_REF_SHA"); _conv_rc=$?
 case $_conv_rc in
-    0)  stage_convention "$REPO_DIR" "$CONVENTION_DOC"
-        CONVENTION_TEST_NOTE=$(convention_frontmatter "$CONVENTION_DOC" "test-note")
+    0)  CONVENTION_TEST_NOTE=$(convention_frontmatter "$CONVENTION_DOC" "test-note")
         CONVENTION_TEST_HEADER=$(convention_frontmatter "$CONVENTION_DOC" "test-header")
-        log "$PR_ID: convention repo — staged convention.md from $CONVENTION_DOC (review by its grammar)" ;;
+        log "$PR_ID: convention repo — will stage convention.md from $CONVENTION_DOC (review by its grammar)" ;;
     1)  : ;;  # no convention applies — review as a general repo
-    2)  log "$PR_ID: kwr-config binding matched $REPO but its doc is missing — incomplete operator config — aborting"
+    2)  log "$PR_ID: kwr-config active but broken (or a matched binding's doc missing) — failing loud, aborting"
         rm -rf "$REPO_DIR"; exit 1 ;;
 esac
 
@@ -1209,6 +1211,9 @@ write_scratch "$REPO_DIR" "prior-art.md"       "${PRIOR_ART:-}"
 write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
+# convention.md — staged HERE (after the redirect-safe reset above), not at
+# detection time, so the .codex-scratch symlink survives for the specialists.
+[ -n "$CONVENTION_DOC" ] && stage_convention "$REPO_DIR" "$CONVENTION_DOC"
 
 # ---- probe schema ----
 # probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
