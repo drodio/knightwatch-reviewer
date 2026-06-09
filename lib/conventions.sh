@@ -245,6 +245,12 @@ sync_kwr_config() {
             esac ;;
     esac
     if [ -d "$KWR_CONFIG_DIR/.git" ]; then
+        # Pull against the hygiene-checked KWR_CONFIG_REPO, not whatever origin the
+        # cache's .git happens to store: a pre-existing credential-bearing remote
+        # (e.g. a cache cloned before this guard, or after KWR_CONFIG_REPO changed)
+        # would otherwise leak into the org-sync log via the pull. Re-point origin
+        # to the validated URL each tick.
+        git -C "$KWR_CONFIG_DIR" remote set-url origin "$KWR_CONFIG_REPO"
         git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
     else
         mkdir -p "$(dirname "$KWR_CONFIG_DIR")"

@@ -815,10 +815,16 @@ done
 CONVENTION_DOC=""
 CONVENTION_TEST_NOTE=""
 CONVENTION_TEST_HEADER=""
+CONVENTION_BODY=""
 CONVENTION_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "$BASE_REF_SHA"); _conv_rc=$?
 case $_conv_rc in
-    0)  CONVENTION_TEST_NOTE=$(convention_frontmatter "$CONVENTION_DOC" "test-note")
+    0)  # Read the body NOW, in the same moment as the frontmatter — the kwr-config
+        # cache is mutable (org-sync git-pulls it), so reading body + note/header
+        # together avoids staging a body from a different convention revision than
+        # the test note/header. The stored body is written after the scratch reset.
+        CONVENTION_TEST_NOTE=$(convention_frontmatter "$CONVENTION_DOC" "test-note")
         CONVENTION_TEST_HEADER=$(convention_frontmatter "$CONVENTION_DOC" "test-header")
+        CONVENTION_BODY=$(convention_body "$CONVENTION_DOC")
         log "$PR_ID: convention repo — will stage convention.md from $CONVENTION_DOC (review by its grammar)" ;;
     1)  : ;;  # no convention applies — review as a general repo
     2)  log "$PR_ID: kwr-config active but broken (or a matched binding's doc missing) — failing loud, aborting"
@@ -1213,7 +1219,10 @@ write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # convention.md — staged HERE (after the redirect-safe reset above), not at
 # detection time, so the .codex-scratch symlink survives for the specialists.
-[ -n "$CONVENTION_DOC" ] && stage_convention "$REPO_DIR" "$CONVENTION_DOC"
+# Write the BODY READ AT DETECTION (CONVENTION_BODY), not a fresh read of the
+# mutable cache, so the staged body matches the test note/header read earlier
+# (org-sync may have git-pulled the cache to a new revision in between).
+[ -n "$CONVENTION_DOC" ] && write_scratch "$REPO_DIR" "convention.md" "$CONVENTION_BODY"
 
 # ---- probe schema ----
 # probe-schema.md ships in prompts/ and is symlinked into ~/.pr-reviewer/prompts
