@@ -164,11 +164,19 @@ ESC="$T/esc-config"; mkdir -p "$ESC/conventions"
 printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"../escape.txt" } ] }\n' > "$ESC/config.json"
 ( export KWR_CONFIG_DIR="$ESC"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "traversal doc (../escape.txt) must be rejected with rc 2"
 
-echo "  sync_kwr_config: rejects credential-bearing / query / fragment URLs (argv+log leak)..."
-for badurl in "https://user:tok@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
+echo "  sync_kwr_config: rejects credential-bearing (incl. bare-token) / query / fragment URLs..."
+for badurl in "https://user:tok@example.com/o/r.git" "https://ghp_xxx@example.com/o/r.git" "https://example.com/o/r.git?x=1" "https://example.com/o/r.git#f"; do
     err=$( ( export KWR_CONFIG_REPO="$badurl" KWR_CONFIG_DIR="$T/wont-clone"; sync_kwr_config ) 2>&1 )
-    echo "$err" | grep -q 'must not contain userinfo/query/fragment' || fail "unsafe URL not rejected by hygiene guard: $badurl"
+    echo "$err" | grep -qiE 'must not (contain|embed)' || fail "unsafe URL not rejected by hygiene guard: $badurl"
     [ -d "$T/wont-clone" ] && fail "hygiene guard let a clone proceed for: $badurl"
+done
+echo "  sync_kwr_config: plain https + scp-style ssh URLs are NOT rejected by the hygiene guard..."
+# Occupied dir → `git clone` fails on its dest check BEFORE any network/SSH, so we
+# isolate the (pre-clone) hygiene guard without a real clone attempt.
+OCC="$T/occupied"; mkdir -p "$OCC"; : > "$OCC/x"
+for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@example.com/o/r.git"; do
+    err=$( ( export KWR_CONFIG_REPO="$okurl" KWR_CONFIG_DIR="$OCC"; sync_kwr_config ) 2>&1 )
+    echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
 echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"
