@@ -189,15 +189,15 @@ esac
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke
 # (lib/tests/prompt-contracts-smoke.sh, Section 4) is the contract test for Path 2.
-# standards.md content lives in operator-private ~/.claude/CODING_STANDARDS.md
-# in production (review-one-pr.sh:677). Replay can't rely on that — try the
-# operator's home tree if available, otherwise mark as unstaged like the
-# other deferred inputs above. The PROBE-SCHEMA fallback was incorrect
-# (probe-schema is shape, not standards content).
-STANDARDS_CONTENT="(replay: not staged — set ~/.claude/CODING_STANDARDS.md to ground specialists)"
-if [ -f "$HOME/.claude/CODING_STANDARDS.md" ]; then
-    STANDARDS_CONTENT="$(cat "$HOME/.claude/CODING_STANDARDS.md")"
-fi
+# standards.md — use the SAME resolver production does (resolve_standards,
+# lib/conventions.sh): the operator's kwr-config standards/ when an external
+# config is active, else the full ~/.claude bundle. Sharing it keeps a replay's
+# specialists grounded by the same standards bytes production used (the prior
+# CODING_STANDARDS.md-only staging diverged from production's whole bundle).
+# Keep a replay sentinel only if the resolver emits nothing (e.g. a CI box with
+# neither source).
+STANDARDS_CONTENT="$(resolve_standards)"
+[ -n "$STANDARDS_CONTENT" ] || STANDARDS_CONTENT="(replay: not staged — set ~/.claude/*.md or wire kwr-config to ground specialists)"
 write_scratch "$REPO_DIR" "standards.md" "$STANDARDS_CONTENT"
 
 # probe-schema.md is the canonical Class-options + render contract; specialists

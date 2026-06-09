@@ -37,30 +37,41 @@ CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 mkdir -p "$STATE_DIR"
 
-# Pull the operator's kwr-config repo FIRST (when wired) so tracked-repos.sh's
-# overlay below reads a fresh config.json. config.env carries KWR_CONFIG_REPO;
-# source it explicitly here (tracked-repos.sh sources it again, harmlessly).
-# Errexit-safe if/then/fi — a bare `[ -f X ] && . X` would exit under `set -e`
-# when X is absent. A transient pull failure is non-fatal: ff-only sync_kwr_config
-# (lib/conventions.sh) keeps the last-good cache rather than blanking config.
-if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
-. "$REVIEWER_LIB_DIR/conventions.sh"
-if [ -n "${KWR_CONFIG_REPO:-}" ]; then
-    if sync_kwr_config >>"$LOG" 2>&1; then
-        log "synced kwr-config"
-    else
-        log "WARN: kwr-config sync failed — using last-good cache (if any)"
-    fi
-fi
-
-. "$REVIEWER_LIB_DIR/tracked-repos.sh"
-
+# Acquire the sync lock BEFORE pulling kwr-config: the cache clone/pull and the
+# repo discovery below must share ONE critical section, or two overlapping ticks
+# would mutate the same kwr-config checkout and race the auto-file rewrite.
 command -v flock >/dev/null 2>&1 || { log "FATAL: flock not on PATH (util-linux)"; exit 1; }
 exec 9>"$LOCK"
 if ! flock -n 9; then
     log "sync already running (lock $LOCK held) — skipping"
     exit 0
 fi
+
+# Pull the operator's kwr-config repo (when wired) so tracked-repos.sh's overlay
+# below reads a fresh config.json. config.env carries KWR_CONFIG_REPO; source it
+# explicitly here (tracked-repos.sh sources it again, harmlessly). Errexit-safe
+# if/then/fi — a bare `[ -f X ] && . X` would exit under `set -e` when X is absent.
+if [ -f "$CONFIG_ENV_FILE" ]; then . "$CONFIG_ENV_FILE"; fi
+. "$REVIEWER_LIB_DIR/conventions.sh"
+if [ -n "${KWR_CONFIG_REPO:-}" ]; then
+    # ff-only sync keeps the last-good cache on a transient pull failure.
+    if sync_kwr_config >>"$LOG" 2>&1; then
+        log "synced kwr-config"
+    else
+        log "WARN: kwr-config sync failed — using last-good cache (if any)"
+    fi
+    # Active-but-broken config must FAIL LOUD before the ORGS-empty prune below
+    # can erase a valid repos.conf.auto. A set KWR_CONFIG_REPO with no parseable
+    # config.json (missing cache, malformed JSON, or jq absent) is a broken
+    # deploy, not a legitimate "no orgs" — silently pruning auto coverage on it
+    # is the data-loss path.
+    if ! { command -v jq >/dev/null 2>&1 && jq -e . "${KWR_CONFIG_DIR}/config.json" >/dev/null 2>&1; }; then
+        log "FATAL: KWR_CONFIG_REPO set but ${KWR_CONFIG_DIR}/config.json missing/malformed (or jq absent) — refusing to proceed (would erase auto coverage)"
+        exit 1
+    fi
+fi
+
+. "$REVIEWER_LIB_DIR/tracked-repos.sh"
 
 # ORGS empty: truncate any prior auto file so disabling the feature
 # actually drops auto coverage on the next tick.

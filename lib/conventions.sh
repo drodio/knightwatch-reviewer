@@ -29,11 +29,10 @@
 # kwr_config_active
 #   0 — operator wired an external kwr-config repo AND its config.json is on disk.
 #   1 — KWR_CONFIG_REPO unset: the open-source default (no external config).
-#   2 — set but config.json absent: a cold/not-yet-pulled or removed cache. The
-#       caller degrades to fallback with a loud log — NOT a hard abort, so a box
-#       whose first org-sync tick hasn't run yet still reviews (the hard-abort
-#       case is narrower: a binding that matches but whose doc is missing, see
-#       resolve_binding rc 2).
+#   2 — set but config.json absent: a broken deploy (org-sync delivers the cache
+#       before any worker runs, so a missing config.json means the wiring is
+#       wrong). Callers treat this as fail-loud, not a silent fallback — reviewing
+#       convention repos as generic ones is the exact failure this layer removes.
 kwr_config_active() {
     [ -n "${KWR_CONFIG_REPO:-}" ] || return 1
     [ -f "$KWR_CONFIG_DIR/config.json" ] || return 2
@@ -77,12 +76,12 @@ convention_body() {
 # resolve_binding <repo_slug> <repo_dir> <base_ref>
 #   stdout: absolute path to the matched convention doc.
 #   exit 0 — a binding matched (doc path on stdout).
-#        1 — no convention applies: kwr-config unset, cold cache, malformed
-#            config.json, or no binding matched. Caller falls back.
-#        2 — a binding MATCHED this repo but its doc is missing on disk — the
-#            operator declared a convention that can't be delivered. Caller
-#            fails loud (reviewing it as a generic repo silently is the exact
-#            failure this design removes).
+#        1 — no convention applies: kwr-config unset, or no binding matched.
+#            Caller falls back to the repo's own .knightwatch/ then defaults.
+#        2 — kwr-config is ACTIVE but BROKEN: config.json missing/malformed, jq
+#            absent, or a matched binding's doc missing on disk. The operator
+#            wired a convention layer that can't be delivered — caller fails loud
+#            rather than silently reviewing convention repos as generic ones.
 # Markers are read from <base_ref> (a SHA snapshotted before PR code runs), so a
 # PR that adds a marker on its head can't flip detection. A git error reading a
 # marker fails that binding soft (advisory staging, not a trust gate).
@@ -91,17 +90,21 @@ resolve_binding() {
     local rc; kwr_config_active; rc=$?
     if [ "$rc" -eq 1 ]; then return 1; fi
     if [ "$rc" -eq 2 ]; then
-        echo "conventions: KWR_CONFIG_REPO set but $KWR_CONFIG_DIR/config.json absent — falling back (cold cache?)" >&2
-        return 1
+        echo "conventions: KWR_CONFIG_REPO set but $KWR_CONFIG_DIR/config.json absent — broken config, failing loud" >&2
+        return 2
     fi
 
     local cfg="$KWR_CONFIG_DIR/config.json"
     local owner="${repo_slug%%/*}" name="${repo_slug##*/}"
 
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "conventions: KWR_CONFIG_REPO set but jq not on PATH — broken deploy, failing loud" >&2
+        return 2
+    fi
     local bindings
     if ! bindings=$(jq -c '.bindings[]?' "$cfg" 2>/dev/null); then
-        echo "conventions: malformed $cfg — falling back" >&2
-        return 1
+        echo "conventions: malformed $cfg — broken config, failing loud" >&2
+        return 2
     fi
 
     local b match_org slug_glob marker doc g matched listing _globs

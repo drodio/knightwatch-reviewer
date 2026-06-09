@@ -124,9 +124,12 @@ resolve_binding "brokenorg/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1; [ "$?" -eq 2 
 echo "  resolve_binding: inactive (KWR_CONFIG_REPO unset) → rc 1..."
 ( unset KWR_CONFIG_REPO; resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA" >/dev/null ); [ "$?" -eq 1 ] || fail "inactive expected rc 1"
 
-echo "  resolve_binding: malformed config.json → rc 1 (fallback, not abort)..."
+echo "  resolve_binding: active but config.json absent → rc 2 (fail loud, broken deploy)..."
+( export KWR_CONFIG_DIR="$T/cold-nope"; resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "active+missing config expected rc 2"
+
+echo "  resolve_binding: malformed config.json → rc 2 (fail loud, not silent fallback)..."
 BAD="$T/bad"; mkdir -p "$BAD"; printf '{ not json' > "$BAD/config.json"
-( export KWR_CONFIG_DIR="$BAD"; resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA" >/dev/null 2>&1 ); [ "$?" -eq 1 ] || fail "malformed config expected rc 1"
+( export KWR_CONFIG_DIR="$BAD"; resolve_binding "plow-pbc/seed-foo" "$PLAIN" "$PLAIN_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "malformed config expected rc 2"
 
 echo "  convention_frontmatter: extracts flat key:value, strips quotes..."
 got=$(convention_frontmatter "$CFG/conventions/seed.md" "test-header")
@@ -152,4 +155,4 @@ echo "  resolve_standards: uses kwr-config standards/ when active..."
 std=$(resolve_standards)
 echo "$std" | grep -q 'Operator standards' || fail "resolve_standards did not include kwr-config standards/"
 
-echo "  PASS (conventions: 3 active-state + 12 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 3 active-state + 13 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"
