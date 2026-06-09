@@ -71,11 +71,14 @@ fail() { echo "FAIL: $1"; exit 1; }
 
 echo "=== conventions smoke ==="
 
-# --- kwr_config_active tri-state ------------------------------------------
-echo "  kwr_config_active: unset → 1, set+missing → 2, set+present → 0..."
-( unset KWR_CONFIG_REPO; kwr_config_active ); [ "$?" -eq 1 ] || fail "active(unset) expected 1"
-( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$T/nope"; kwr_config_active ); [ "$?" -eq 2 ] || fail "active(set,missing) expected 2"
-( export KWR_CONFIG_REPO=x; kwr_config_active ); [ "$?" -eq 0 ] || fail "active(set,present) expected 0"
+# --- kwr_config_valid (shared usable-config predicate) ---------------------
+echo "  kwr_config_valid: unset / set+missing / set+malformed / jq-absent → non-0; set+valid → 0..."
+MAL="$T/malformed"; mkdir -p "$MAL"; printf '{ bad' > "$MAL/config.json"
+( unset KWR_CONFIG_REPO;                          kwr_config_valid ) && fail "valid(unset) should be non-0"
+( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$T/nope"; kwr_config_valid ) && fail "valid(set,missing) should be non-0"
+( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$MAL";    kwr_config_valid ) && fail "valid(set,malformed) should be non-0"
+( export KWR_CONFIG_REPO=x PATH="$T"; mkdir -p "$T"; kwr_config_valid ) && fail "valid should be non-0 when jq is absent from PATH"
+( export KWR_CONFIG_REPO=x;                        kwr_config_valid ) || fail "valid(set,present,valid-json) should be 0"
 
 # Everything below runs with an active kwr-config.
 export KWR_CONFIG_REPO="https://example.invalid/op/kwr-config.git"
@@ -155,4 +158,4 @@ echo "  resolve_standards: uses kwr-config standards/ when active..."
 std=$(resolve_standards)
 echo "$std" | grep -q 'Operator standards' || fail "resolve_standards did not include kwr-config standards/"
 
-echo "  PASS (conventions: 3 active-state + 13 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + 2 frontmatter + 2 body + 1 stage + 1 standards)"

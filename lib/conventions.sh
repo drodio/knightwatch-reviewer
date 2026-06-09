@@ -26,17 +26,20 @@
 # other consumer only READS it. Override via env / config.env if needed.
 : "${KWR_CONFIG_DIR:=$HOME/services/kwr-config}"
 
-# kwr_config_active
-#   0 — operator wired an external kwr-config repo AND its config.json is on disk.
-#   1 — KWR_CONFIG_REPO unset: the open-source default (no external config).
-#   2 — set but config.json absent: a broken deploy (org-sync delivers the cache
-#       before any worker runs, so a missing config.json means the wiring is
-#       wrong). Callers treat this as fail-loud, not a silent fallback — reviewing
-#       convention repos as generic ones is the exact failure this layer removes.
-kwr_config_active() {
-    [ -n "${KWR_CONFIG_REPO:-}" ] || return 1
-    [ -f "$KWR_CONFIG_DIR/config.json" ] || return 2
-    return 0
+# kwr_config_valid — the single "is the external kwr-config wired AND usable"
+# predicate, shared by org-sync's pre-discovery gate and the worker resolver so
+# "broken" means the same thing in both (no drift between three ad-hoc checks).
+#   0 — KWR_CONFIG_REPO set, jq present, config.json on disk and valid JSON.
+#   non-0 — unset (the open-source default) OR set-but-broken. Callers that must
+#           distinguish those two check `[ -n "$KWR_CONFIG_REPO" ]` themselves
+#           (unset = no-op fallback; set-but-broken = fail loud, since org-sync
+#           delivers the cache before any worker runs, so a missing/malformed
+#           config means the wiring is wrong).
+kwr_config_valid() {
+    [ -n "${KWR_CONFIG_REPO:-}" ]                              || return 1
+    command -v jq >/dev/null 2>&1                              || return 1
+    [ -f "$KWR_CONFIG_DIR/config.json" ]                       || return 1
+    jq -e . "$KWR_CONFIG_DIR/config.json" >/dev/null 2>&1
 }
 
 # convention_frontmatter <doc_path> <key>
@@ -87,25 +90,18 @@ convention_body() {
 # marker fails that binding soft (advisory staging, not a trust gate).
 resolve_binding() {
     local repo_slug="$1" repo_dir="$2" base_ref="$3"
-    local rc; kwr_config_active; rc=$?
-    if [ "$rc" -eq 1 ]; then return 1; fi
-    if [ "$rc" -eq 2 ]; then
-        echo "conventions: KWR_CONFIG_REPO set but $KWR_CONFIG_DIR/config.json absent — broken config, failing loud" >&2
+    [ -n "${KWR_CONFIG_REPO:-}" ] || return 1            # unset → no convention
+    if ! kwr_config_valid; then                          # set-but-broken → fail loud
+        echo "conventions: KWR_CONFIG_REPO set but config unusable (missing/malformed config.json or jq absent) — failing loud" >&2
         return 2
     fi
 
     local cfg="$KWR_CONFIG_DIR/config.json"
     local owner="${repo_slug%%/*}" name="${repo_slug##*/}"
 
-    if ! command -v jq >/dev/null 2>&1; then
-        echo "conventions: KWR_CONFIG_REPO set but jq not on PATH — broken deploy, failing loud" >&2
-        return 2
-    fi
+    # config.json is validated parseable by kwr_config_valid above.
     local bindings
-    if ! bindings=$(jq -c '.bindings[]?' "$cfg" 2>/dev/null); then
-        echo "conventions: malformed $cfg — broken config, failing loud" >&2
-        return 2
-    fi
+    bindings=$(jq -c '.bindings[]?' "$cfg")
 
     local b match_org slug_glob marker doc g matched listing _globs
     while IFS= read -r b; do
@@ -161,14 +157,19 @@ stage_convention() {
 #   Otherwise the operator's ~/.claude bundle (back-compat for the current
 #   deploy, and the open-source no-config default).
 resolve_standards() {
-    if kwr_config_active 2>/dev/null; then
+    # Uses kwr_config_valid (same predicate as resolve_binding). In the worker,
+    # resolve_binding runs FIRST and aborts the review on a set-but-broken config,
+    # so this only executes with a valid or unset config — set-but-broken falls to
+    # ~/.claude here only if called out of that order (a safe operator-local
+    # default, not wrong bytes).
+    if kwr_config_valid; then
         local f any=0
         for f in "$KWR_CONFIG_DIR"/standards/*.md; do
             [ -f "$f" ] || continue
             cat "$f"; printf '\n\n'; any=1
         done
         [ "$any" -eq 1 ] && return 0
-        # active but no standards/ shipped → fall through to ~/.claude.
+        # valid config but no standards/ shipped → fall through to ~/.claude.
     fi
     [ -f ~/.claude/CODING_STANDARDS.md ]        && { cat ~/.claude/CODING_STANDARDS.md; printf '\n\n'; }
     [ -f ~/.claude/REVIEW_PRACTICES.md ]        && { cat ~/.claude/REVIEW_PRACTICES.md; printf '\n\n'; }

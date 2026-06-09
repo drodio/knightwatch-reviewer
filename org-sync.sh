@@ -61,11 +61,10 @@ if [ -n "${KWR_CONFIG_REPO:-}" ]; then
         log "WARN: kwr-config sync failed — using last-good cache (if any)"
     fi
     # Active-but-broken config must FAIL LOUD before the ORGS-empty prune below
-    # can erase a valid repos.conf.auto. A set KWR_CONFIG_REPO with no parseable
-    # config.json (missing cache, malformed JSON, or jq absent) is a broken
-    # deploy, not a legitimate "no orgs" — silently pruning auto coverage on it
-    # is the data-loss path.
-    if ! { command -v jq >/dev/null 2>&1 && jq -e . "${KWR_CONFIG_DIR}/config.json" >/dev/null 2>&1; }; then
+    # can erase a valid repos.conf.auto. kwr_config_valid (lib/conventions.sh) is
+    # the shared "is the config usable" predicate — same definition the worker
+    # resolver uses, so "broken" can't drift between the two.
+    if ! kwr_config_valid; then
         log "FATAL: KWR_CONFIG_REPO set but ${KWR_CONFIG_DIR}/config.json missing/malformed (or jq absent) — refusing to proceed (would erase auto coverage)"
         exit 1
     fi
