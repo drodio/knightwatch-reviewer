@@ -162,7 +162,8 @@ printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"../
 
 echo "  resolve_binding: a doc that is a SYMLINK escaping the config repo → rc 2 (path guard)..."
 SYM="$T/sym-config"; mkdir -p "$SYM/conventions"
-ln -s "$T/escape.txt" "$SYM/conventions/sneak.md"     # symlink INSIDE the repo → file OUTSIDE
+: > "$T/sym-target.txt"                                # a real file OUTSIDE the config repo (self-contained)
+ln -s "$T/sym-target.txt" "$SYM/conventions/sneak.md" # VALID symlink INSIDE the repo → target OUTSIDE: `-f` passes, so rejection must come from the `! -L`/realpath-escape guard (not a dangling-link `-f` miss)
 printf '{ "bindings": [ { "match": {"org":"evil","marker":"SEED.md"}, "doc":"conventions/sneak.md" } ] }\n' > "$SYM/config.json"
 ( export KWR_CONFIG_DIR="$SYM"; resolve_binding "evil/x" "$REPO" "$BASE_SHA" >/dev/null 2>&1 ); [ "$?" -eq 2 ] || fail "symlinked doc escaping the repo must be rejected with rc 2"
 
