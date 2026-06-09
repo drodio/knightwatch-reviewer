@@ -39,7 +39,12 @@ kwr_config_valid() {
     [ -n "${KWR_CONFIG_REPO:-}" ]                              || return 1
     command -v jq >/dev/null 2>&1                              || return 1
     [ -f "$KWR_CONFIG_DIR/config.json" ]                       || return 1
-    jq -e . "$KWR_CONFIG_DIR/config.json" >/dev/null 2>&1
+    # Validate the SHAPE the consumers read, not just that it parses — a
+    # parseable-but-wrong-shape config (e.g. `bindings` a string) would otherwise
+    # silently drop bindings/coverage. bindings/orgs/repos are each optional but
+    # MUST be arrays when present.
+    jq -e '(.bindings//[]|type=="array") and (.orgs//[]|type=="array") and (.repos//[]|type=="array")' \
+        "$KWR_CONFIG_DIR/config.json" >/dev/null 2>&1
 }
 
 # convention_frontmatter <doc_path> <key>
@@ -160,6 +165,26 @@ resolve_binding() {
 #   set $RUN_DIR.
 stage_convention() {
     write_scratch "$1" "convention.md" "$(convention_body "$2")"
+}
+
+# stage_convention_run <repo_dir> <repo_slug> <base_ref>
+#   Errexit-safe one-shot resolve+stage for callers (like replay) that stage at
+#   detection time under `set -euo pipefail`. On a match: stages convention.md and
+#   echoes the convention's test-note (possibly empty). Returns 0 (matched), 1 (no
+#   convention — caller falls back), or 2 (broken config — caller fails loud). The
+#   `&& rc=0 || rc=$?` capture suppresses errexit so a rc-1 no-convention result
+#   doesn't abort the run. (The worker uses resolve_binding + stage_convention
+#   separately because it detects early but must write AFTER the .codex-scratch
+#   reset; replay has no such reset, so it stages in one call here.)
+stage_convention_run() {
+    local repo_dir="$1" repo_slug="$2" base_ref="$3" doc rc
+    doc=$(resolve_binding "$repo_slug" "$repo_dir" "$base_ref") && rc=0 || rc=$?
+    case $rc in
+        0) stage_convention "$repo_dir" "$doc"
+           convention_frontmatter "$doc" "test-note"
+           return 0 ;;
+        *) return "$rc" ;;
+    esac
 }
 
 # resolve_standards

@@ -79,6 +79,8 @@ MAL="$T/malformed"; mkdir -p "$MAL"; printf '{ bad' > "$MAL/config.json"
 ( unset KWR_CONFIG_REPO;                          kwr_config_valid ) && fail "valid(unset) should be non-0"
 ( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$T/nope"; kwr_config_valid ) && fail "valid(set,missing) should be non-0"
 ( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$MAL";    kwr_config_valid ) && fail "valid(set,malformed) should be non-0"
+SHP="$T/wrongshape"; mkdir -p "$SHP"; printf '{ "bindings": "notarray" }' > "$SHP/config.json"
+( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$SHP";    kwr_config_valid ) && fail "valid(set,parseable-but-wrong-shape) should be non-0"
 ( export KWR_CONFIG_REPO=x PATH="$T"; kwr_config_valid ) && fail "valid should be non-0 when jq is absent from PATH"
 ( export KWR_CONFIG_REPO=x;                        kwr_config_valid ) || fail "valid(set,present,valid-json) should be 0"
 
@@ -182,4 +184,4 @@ for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@
     echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
-echo "  PASS (conventions: 5 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"

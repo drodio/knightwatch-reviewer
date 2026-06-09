@@ -177,14 +177,23 @@ write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
 # stage convention.md so the specialists review by that convention's grammar, and
 # (when the convention declares a test-note) replace the generic test-results.md
 # stub with it so the replay reproduces what production shows the tests specialist.
-_CONV_DOC=$(resolve_binding "$REPO" "$REPO_DIR" "origin/$BASE_REF"); _conv_rc=$?
-case $_conv_rc in
-    0)  stage_convention "$REPO_DIR" "$_CONV_DOC"
-        _conv_note=$(convention_frontmatter "$_CONV_DOC" "test-note")
-        [ -n "$_conv_note" ] && write_scratch "$REPO_DIR" "test-results.md" "**Result:** $_conv_note" ;;
-    1)  : ;;
-    2)  echo "replay: kwr-config binding matched $REPO but its doc is missing — incomplete config — aborting" >&2; exit 1 ;;
-esac
+# stage_convention_run (lib/conventions.sh) is errexit-safe: replay runs under
+# `set -euo pipefail`, where a bare `$(resolve_binding ...)` would abort on the
+# COMMON rc-1 (no-convention) path. The `if` suppresses errexit for the condition;
+# the inner test-note write is an explicit `if`, not `[ -n ] && cmd` (whose false
+# branch returns 1 and would trip errexit). Covered by replay-staging-smoke.
+if _conv_note=$(stage_convention_run "$REPO_DIR" "$REPO" "origin/$BASE_REF"); then
+    if [ -n "$_conv_note" ]; then
+        write_scratch "$REPO_DIR" "test-results.md" "**Result:** $_conv_note"
+    fi
+else
+    _conv_rc=$?
+    if [ "$_conv_rc" = 2 ]; then
+        echo "replay: kwr-config binding matched $REPO but its doc is missing/unsafe — incomplete config — aborting" >&2
+        exit 1
+    fi
+    # rc 1: no convention applies — review as a general repo
+fi
 # TODO: prior-reviews.md is stubbed above, so multi-round Path 2 (strict-decrease
 # trigger in aggregator.md) cannot be exercised via replay. Re-staging from the
 # source run dir's inputs/ would enable it. The deterministic smoke

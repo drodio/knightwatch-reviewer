@@ -198,6 +198,10 @@ test:
     bash lib/tests/replay-smoke.sh
 
     echo ""
+    echo "=== replay-staging smoke test ==="
+    bash lib/tests/replay-staging-smoke.sh
+
+    echo ""
     echo "=== replay-verify smoke test ==="
     bash lib/tests/replay-verify-smoke.sh
 
