@@ -156,6 +156,14 @@ echo "  resolve_standards: uses kwr-config standards/ when active..."
 std=$(resolve_standards)
 echo "$std" | grep -q 'Operator standards' || fail "resolve_standards did not include kwr-config standards/"
 
+echo "  resolve_standards: falls back to the ~/.claude bundle when no kwr-config is active..."
+FAKEHOME="$T/home"; mkdir -p "$FAKEHOME/.claude"
+printf '# coding STD_MARKER\n'    > "$FAKEHOME/.claude/CODING_STANDARDS.md"
+printf '# review PRACT_MARKER\n'  > "$FAKEHOME/.claude/REVIEW_PRACTICES.md"
+stdfb=$( unset KWR_CONFIG_REPO; export HOME="$FAKEHOME"; resolve_standards )
+echo "$stdfb" | grep -q 'STD_MARKER'   || fail "resolve_standards fallback missing CODING_STANDARDS content"
+echo "$stdfb" | grep -q 'PRACT_MARKER' || fail "resolve_standards fallback missing REVIEW_PRACTICES content"
+
 echo "  resolve_binding: a doc path escaping the config repo (../) → rc 2 (path guard)..."
 printf 'root-only secret\n' > "$T/escape.txt"          # a real file OUTSIDE the config repo
 ESC="$T/esc-config"; mkdir -p "$ESC/conventions"
@@ -184,4 +192,4 @@ for okurl in "https://example.com/o/r.git" "git@example.com:o/r.git" "ssh://git@
     echo "$err" | grep -qiE 'must not (contain|embed)' && fail "plain/key-auth URL wrongly rejected by hygiene guard: $okurl"
 done
 
-echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 1 standards)"
+echo "  PASS (conventions: 6 config-valid + 13 resolve_binding + 2 path-guard + url-hygiene + 2 frontmatter + 2 body + 1 stage + 2 standards)"

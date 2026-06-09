@@ -220,7 +220,7 @@ resolve_standards() {
 #   last-good cache in place rather than blanking config. Returns non-zero on
 #   clone/pull failure for the caller to log.
 sync_kwr_config() {
-    local _auth
+    local _auth _cur
     [ -n "${KWR_CONFIG_REPO:-}" ] || return 0
     # Clone-URL hygiene (same rule the SEED convention enforces): `git clone <url>`
     # puts the whole URL in process argv (visible via /proc + shell history) and
@@ -245,13 +245,22 @@ sync_kwr_config() {
             esac ;;
     esac
     if [ -d "$KWR_CONFIG_DIR/.git" ]; then
-        # Pull against the hygiene-checked KWR_CONFIG_REPO, not whatever origin the
-        # cache's .git happens to store: a pre-existing credential-bearing remote
-        # (e.g. a cache cloned before this guard, or after KWR_CONFIG_REPO changed)
-        # would otherwise leak into the org-sync log via the pull. Re-point origin
-        # to the validated URL each tick.
-        git -C "$KWR_CONFIG_DIR" remote set-url origin "$KWR_CONFIG_REPO"
-        git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
+        _cur=$(git -C "$KWR_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")
+        if [ "$_cur" != "$KWR_CONFIG_REPO" ]; then
+            # The cache is from a DIFFERENT repo than the configured one (operator
+            # changed KWR_CONFIG_REPO, or the cache carries a stale/credential
+            # origin). Re-clone rather than ff-pull — a pull would fail on unrelated
+            # histories and silently keep serving the OLD repo's conventions/orgs,
+            # and re-cloning from the hygiene-checked URL also drops any credential
+            # origin so it can't leak into the org-sync log.
+            rm -rf "$KWR_CONFIG_DIR"
+            mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
+            git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"
+        else
+            # Same origin → ordinary ff-pull (keeps the last-good cache on a
+            # transient failure rather than blanking it).
+            git -C "$KWR_CONFIG_DIR" pull --ff-only --quiet
+        fi
     else
         mkdir -p "$(dirname "$KWR_CONFIG_DIR")"
         git clone --quiet "$KWR_CONFIG_REPO" "$KWR_CONFIG_DIR"

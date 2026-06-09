@@ -381,6 +381,16 @@ export MOCK_GH_LIST_overlay2="overlay2/c"
 run_sync || { echo "FAIL scenario 12b: re-sync exited non-zero"; cat "$LOG"; exit 1; }
 grep -q '"overlay2"' "$KCFG_CACHE/config.json" || { echo "FAIL scenario 12b: cache not refreshed by ff-only pull"; cat "$KCFG_CACHE/config.json"; exit 1; }
 grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12b: steady-state pull did not enumerate the newly-added org"; cat "$STUB_GH_LOG"; exit 1; }
+
+# 12c: transient pull failure → WARN-and-continue on the last-good cache. Remove
+# the remote so the same-origin ff-pull fails; the cached config.json (last-good)
+# must still drive enumeration, and the tick must exit 0 (not fatal).
+echo "  scenario 12c: pull failure → WARN, last-good cache reused (zero exit, overlay still enumerated)..."
+rm -rf "$KCFG_BARE"
+export MOCK_GH_LIST_baseorg="baseorg/a" MOCK_GH_LIST_overlayorg="overlayorg/b" MOCK_GH_LIST_overlay2="overlay2/c"
+run_sync || { echo "FAIL scenario 12c: sync must exit 0 on transient pull failure (last-good cache)"; cat "$LOG"; exit 1; }
+grep -q 'kwr-config sync failed' "$LOG" || { echo "FAIL scenario 12c: expected WARN log on pull failure"; cat "$LOG"; exit 1; }
+grep -q "^GH repo list overlay2" "$STUB_GH_LOG" || { echo "FAIL scenario 12c: last-good cached overlay org not enumerated after pull failure"; cat "$STUB_GH_LOG"; exit 1; }
 unset MOCK_GH_LIST_overlayorg MOCK_GH_LIST_overlay2
 
 # ---- scenario 13: active-but-broken kwr-config → fail loud, no auto mutation
