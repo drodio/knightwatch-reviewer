@@ -77,7 +77,7 @@ MAL="$T/malformed"; mkdir -p "$MAL"; printf '{ bad' > "$MAL/config.json"
 ( unset KWR_CONFIG_REPO;                          kwr_config_valid ) && fail "valid(unset) should be non-0"
 ( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$T/nope"; kwr_config_valid ) && fail "valid(set,missing) should be non-0"
 ( export KWR_CONFIG_REPO=x KWR_CONFIG_DIR="$MAL";    kwr_config_valid ) && fail "valid(set,malformed) should be non-0"
-( export KWR_CONFIG_REPO=x PATH="$T"; mkdir -p "$T"; kwr_config_valid ) && fail "valid should be non-0 when jq is absent from PATH"
+( export KWR_CONFIG_REPO=x PATH="$T"; kwr_config_valid ) && fail "valid should be non-0 when jq is absent from PATH"
 ( export KWR_CONFIG_REPO=x;                        kwr_config_valid ) || fail "valid(set,present,valid-json) should be 0"
 
 # Everything below runs with an active kwr-config.
