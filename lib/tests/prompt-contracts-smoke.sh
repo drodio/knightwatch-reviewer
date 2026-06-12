@@ -257,6 +257,23 @@ echo "  asserting Anti-Bloat carve-out in specialists/tests.md..."
 assert_grep "specialists/tests.md should carry the Anti-Bloat carve-out for hypothetical fences" \
     "no bug shipped and no contract changed" prompts/specialists/tests.md
 
+# Token fence: tests.md must carry the LOC-parity posture and the
+# extension-first remedy convention; probe-schema.md's tests class
+# mirrors the extend-before-new edit convention.
+echo "  asserting Test-LOC parity posture in specialists/tests.md..."
+assert_grep "specialists/tests.md should carry the Test-LOC parity posture" \
+    "Test-LOC posture" prompts/specialists/tests.md
+assert_grep "specialists/tests.md parity must measure the full PR diff, not the incremental re-review diff" \
+    ".codex-scratch/full-diff.patch" prompts/specialists/tests.md
+assert_grep "specialists/tests.md must route rewrite-shaped assertion findings to the tests class" \
+    "rewrite-shaped" prompts/specialists/tests.md
+echo "  asserting Extension-first remedy convention in specialists/tests.md..."
+assert_grep "specialists/tests.md should carry the Extension-first remedy convention" \
+    "Extension-first remedies" prompts/specialists/tests.md
+echo "  asserting extend-before-new edit convention in probe-schema.md..."
+assert_grep "probe-schema.md tests class should carry the extend-before-new edit convention" \
+    "existing test or fixture to extend" prompts/probe-schema.md
+
 # Token fence: contract-drift.md must carry the fence-narrower-than-
 # prose carve-out — minimum-viable smoke coverage is NOT two-place
 # drift even though it's structurally two-place.
