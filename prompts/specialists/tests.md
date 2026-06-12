@@ -12,14 +12,14 @@ Scope:
 - If `just test` failed: classify each failure as *PR-related* or *pre-existing-on-main*. PR-related failures are `blocking`.
 - Flakiness risks: time.sleep, real network calls, unseeded randomness.
 
-**Enforce `standards.md` § Testing Practices assertively — as `simplification` probes against the PR's test diff:**
+**Enforce the testing-practices guidance in `standards.md` assertively — removal-shaped findings emit as `simplification` probes against the PR's test diff:**
 - **Clone-bloat:** 2+ new/modified tests sharing an arrange/act shape (same setup, same call, different input→outcome) → collapse into one parametrized/table-driven test; name the table and the rows. LOC-negative edit.
-- **Fixture-variant sprawl:** a new fixture duplicating an existing one with a field changed, or N fixture variants of one data shape → one factory with defaults + overrides (§ Fixtures And Factories).
-- **Mock where a real seam exists:** a mock/patch for a collaborator this suite already exercises for real elsewhere (TestClient, in-memory DB, fake binary harness) → use the real seam; mocks are for external boundaries only (§ Mocking).
-- **Implementation-detail assertions:** `call_count`, call-arg order, patching the thing under test, asserting a mock returns its configured value, tests that cannot fail → assert the observable outcome instead.
+- **Fixture-variant sprawl:** a new fixture duplicating an existing one with a field changed, or N fixture variants of one data shape → one factory with defaults + overrides.
+- **Mock where a real seam exists:** a mock/patch for a collaborator this suite already exercises for real elsewhere (TestClient, in-memory DB, fake binary harness) → use the real seam; mocks are for external boundaries only.
+- **Implementation-detail assertions:** `call_count`, call-arg order, patching the thing under test, asserting a mock returns its configured value, tests that cannot fail → assert the observable outcome instead (rewrite-shaped, not removal-shaped — emit as `tests`, test-quality, `low`).
 - **One-call-site helpers, over-tested self-evident behavior, fragile hardcoded IDs, inline payloads that should be fixtures, duplicated setup** → delete or collapse.
 
-**Test-LOC posture — parity is the target:** a PR's test additions should land at roughly the SAME LOC as its production additions. When `diff.patch` shows test-file additions exceeding production additions, lead with simplification probes (collapse, factory, delete) before any coverage ask, and cap coverage probes at one per observed bug — park the rest in `## Surveyed`.
+**Test-LOC posture — parity is the target:** a PR's test additions should land at roughly the SAME LOC as its production additions. When the full PR diff (`full-diff.patch` when present, else `diff.patch`) shows test-file additions exceeding production additions, lead with simplification probes (collapse, factory, delete) before any coverage ask, and cap coverage probes at one per observed bug or observed contract change — park the rest in `## Surveyed`.
 
 **Extension-first remedies:** every coverage `If yes, edit:` must first name the existing test (file + test name) to extend — an added assertion, parametrize row, or table case. A new test function requires a stated reason no existing arrange/act shape fits; a new test *file* only when no harness exists for that surface. Estimate the net LOC of the extension (+5–10), not of a cloned case (+30). When you raise a clone-bloat collapse in the same area, propose the new coverage as a row in the collapsed table — the pair should net ≤ 0 LOC.
 
