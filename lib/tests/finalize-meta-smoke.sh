@@ -19,6 +19,11 @@
 #      the bot wanted fenced — gh succeeded but early stamp failed) →
 #      add finished_at + status="aborted" + posted_at=finished_at.
 #   4. Malformed input meta.json → return 1, no .tmp file leak.
+#   5. Missing meta.json (run aborted before checkout ever wrote it —
+#      concurrent-skip dedup gate, refs/pull not-yet-published) → return 0.
+#      Nothing to finalize is a benign pre-checkout exit, not a failure;
+#      treating it as one logged a spurious "finalize_run failed" on every
+#      clean concurrent-skip (78 in one day across 4 workers).
 #
 # Hermetic: sources lib/run-dir.sh directly and invokes the helper with
 # explicit args; no closure state needed.
@@ -121,4 +126,17 @@ if [ "$(cat "$META")" != "this is not json {{" ]; then
     exit 1
 fi
 
-echo "  PASS (4 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, bad-input-returns-1)"
+# ---- scenario 5: missing input meta → return 0 (pre-checkout abort is benign) ----
+echo "  scenario 5: missing input meta → return 0, no tmp file leak..."
+META="$TMPDIR/m5-does-not-exist.json"
+if ! finalize_meta_json "$META" "$EXIT_TS" "aborted" "false"; then
+    echo "FAIL: scenario 5 — finalize returned non-zero on a missing meta file"
+    exit 1
+fi
+if [ -e "$META" ] || [ -e "$META.tmp" ]; then
+    echo "FAIL: scenario 5 — finalize created a meta/tmp file from nothing"
+    ls -la "$TMPDIR"
+    exit 1
+fi
+
+echo "  PASS (5 scenarios: early-posted_at-preserved, no-gratuitous-stamp, REPAIR-on-gh-posted, bad-input-returns-1, missing-input-returns-0)"
