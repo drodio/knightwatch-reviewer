@@ -75,4 +75,21 @@ grep -qF 'docker-compose-linux-x86_64' "$DOCKERFILE" \
 grep -qF 'chmod +x /usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \
   || fail "Dockerfile not making the compose plugin executable (PR #157)"
 
+# jq version pin: the image must install jq 1.7.x as a static binary, NOT
+# bookworm's apt jq 1.6. plow's start.sh readiness gate `curl … | jq -e
+# '.config_written == true'` relies on jq exiting non-zero on empty stdin
+# (unreachable plowd): jq 1.6 exits 0, jq 1.7 exits 4. Under 1.6 the gate
+# false-passes → test_start_sh.bats false-fails → a false "Tests failed" on
+# plow PRs while THIS suite stays green (it never builds the image). Pure text
+# assertion pins the contract so a Dockerfile edit can't silently drop back to
+# apt. (PR #160.)
+grep -qE '^ARG JQ_VERSION=1\.7\.' "$DOCKERFILE" \
+  || fail "Dockerfile missing pinned ARG JQ_VERSION=1.7.x (jq version pin regressed — PR #160)"
+grep -qF 'jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64' "$DOCKERFILE" \
+  || fail "Dockerfile not downloading the jq 1.7 static binary (PR #160)"
+grep -qF -- '-o /usr/local/bin/jq' "$DOCKERFILE" \
+  || fail "Dockerfile not installing jq to /usr/local/bin/jq (PR #160)"
+grep -qF 'chmod +x /usr/local/bin/jq' "$DOCKERFILE" \
+  || fail "Dockerfile not making the jq binary executable (PR #160)"
+
 echo "PASS: container-state-split-smoke"
