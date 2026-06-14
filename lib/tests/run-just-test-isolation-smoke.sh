@@ -25,10 +25,27 @@ printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
 # loop proceeds cleanly.
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
 printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
+# /scenario-shared is a root-owned named volume in prod; run_just_test's
+# `mkdir -p /scenario-shared && chmod 1777` on it is a privileged op like the
+# chown above (it fails un-privileged, and as reviewer-test in the container
+# self-review chmod hits EPERM). No-op those two ONLY for that path so this
+# un-privileged smoke doesn't trip; every other mkdir/chmod (the repo-dir
+# mode-strip asserted below) passes through to the real binary, kept honest.
+cat > "$d/bin/mkdir" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
+exec "$(command -v -p mkdir)" "$@"
+STUB
+cat > "$d/bin/chmod" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
+exec "$(command -v -p chmod)" "$@"
+STUB
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
 echo "DOCKER_HOST_VISIBLE=${DOCKER_HOST:-<unset>}"
+echo "XDG_CACHE_HOME_VISIBLE=${XDG_CACHE_HOME:-<unset>}"
 STUB
 chmod +x "$d/bin"/*
 export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
@@ -38,6 +55,7 @@ export REVIEWER_TEST_USER=reviewer-test
 run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
+grep -q "XDG_CACHE_HOME_VISIBLE=/scenario-shared" "$d/log" || fail "XDG_CACHE_HOME not steered to /scenario-shared (nested-dind scenario token bridge missing)"
 
 # Mode-strip: the container branch strips group/other write from the checkout
 # after the test, so a leftover proc / a test that ran `chmod 777` can't write it

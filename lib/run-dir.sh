@@ -207,10 +207,25 @@ run_just_test() {
     # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
     if [ -n "${REVIEWER_TEST_USER:-}" ]; then
         chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        # Nested-dind shared dir. A reviewed repo's test stack (e.g. plow's
+        # test-scenarios) may write a file the test runner shares with a stack
+        # container via a host bind mount — but that mount is resolved by the
+        # dind daemon's filesystem, not this reviewer's, so the path must live
+        # on a volume mounted into BOTH at the same location (docker-compose.yml:
+        # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
+        # shared dir here (plow keys it off ${XDG_CACHE_HOME:-$HOME/.cache}); 1777
+        # lets the unprivileged test user create its per-run subdir. Harmless when
+        # the mount is absent (pre-recreate): root just creates a local cache dir.
+        # Fail LOUD at this seam if prep genuinely can't happen (broken/read-only
+        # mount) — review-one-pr.sh runs without `set -e`, so a bare `&&` would
+        # otherwise let a broken bridge surface downstream as an opaque "Unable to
+        # reach your agent" instead of here at the cause.
+        mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
+            || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
         local rc=0
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" XDG_CACHE_HOME=/scenario-shared \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything
