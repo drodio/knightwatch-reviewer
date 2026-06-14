@@ -18,6 +18,17 @@ ARG DOCKER_CLI_VERSION=27.3.1
 # guaranteed false "🧪 Tests failed" on every PR. v5.1.x matches the dev host's
 # compose line, so the reviewer runs what plow is actually tested against.
 ARG COMPOSE_VERSION=5.1.4
+# jq: PINNED to a static 1.7.x binary instead of bookworm's apt 1.6. plow's
+# containers/plow-starter/start.sh gates agent startup on a readiness loop —
+# `until curl -fsS --max-time 2 …/status | jq -e '.config_written == true'` —
+# which depends on jq exiting NON-ZERO when curl produced no output (plowd
+# unreachable → empty stdin). jq 1.6 exits 0 on empty input; jq 1.7 exits 4.
+# Under 1.6 the gate false-passes on the first failed poll, start.sh skips the
+# wait, and test_start_sh.bats's "FATAL exit when plowd /status never reachable"
+# fails → a false "🧪 Tests failed" on every plow PR that reaches test-starter-
+# shell. plow CI runs jq 1.7 (ubuntu noble); match it so the reviewer runs what
+# plow is actually tested against.
+ARG JQ_VERSION=1.7.1
 ARG CODEX_CLI_VERSION=0.134.0
 
 # System deps a reviewed repo's `just test` shells out to. The May-2026
@@ -35,8 +46,10 @@ ARG CODEX_CLI_VERSION=0.134.0
 # (No shellcheck: the suite syntax-checks with `bash -n`; the repo's
 # `# shellcheck source=` lines are directives for external linting, not runs.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git jq ca-certificates curl gnupg coreutils procps python3 python3-venv \
+      git ca-certificates curl gnupg coreutils procps python3 python3-venv \
       sqlite3 ffmpeg \
+ && curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" -o /usr/local/bin/jq \
+ && chmod +x /usr/local/bin/jq \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb \
  && apt-get install -y /tmp/gh.deb && rm /tmp/gh.deb \
  && curl -fsSL https://just.systems/install.sh | bash -s -- --tag "${JUST_VERSION}" --to /usr/local/bin \
