@@ -70,11 +70,11 @@ cd knightwatch-reviewer
 ./install.sh
 ```
 
-`install.sh` symlinks scripts into `~/.pr-reviewer/`, copies the `systemd/*.{service,timer}` files into `/etc/systemd/system/`, daemon-reloads, and enables the timers. Idempotent — re-run after pulling changes.
+`install.sh` symlinks scripts into `~/.pr-reviewer/`, copies the `systemd/*.{service,timer}` files into `/etc/systemd/system/`, daemon-reloads, enables the timers, and `enable`s the boot-managed reviewer-fleet unit (`knightwatch-reviewer.service`) so the containers come back after a reboot. It does **not** start the fleet — that's the `systemctl start` in the containerized deployment below, after the image + secrets exist — so `install.sh` is safe to run before the container stack is built. Idempotent — re-run after pulling changes.
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **The review loop is containerized.** `install.sh` sets up only the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `poll` (the merged /srosro-approve + re-request-review poller), `kid-refresh`, and the specialist `bake-off`. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. No cutover drain is needed before `docker compose up -d`: the host reviewer was disabled ahead of this change, its detached workers are bounded to ~90m (`WORKER_TIMEOUT`), and nothing here re-creates a host reviewer — `review.sh` now runs only as the container loop's entrypoint — so no detached `review-one-pr.sh` from `~/.pr-reviewer` can still be posting by the time the containers start.
+> **The review loop is containerized.** `install.sh` sets up the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `poll` (the merged /srosro-approve + re-request-review poller), `kid-refresh`, and the specialist `bake-off` — plus the boot-persistence unit for the fleet. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. No cutover drain is needed before `docker compose up -d`: the host reviewer was disabled ahead of this change, its detached workers are bounded to ~90m (`WORKER_TIMEOUT`), and nothing here re-creates a host reviewer — `review.sh` now runs only as the container loop's entrypoint — so no detached `review-one-pr.sh` from `~/.pr-reviewer` can still be posting by the time the containers start.
 
 ### Containerized (multi-account) deployment
 
@@ -96,7 +96,12 @@ docker volume create kwr_claims
 # `docker volume ls | grep claims`):
 #   docker run --rm -v <OLD>:/old -v kwr_claims:/new alpine \
 #     sh -c 'cp -a /old/. /new/'
-docker compose up -d
+# First bring-up via systemd (after `./install.sh` has enabled the unit) so the
+# fleet's lifecycle is systemd-owned from the start — graceful `stop` on
+# shutdown + restart-in-tandem on a docker daemon restart. ExecStart is
+# `docker compose up -d`, so this is also the up. (Plain `docker compose up -d`
+# works too, but then systemd doesn't own the lifecycle until the next boot.)
+sudo systemctl start knightwatch-reviewer.service
 docker compose logs -f reviewer-1
 ```
 

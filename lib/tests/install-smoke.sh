@@ -249,13 +249,14 @@ done
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 
-# enable --now called for every timer + the boot-managed fleet service
-# (knightwatch-reviewer.service — the containerized review workers, enabled by
-# the standalone-service block, not the timer loop).
+# enable --now called for every timer (start+enable). The boot-managed fleet
+# service is enabled WITHOUT --now (boot-persistence wiring only — install.sh
+# must not bring the container stack up; first bring-up is `systemctl start` /
+# the deploy's up -d), so it is NOT in the --now count.
 n_enable="$(count_stub 'SYSTEMCTL enable --now')"
-exp_enable=$(( ${#PROD_TIMERS[@]} + 1 ))
-[ "$n_enable" = "$exp_enable" ] || { echo "FAIL scenario 1: expected $exp_enable enable --now calls (timers + fleet), got $n_enable"; cat "$STUB_LOG"; exit 1; }
-grep -q 'SYSTEMCTL enable --now knightwatch-reviewer.service' "$STUB_LOG" || { echo "FAIL scenario 1: boot-managed fleet unit knightwatch-reviewer.service was not enabled"; cat "$STUB_LOG"; exit 1; }
+[ "$n_enable" = "${#PROD_TIMERS[@]}" ] || { echo "FAIL scenario 1: expected ${#PROD_TIMERS[@]} enable --now calls (timers only), got $n_enable"; cat "$STUB_LOG"; exit 1; }
+grep -q 'SYSTEMCTL enable knightwatch-reviewer.service' "$STUB_LOG" || { echo "FAIL scenario 1: boot-managed fleet unit was not enabled (plain enable, no --now)"; cat "$STUB_LOG"; exit 1; }
+grep -q 'SYSTEMCTL enable --now knightwatch-reviewer.service' "$STUB_LOG" && { echo "FAIL scenario 1: fleet unit was enabled with --now (must be boot-wiring only — install.sh must not start the container stack)"; cat "$STUB_LOG"; exit 1; } || true
 
 # --- Scenario 2: idempotent re-run -----------------------------------------
 echo "  scenario 2: re-run with everything already installed — no copy, no reload, no enable..."

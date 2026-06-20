@@ -7,7 +7,13 @@ Description=KnightWatch reviewer — containerized review fleet (docker compose)
 # every reviewer Exited and silently stopped reviewing for hours. systemd now
 # owns the stack lifecycle: `up` (recreating the dind+reviewer pairs in the right
 # order) on boot, graceful `stop` on shutdown — covering reboot AND deploy.
+# PartOf propagates docker.service's stop/restart to this unit: a bare
+# `systemctl restart docker` (daemon upgrade / config reload) tears the
+# containers down, and `Requires=` alone would NOT re-run them — only the
+# reviewer containers carry `restart: unless-stopped`, and their dind sidecars
+# carry none, so the fleet would strand. PartOf re-runs `stop`/`up -d` in tandem.
 Requires=docker.service
+PartOf=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
 

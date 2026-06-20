@@ -312,23 +312,23 @@ for timer in "${timers[@]}"; do
 done
 ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED restarted"
 
-# --- 4b. enable + start the boot-managed reviewer fleet ---------------------
+# --- 4b. enable the boot-managed reviewer fleet -----------------------------
 # The containerized review WORKERS (docker-compose.yml) are a standalone boot
 # service, not timer-triggered like the *.service units above — so the timer
-# loop doesn't reach it. systemd owns `docker compose up/down` so the fleet
-# survives reboots (before this, nothing brought the stack up at boot and a
-# host reboot left every reviewer Exited). Boot-persistence wiring ONLY: this
-# does not restart a running fleet — the deploy's container surface owns that
-# (docker build + a STAGGERED `up -d`, one account at a time, to preserve review
-# capacity). A blanket restart here, fired on any unrelated unit change, would
-# bounce the whole fleet at once and tear down in-flight reviews.
+# loop doesn't reach it. `enable` (NOT `enable --now`): boot-persistence wiring
+# ONLY. install.sh must not bring containers up — a fresh host runs install.sh
+# before the image is built / secrets + kwr_claims exist (see README), so a
+# `--now` here would `docker compose up -d` against a not-yet-ready stack. The
+# FIRST bring-up is `systemctl start knightwatch-reviewer.service` (README) or
+# the deploy's staggered `up -d`; from there systemd owns the lifecycle and
+# starts it on every boot. install.sh also never restarts a running fleet — the
+# deploy's STAGGERED restart (one account at a time) owns that.
 FLEET_UNIT=knightwatch-reviewer.service
-if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null \
-    || ! systemctl is-active "$FLEET_UNIT" --quiet 2>/dev/null; then
-  info "enable --now $FLEET_UNIT (sudo)"
-  sudo systemctl enable --now "$FLEET_UNIT"
+if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null; then
+  info "enable $FLEET_UNIT (sudo)"
+  sudo systemctl enable "$FLEET_UNIT"
 fi
-ok "fleet: $FLEET_UNIT enabled+active"
+ok "fleet: $FLEET_UNIT enabled for boot"
 
 echo
 ok "install complete"
