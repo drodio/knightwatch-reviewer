@@ -251,8 +251,8 @@ done
 
 # enable --now called for every timer (start+enable). The boot-managed fleet
 # service is enabled WITHOUT --now (boot-persistence wiring only — install.sh
-# must not bring the container stack up; first bring-up is `systemctl start` /
-# the deploy's up -d), so it is NOT in the --now count.
+# must not bring the container stack up; the ownership handoff is `systemctl
+# start knightwatch-reviewer.service`), so it is NOT in the --now count.
 n_enable="$(count_stub 'SYSTEMCTL enable --now')"
 [ "$n_enable" = "${#PROD_TIMERS[@]}" ] || { echo "FAIL scenario 1: expected ${#PROD_TIMERS[@]} enable --now calls (timers only), got $n_enable"; cat "$STUB_LOG"; exit 1; }
 grep -q 'SYSTEMCTL enable knightwatch-reviewer.service' "$STUB_LOG" || { echo "FAIL scenario 1: boot-managed fleet unit was not enabled (plain enable, no --now)"; cat "$STUB_LOG"; exit 1; }

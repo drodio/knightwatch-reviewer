@@ -319,10 +319,13 @@ ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED re
 # ONLY. install.sh must not bring containers up — a fresh host runs install.sh
 # before the image is built / secrets + kwr_claims exist (see README), so a
 # `--now` here would `docker compose up -d` against a not-yet-ready stack. The
-# FIRST bring-up is `systemctl start knightwatch-reviewer.service` (README) or
-# the deploy's staggered `up -d`; from there systemd owns the lifecycle and
-# starts it on every boot. install.sh also never restarts a running fleet — the
-# deploy's STAGGERED restart (one account at a time) owns that.
+# ownership handoff is `systemctl start knightwatch-reviewer.service` (README) —
+# only that holds the oneshot unit active (RemainAfterExit), which is what makes
+# graceful `stop` on shutdown + PartOf restart-in-tandem actually apply. The
+# deploy does its STAGGERED `up -d` (zero-downtime, one account at a time) and
+# then `systemctl start` to hand the running stack to systemd. A bare `up -d`
+# alone leaves this unit inactive (no graceful stop / PartOf) until the next
+# boot. install.sh never restarts a running fleet — the staggered restart owns that.
 FLEET_UNIT=knightwatch-reviewer.service
 if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null; then
   info "enable $FLEET_UNIT (sudo)"

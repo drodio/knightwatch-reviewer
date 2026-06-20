@@ -98,9 +98,12 @@ docker volume create kwr_claims
 #     sh -c 'cp -a /old/. /new/'
 # First bring-up via systemd (after `./install.sh` has enabled the unit) so the
 # fleet's lifecycle is systemd-owned from the start — graceful `stop` on
-# shutdown + restart-in-tandem on a docker daemon restart. ExecStart is
-# `docker compose up -d`, so this is also the up. (Plain `docker compose up -d`
-# works too, but then systemd doesn't own the lifecycle until the next boot.)
+# shutdown + restart-in-tandem on a docker daemon restart (PartOf). ExecStart is
+# `docker compose up -d`, so this both starts the stack AND hands it to systemd.
+# Always finish a bring-up this way: a bare `docker compose up -d` starts the
+# containers but leaves this unit inactive, so graceful stop + PartOf don't apply
+# until the next boot. (A redeploy does its staggered `up -d` for zero downtime,
+# then `systemctl start` here to re-establish systemd ownership.)
 sudo systemctl start knightwatch-reviewer.service
 docker compose logs -f reviewer-1
 ```
