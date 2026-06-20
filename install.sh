@@ -312,5 +312,23 @@ for timer in "${timers[@]}"; do
 done
 ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED restarted"
 
+# --- 4b. enable + start the boot-managed reviewer fleet ---------------------
+# The containerized review WORKERS (docker-compose.yml) are a standalone boot
+# service, not timer-triggered like the *.service units above — so the timer
+# loop doesn't reach it. systemd owns `docker compose up/down` so the fleet
+# survives reboots (before this, nothing brought the stack up at boot and a
+# host reboot left every reviewer Exited). Boot-persistence wiring ONLY: this
+# does not restart a running fleet — the deploy's container surface owns that
+# (docker build + a STAGGERED `up -d`, one account at a time, to preserve review
+# capacity). A blanket restart here, fired on any unrelated unit change, would
+# bounce the whole fleet at once and tear down in-flight reviews.
+FLEET_UNIT=knightwatch-reviewer.service
+if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null \
+    || ! systemctl is-active "$FLEET_UNIT" --quiet 2>/dev/null; then
+  info "enable --now $FLEET_UNIT (sudo)"
+  sudo systemctl enable --now "$FLEET_UNIT"
+fi
+ok "fleet: $FLEET_UNIT enabled+active"
+
 echo
 ok "install complete"

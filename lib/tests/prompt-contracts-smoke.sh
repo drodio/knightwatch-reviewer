@@ -370,7 +370,12 @@ done
 # exempt from the bin-ordering check (still subject to the other two).
 echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + nvm-bin precedence..."
 for unit in systemd/*.service; do
-    rw_line=$(grep -E '^ReadWritePaths=' "$unit")
+    # ReadWritePaths is optional: the boot-managed fleet unit
+    # (knightwatch-reviewer.service) drives the docker socket and isn't
+    # ProtectHome-sandboxed, so it carries no RW grant. The denylist loop below
+    # passes vacuously on an empty grant; `|| true` keeps set -e from aborting on
+    # the no-match. The /usr-first PATH check stays mandatory for EVERY unit.
+    rw_line=$(grep -E '^ReadWritePaths=' "$unit" || true)
     path_line=$(grep -E '^Environment=PATH=' "$unit")
 
     rhs="${rw_line#ReadWritePaths=}"
@@ -406,6 +411,22 @@ for unit in systemd/*.service; do
         esac
     fi
 done
+
+# The fleet unit's lifecycle contract is load-bearing and fails silently if
+# broken: RemainAfterExit=yes keeps the Type=oneshot unit "active" so ExecStop
+# fires on shutdown/restart — drop it and `docker compose stop` never runs, so
+# the fleet takes a SIGKILL (exit 137) on every reboot, the exact failure this
+# unit was added to fix. Pin all four lines so a regression goes red instead of
+# silently shipping a fleet that doesn't stop gracefully.
+echo "  asserting knightwatch-reviewer.service lifecycle contract (oneshot + RemainAfterExit + up/stop Execs)..."
+assert_grep 'fleet unit must be Type=oneshot' \
+    'Type=oneshot' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must set RemainAfterExit=yes so ExecStop fires on shutdown/restart' \
+    'RemainAfterExit=yes' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must bring the stack up via compose up -d' \
+    'ExecStart=/usr/bin/docker compose up -d' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must gracefully stop via compose stop (not SIGKILL)' \
+    'ExecStop=/usr/bin/docker compose stop' systemd/knightwatch-reviewer.service
 
 # The learn-service guidance auto-commit is a two-file path contract: the
 # script's commit target and the unit's ReadWritePaths grant must name the same

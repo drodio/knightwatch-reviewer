@@ -1,0 +1,45 @@
+[Unit]
+Description=KnightWatch reviewer — containerized review fleet (docker compose)
+# The review WORKERS run as docker containers (docker-compose.yml), unlike the
+# pr-reviewer-* timers which are host scripts. Nothing brought the stack up at
+# boot before this unit: the fleet relied solely on per-container `restart:`
+# policy, which did NOT survive a host reboot — so a kernel-upgrade reboot left
+# every reviewer Exited and silently stopped reviewing for hours. systemd now
+# owns the stack lifecycle: `up` (recreating the dind+reviewer pairs in the right
+# order) on boot, graceful `stop` on shutdown — covering reboot AND deploy.
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=odio
+Group=odio
+# Deployed clone (~/services per the code-vs-deploy split) — the compose file
+# and its override live here, not in ~/.pr-reviewer. Host-specific by design,
+# matching the /home/odio/ paths baked into the sibling units.
+WorkingDirectory=/home/odio/services/knightwatch-reviewer
+Environment=HOME=/home/odio
+# PATH: system dirs FIRST, matching the sibling units — uniform security stance
+# (no writable user dir searched ahead of /usr). ExecStart uses an absolute
+# docker path, so this is belt-and-suspenders for any helper compose invokes.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# `compose up -d` returns once containers are started; RemainAfterExit keeps the
+# unit active so ExecStop fires on shutdown/restart. --remove-orphans drops any
+# service renamed/removed by a prior compose revision.
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+# Graceful stop on shutdown/restart — avoids the SIGKILL (exit 137) the reviewers
+# took when the host reboot tore the daemon down underneath them. `stop` (not
+# `down`) preserves containers/networks so the next `up` is fast.
+ExecStop=/usr/bin/docker compose stop
+# A first boot with images absent pulls docker:27-dind (and the reviewer image
+# if not yet built by the deploy); give compose room before systemd calls the
+# start a failure.
+TimeoutStartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knightwatch-reviewer
+
+[Install]
+WantedBy=multi-user.target
