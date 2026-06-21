@@ -78,7 +78,10 @@ Only `auth.json` is strictly required; copying the whole dir is simplest.
    reviewer), and the `codex-account-c` mount. Add `reviewer3-local` +
    `dind3-lib` + `scenario-shared3` to the
    `volumes:` block.
-3. `docker compose up -d`.
+3. `docker compose up -d` to create the new pair, then `sudo systemctl start
+   knightwatch-reviewer.service` to keep the fleet under systemd ownership
+   (graceful `stop` + `PartOf`), matching the main README's bring-up — a no-op if
+   the unit is already active.
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
 toward the box's total — keep headroom for production Plow.

@@ -312,5 +312,26 @@ for timer in "${timers[@]}"; do
 done
 ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED restarted"
 
+# --- 4b. enable the boot-managed reviewer fleet -----------------------------
+# The containerized review WORKERS (docker-compose.yml) are a standalone boot
+# service, not timer-triggered like the *.service units above — so the timer
+# loop doesn't reach it. `enable` (NOT `enable --now`): boot-persistence wiring
+# ONLY. install.sh must not bring containers up — a fresh host runs install.sh
+# before the image is built / secrets + kwr_claims exist (see README), so a
+# `--now` here would `docker compose up -d` against a not-yet-ready stack. The
+# ownership handoff is `systemctl start knightwatch-reviewer.service` (README) —
+# only that holds the oneshot unit active (RemainAfterExit), which is what makes
+# graceful `stop` on shutdown + PartOf restart-in-tandem actually apply. The
+# deploy does its STAGGERED `up -d` (zero-downtime, one account at a time) and
+# then `systemctl start` to hand the running stack to systemd. A bare `up -d`
+# alone leaves this unit inactive (no graceful stop / PartOf) until the next
+# boot. install.sh never restarts a running fleet — the staggered restart owns that.
+FLEET_UNIT=knightwatch-reviewer.service
+if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null; then
+  info "enable $FLEET_UNIT (sudo)"
+  sudo systemctl enable "$FLEET_UNIT"
+fi
+ok "fleet: $FLEET_UNIT enabled for boot"
+
 echo
 ok "install complete"
