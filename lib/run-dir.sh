@@ -224,7 +224,14 @@ reclaim_scenario_shared_caches() {
         if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit)" ]; then
             rm -rf "$dir" || return 1
         fi
-        [ -e "$dir" ] || { mkdir -p "$dir" && chown "$user" "$dir"; } || return 1
+        # Recreate with a NON-`-p` mkdir: PR-controlled tests get DOCKER_HOST and can
+        # leave a dind-side process mutating this shared volume, which could race a
+        # symlink into place between the discard and here. `mkdir -p` would accept
+        # that symlink (it already "exists") and the following chown would dereference
+        # it, handing ownership of a sibling shared-volume dir to the test user. Plain
+        # `mkdir` returns EEXIST on the raced symlink → fail loud before chown. The
+        # parent /scenario-shared is created by the caller, so `-p` isn't needed anyway.
+        [ -e "$dir" ] || { mkdir "$dir" && chown "$user" "$dir"; } || return 1
     done
 }
 
