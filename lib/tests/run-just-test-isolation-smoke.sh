@@ -26,14 +26,16 @@ printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
 printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 # /scenario-shared is a root-owned named volume in prod; run_just_test's
-# `mkdir -p /scenario-shared && chmod 1777` on it is a privileged op like the
-# chown above (it fails un-privileged, and as reviewer-test in the container
-# self-review chmod hits EPERM). No-op those two ONLY for that path so this
-# un-privileged smoke doesn't trip; every other mkdir/chmod (the repo-dir
-# mode-strip asserted below) passes through to the real binary, kept honest.
+# `mkdir -p /scenario-shared && chmod 1777` on it (and the reclaim helper's
+# `mkdir /scenario-shared/{uv,pip}` under it) are privileged ops like the chown
+# above (they fail un-privileged, and as reviewer-test in the container self-
+# review chmod hits EPERM). No-op any /scenario-shared* path so this un-privileged
+# smoke doesn't trip; every other mkdir/chmod (the repo-dir mode-strip asserted
+# below) passes through to the real binary, kept honest. The reclaim seam's own
+# behavior is tested directly further down against a real temp root, not here.
 cat > "$d/bin/mkdir" <<'STUB'
 #!/bin/bash
-for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
+for a in "$@"; do case "$a" in /scenario-shared*) exit 0;; esac; done
 exec "$(command -v -p mkdir)" "$@"
 STUB
 cat > "$d/bin/chmod" <<'STUB'
@@ -70,5 +72,32 @@ run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 unset REVIEWER_TEST_USER
 run_just_test /dev/null "$d/repo" "$d/log2" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpectedly scrubbed the env (should be container-only)"
+
+# reclaim_scenario_shared_caches: the run_just_test pre-runuser step that heals a
+# stale root-owned uv/pip cache on the persistent scenario-shared volume. Its core
+# root→test-user OWNERSHIP transition is uid-gated (needs root, like the chown/
+# runuser/reap above) so it's a bring-up + live-on-fleet check, not asserted here.
+# What IS unit-testable without a uid switch is the safety contract the isolation
+# leans on: leave a correctly-owned cache AND the sibling token bridge untouched,
+# and fail LOUD (non-zero) when a privileged op can't complete. Run with the real
+# chown/rm/stat unshadowed — the stubs above fake chown to exit 0, which would
+# mask the fail-loud path.
+realp="${PATH#"$d/bin:"}"
+sroot=$(mktemp -d)
+mkdir -p "$sroot/uv/pkgs" "$sroot/pip/pkgs" "$sroot/plow-scenario-shared"
+touch "$sroot/uv/pkgs/wheel" "$sroot/pip/pkgs/wheel" "$sroot/plow-scenario-shared/bridge-token"
+# Already test-user-owned (we own the mktemp tree) → no-op: caches survive intact
+# (NOT discarded) and the sibling token bridge is never touched (scoped to uv/pip).
+PATH="$realp" reclaim_scenario_shared_caches "$sroot" "$(id -un)" || fail "reclaim returned non-zero on already-correct caches"
+{ [ -f "$sroot/uv/pkgs/wheel" ] && [ -f "$sroot/pip/pkgs/wheel" ]; } || fail "reclaim discarded a correctly-owned cache (should be a no-op)"
+[ -f "$sroot/plow-scenario-shared/bridge-token" ] || fail "reclaim touched the sibling token bridge (must be scoped to uv/pip)"
+# Wrong owner → exercises the discard+recreate path; the chown to a user we can't
+# become fails, and the helper must surface that as non-zero so run_just_test
+# aborts instead of running against a still-broken cache. Bridge stays untouched.
+PATH="$realp" reclaim_scenario_shared_caches "$sroot" "nobody-does-not-own-this" && fail "reclaim did not fail loud when the privileged chown could not complete"
+[ -d "$sroot/plow-scenario-shared" ] || fail "reclaim removed the sibling token bridge on the reclaim path"
+# Empty root rejected — guards an rm against a mis-derived path.
+PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
+rm -rf "$sroot"
 
 echo "PASS: run-just-test-isolation-smoke"
