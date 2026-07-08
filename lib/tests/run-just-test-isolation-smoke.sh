@@ -119,5 +119,15 @@ if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; the container self-
     PATH="$realp" reclaim_scenario_shared_caches "$roroot" "$(id -un)" && fail "reclaim did not fail loud when it could not create the cache dir"
     chmod 700 "$roroot"; rm -rf "$roroot"
 fi
+# A symlink raced into the cache path (a dind-side test process can, via DOCKER_HOST,
+# mutate this shared volume) must fail loud via the non-`-p` mkdir before chown can
+# dereference it and hand the target's ownership to the test user. Deterministic and
+# unprivileged with a DANGLING symlink: `[ -e ]` is false (target absent) so control
+# reaches `mkdir "$dir"`, which refuses the existing name (EEXIST). Locks the non-`-p`
+# contract against a revert to `mkdir -p` (which would accept the symlink and chown it).
+slroot=$(mktemp -d); ln -s "$slroot/no-such-target" "$slroot/uv"
+PATH="$realp" reclaim_scenario_shared_caches "$slroot" "$(id -un)" && fail "reclaim did not fail loud on a symlink occupying the cache path"
+[ -L "$slroot/uv" ] || fail "reclaim followed/replaced the symlink at the cache path instead of failing loud"
+rm -rf "$slroot"
 
 echo "PASS: run-just-test-isolation-smoke"
