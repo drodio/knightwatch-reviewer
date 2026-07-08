@@ -111,7 +111,9 @@ rm -rf "$sroot"
 # and silently reads as "nothing foreign"), and a create into an unwritable root
 # surfaces the mkdir failure.
 PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
-PATH="$realp" reclaim_scenario_shared_caches /tmp "nobody-does-not-exist" && fail "reclaim did not fail loud on an unresolvable user"
+badroot=$(mktemp -d)   # disposable, not a shared path — so an ordering regression that ran the rm loop can't touch /tmp itself
+PATH="$realp" reclaim_scenario_shared_caches "$badroot" "nobody-does-not-exist" && fail "reclaim did not fail loud on an unresolvable user"
+rm -rf "$badroot"
 if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; the container self-review runs unprivileged
     roroot=$(mktemp -d); chmod 500 "$roroot"
     PATH="$realp" reclaim_scenario_shared_caches "$roroot" "$(id -un)" && fail "reclaim did not fail loud when it could not create the cache dir"
