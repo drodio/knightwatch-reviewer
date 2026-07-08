@@ -222,6 +222,29 @@ run_just_test() {
         # reach your agent" instead of here at the cause.
         mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
             || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
+        # The scenario-shared* named volume PERSISTS across container recreates and
+        # image rebuilds, so a package-manager cache under XDG_CACHE_HOME that was
+        # seeded root-owned (e.g. a `just test` that ran as root before this
+        # unprivileged-test-user isolation existed) stays root:root 0755 forever —
+        # and the sticky 1777 parent above does NOT make its contents writable. The
+        # test user then hits EACCES the first time uv/pip touches its cache and the
+        # whole run aborts before a single test executes (uv: "Failed to initialize
+        # cache at /scenario-shared/uv … Permission denied"), which the classifier
+        # reports as a spurious "Tests failed (exit 2)". Reclaim the caches for the
+        # test user before dropping privileges. chown -R is an idempotent no-op when
+        # already correct, so run it unconditionally rather than guard on top-level
+        # ownership — a guard would skip a mixed tree (root-owned entries under a
+        # test-user-owned root, e.g. an interrupted reclaim when the fleet is
+        # SIGKILLed), leaving the EACCES to recur. A cache dir that doesn't exist yet
+        # is created test-user-owned by the tool itself. Scoped to the package-manager
+        # caches — NOT a blanket chown of /scenario-shared, whose other entries are
+        # the root-owned dind token bridge the unprivileged user must not be handed.
+        local _cache
+        for _cache in uv pip; do
+            if [ -e "/scenario-shared/$_cache" ]; then
+                chown -R "$REVIEWER_TEST_USER" "/scenario-shared/$_cache"
+            fi
+        done
         local rc=0
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
