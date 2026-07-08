@@ -210,7 +210,14 @@ reclaim_scenario_shared_caches() {
     [ -n "$root" ] || return 1
     for cache in uv pip; do
         dir="$root/$cache"
-        if [ -e "$dir" ] && [ "$(stat -c %U "$dir")" != "$user" ]; then
+        # Discard when ANY entry (not just the top) is foreign-owned. A top-level
+        # ownership guard would skip a MIXED tree — user-owned top, root-owned deep
+        # child — which a `chown -R` interrupted by a SIGKILL (the fleet's timeout/
+        # reboot reap) can leave behind: uv creates its top-level lock fine but then
+        # hits EACCES on the root-owned package subdir, and a top-level guard would
+        # never self-heal it. `-print -quit` stops at the first foreign entry, so the
+        # probe is cheap; discard+recreate (not chown -R) keeps the repair hardlink-safe.
+        if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit 2>/dev/null)" ]; then
             rm -rf "$dir" || return 1
         fi
         [ -e "$dir" ] || { mkdir -p "$dir" && chown "$user" "$dir"; } || return 1

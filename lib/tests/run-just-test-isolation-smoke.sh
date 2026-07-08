@@ -86,18 +86,23 @@ realp="${PATH#"$d/bin:"}"
 sroot=$(mktemp -d)
 mkdir -p "$sroot/uv/pkgs" "$sroot/pip/pkgs" "$sroot/plow-scenario-shared"
 touch "$sroot/uv/pkgs/wheel" "$sroot/pip/pkgs/wheel" "$sroot/plow-scenario-shared/bridge-token"
-# Already test-user-owned (we own the mktemp tree) → no-op: caches survive intact
-# (NOT discarded) and the sibling token bridge is never touched (scoped to uv/pip).
+# Every entry already test-user-owned → the foreign-entry probe finds nothing →
+# no-op: caches survive intact (NOT discarded) and the sibling token bridge is
+# never touched (scoped to uv/pip). (The discard→recreate TRANSITION needs a
+# genuinely foreign-owned entry, which needs root to plant — so, like the chown/
+# runuser above, it's a bring-up + live-on-fleet check, incl. the mixed-tree heal.)
 PATH="$realp" reclaim_scenario_shared_caches "$sroot" "$(id -un)" || fail "reclaim returned non-zero on already-correct caches"
 { [ -f "$sroot/uv/pkgs/wheel" ] && [ -f "$sroot/pip/pkgs/wheel" ]; } || fail "reclaim discarded a correctly-owned cache (should be a no-op)"
 [ -f "$sroot/plow-scenario-shared/bridge-token" ] || fail "reclaim touched the sibling token bridge (must be scoped to uv/pip)"
-# Wrong owner → exercises the discard+recreate path; the chown to a user we can't
-# become fails, and the helper must surface that as non-zero so run_just_test
-# aborts instead of running against a still-broken cache. Bridge stays untouched.
-PATH="$realp" reclaim_scenario_shared_caches "$sroot" "nobody-does-not-own-this" && fail "reclaim did not fail loud when the privileged chown could not complete"
-[ -d "$sroot/plow-scenario-shared" ] || fail "reclaim removed the sibling token bridge on the reclaim path"
-# Empty root rejected — guards an rm against a mis-derived path.
-PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
 rm -rf "$sroot"
+# Fail LOUD (non-zero) when a privileged op can't complete, so run_just_test aborts
+# instead of running against a still-broken cache: an empty root is rejected
+# outright, and a create into an unwritable root surfaces the mkdir failure.
+PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
+if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; the container self-review runs unprivileged
+    roroot=$(mktemp -d); chmod 500 "$roroot"
+    PATH="$realp" reclaim_scenario_shared_caches "$roroot" "$(id -un)" && fail "reclaim did not fail loud when it could not create the cache dir"
+    chmod 700 "$roroot"; rm -rf "$roroot"
+fi
 
 echo "PASS: run-just-test-isolation-smoke"
