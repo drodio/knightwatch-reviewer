@@ -43,6 +43,16 @@ cat > "$d/bin/chmod" <<'STUB'
 for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
 exec "$(command -v -p chmod)" "$@"
 STUB
+# reviewer-test (uid 10001) is created in the Dockerfile but does not exist on the
+# unprivileged test host, so reclaim_scenario_shared_caches's `id -u <user>` guard
+# would reject it. Fake ONLY that name as resolvable (like the chown/runuser stubs
+# paper over its non-existence); every other id query — the reclaim tests' own
+# `id -un`/`id -u`, the invalid-user fail-loud case — passes through, kept honest.
+cat > "$d/bin/id" <<'STUB'
+#!/bin/bash
+for a in "$@"; do [ "$a" = reviewer-test ] && exit 0; done
+exec "$(command -v -p id)" "$@"
+STUB
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
@@ -95,10 +105,13 @@ PATH="$realp" reclaim_scenario_shared_caches "$sroot" "$(id -un)" || fail "recla
 { [ -f "$sroot/uv/pkgs/wheel" ] && [ -f "$sroot/pip/pkgs/wheel" ]; } || fail "reclaim discarded a correctly-owned cache (should be a no-op)"
 [ -f "$sroot/plow-scenario-shared/bridge-token" ] || fail "reclaim touched the sibling token bridge (must be scoped to uv/pip)"
 rm -rf "$sroot"
-# Fail LOUD (non-zero) when a privileged op can't complete, so run_just_test aborts
-# instead of running against a still-broken cache: an empty root is rejected
-# outright, and a create into an unwritable root surfaces the mkdir failure.
+# Fail LOUD (non-zero) when it can't do its job, so run_just_test aborts instead of
+# running against a still-broken cache: an empty root is rejected outright, an
+# unresolvable user is rejected before the probe (else `find ! -user <bad>` errors
+# and silently reads as "nothing foreign"), and a create into an unwritable root
+# surfaces the mkdir failure.
 PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
+PATH="$realp" reclaim_scenario_shared_caches /tmp "nobody-does-not-exist" && fail "reclaim did not fail loud on an unresolvable user"
 if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; the container self-review runs unprivileged
     roroot=$(mktemp -d); chmod 500 "$roroot"
     PATH="$realp" reclaim_scenario_shared_caches "$roroot" "$(id -un)" && fail "reclaim did not fail loud when it could not create the cache dir"

@@ -208,6 +208,10 @@ format_review_scope() {
 reclaim_scenario_shared_caches() {
     local root="$1" user="$2" cache dir
     [ -n "$root" ] || return 1
+    # Validate USER resolves before the probe: `find ! -user <bad>` errors and
+    # prints nothing, which would read as "no foreign entry" and silently no-op a
+    # still-broken cache — fail loud on a misconfigured REVIEWER_TEST_USER instead.
+    id -u "$user" >/dev/null 2>&1 || return 1
     for cache in uv pip; do
         dir="$root/$cache"
         # Discard when ANY entry (not just the top) is foreign-owned. A top-level
@@ -217,7 +221,7 @@ reclaim_scenario_shared_caches() {
         # hits EACCES on the root-owned package subdir, and a top-level guard would
         # never self-heal it. `-print -quit` stops at the first foreign entry, so the
         # probe is cheap; discard+recreate (not chown -R) keeps the repair hardlink-safe.
-        if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit 2>/dev/null)" ]; then
+        if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit)" ]; then
             rm -rf "$dir" || return 1
         fi
         [ -e "$dir" ] || { mkdir -p "$dir" && chown "$user" "$dir"; } || return 1
