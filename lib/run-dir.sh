@@ -213,7 +213,8 @@ run_just_test() {
         # dind daemon's filesystem, not this reviewer's, so the path must live
         # on a volume mounted into BOTH at the same location (docker-compose.yml:
         # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
-        # shared dir here (plow keys it off ${XDG_CACHE_HOME:-$HOME/.cache}); 1777
+        # shared dir here (plow keys ONLY its bridge dir off it —
+        # ${XDG_CACHE_HOME:-$HOME/.cache}/plow-scenario-shared, justfile:243); 1777
         # lets the unprivileged test user create its per-run subdir. Harmless when
         # the mount is absent (pre-recreate): root just creates a local cache dir.
         # Fail LOUD at this seam if prep genuinely can't happen (broken/read-only
@@ -223,9 +224,20 @@ run_just_test() {
         mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
             || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
         local rc=0
+        # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
+        # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
+        # XDG_CACHE_HOME, which must stay /scenario-shared for plow's bridge above).
+        # Without this the caches default to $XDG_CACHE_HOME/{uv,pip} on the persistent,
+        # PR-influenceable shared volume — the source of both the stale-root-ownership
+        # EACCES that spuriously failed tests AND the symlink/ownership races a
+        # dind-side process could run against an in-place root repair. On HOME they're
+        # created fresh, test-user-owned, on a path dind can't touch — no repair needed.
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" XDG_CACHE_HOME=/scenario-shared \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+                XDG_CACHE_HOME=/scenario-shared \
+                UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
+                PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything

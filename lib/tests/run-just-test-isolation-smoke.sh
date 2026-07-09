@@ -46,6 +46,8 @@ cat > "$d/bin/just" <<'STUB'
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
 echo "DOCKER_HOST_VISIBLE=${DOCKER_HOST:-<unset>}"
 echo "XDG_CACHE_HOME_VISIBLE=${XDG_CACHE_HOME:-<unset>}"
+echo "UV_CACHE_DIR_VISIBLE=${UV_CACHE_DIR:-<unset>}"
+echo "PIP_CACHE_DIR_VISIBLE=${PIP_CACHE_DIR:-<unset>}"
 STUB
 chmod +x "$d/bin"/*
 export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
@@ -56,6 +58,12 @@ run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=/scenario-shared" "$d/log" || fail "XDG_CACHE_HOME not steered to /scenario-shared (nested-dind scenario token bridge missing)"
+# uv/pip package caches must be redirected OFF the dind-shared volume (onto the test
+# user's HOME) so no dind-side process can race them and no stale root ownership can
+# accrue there — while XDG_CACHE_HOME stays /scenario-shared for plow's bridge.
+grep -q "UV_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/uv" "$d/log"   || fail "UV_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
+grep -q "PIP_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/pip" "$d/log" || fail "PIP_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
+grep -qE "(UV|PIP)_CACHE_DIR_VISIBLE=/scenario-shared" "$d/log" && fail "a package cache is still pointed at the dind-shared /scenario-shared volume" || true
 
 # Mode-strip: the container branch strips group/other write from the checkout
 # after the test, so a leftover proc / a test that ran `chmod 777` can't write it
