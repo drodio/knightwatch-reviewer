@@ -224,14 +224,19 @@ reclaim_scenario_shared_caches() {
         if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit)" ]; then
             rm -rf "$dir" || return 1
         fi
-        # Recreate with a NON-`-p` mkdir: PR-controlled tests get DOCKER_HOST and can
-        # leave a dind-side process mutating this shared volume, which could race a
-        # symlink into place between the discard and here. `mkdir -p` would accept
-        # that symlink (it already "exists") and the following chown would dereference
-        # it, handing ownership of a sibling shared-volume dir to the test user. Plain
-        # `mkdir` returns EEXIST on the raced symlink → fail loud before chown. The
-        # parent /scenario-shared is created by the caller, so `-p` isn't needed anyway.
-        [ -e "$dir" ] || { mkdir "$dir" && chown "$user" "$dir"; } || return 1
+        # Require a real, non-symlink directory here; anything else is discarded and
+        # recreated with a NON-`-p` mkdir that fails loud. PR-controlled tests get
+        # DOCKER_HOST and can leave a dind-side process racing a symlink into the cache
+        # path between the discard and here. Guarding on `[ -e ]` (which follows
+        # symlinks) would treat such a symlink as "already there" — a dangling one then
+        # breaks recreate, and one pointing at a sibling dir would silently pass, the
+        # later XDG_CACHE_HOME test run writing its package cache straight through the
+        # link into that sibling (and `mkdir -p` would additionally let a following
+        # chown dereference it, handing over the target's ownership). `[ -d ] && [ ! -L ]`
+        # routes every symlink variant to `mkdir`, which returns EEXIST on the existing
+        # name → fail loud before any chown or test run. (`-p` isn't needed: the parent
+        # /scenario-shared is created by the caller.)
+        [ -d "$dir" ] && [ ! -L "$dir" ] || { mkdir "$dir" && chown "$user" "$dir"; } || return 1
     done
 }
 

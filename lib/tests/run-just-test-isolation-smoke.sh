@@ -126,8 +126,15 @@ fi
 # reaches `mkdir "$dir"`, which refuses the existing name (EEXIST). Locks the non-`-p`
 # contract against a revert to `mkdir -p` (which would accept the symlink and chown it).
 slroot=$(mktemp -d); ln -s "$slroot/no-such-target" "$slroot/uv"
-PATH="$realp" reclaim_scenario_shared_caches "$slroot" "$(id -un)" && fail "reclaim did not fail loud on a symlink occupying the cache path"
-[ -L "$slroot/uv" ] || fail "reclaim followed/replaced the symlink at the cache path instead of failing loud"
+PATH="$realp" reclaim_scenario_shared_caches "$slroot" "$(id -un)" && fail "reclaim did not fail loud on a dangling symlink occupying the cache path"
+[ -L "$slroot/uv" ] || fail "reclaim followed/replaced the dangling symlink at the cache path instead of failing loud"
 rm -rf "$slroot"
+# ...and a symlink to an EXISTING dir: `[ -e ]` would be true and pass it through, so
+# the test would write its cache straight through the link into the sibling. `[ -d ] &&
+# [ ! -L ]` rejects it → mkdir EEXIST → fail loud, target neither followed nor written.
+sl2=$(mktemp -d); mkdir "$sl2/sibling"; touch "$sl2/sibling/keep"; ln -s "$sl2/sibling" "$sl2/uv"
+PATH="$realp" reclaim_scenario_shared_caches "$sl2" "$(id -un)" && fail "reclaim did not fail loud on a symlink to an existing dir at the cache path"
+{ [ -L "$sl2/uv" ] && [ -f "$sl2/sibling/keep" ]; } || fail "reclaim followed/clobbered the symlink target instead of failing loud"
+rm -rf "$sl2"
 
 echo "PASS: run-just-test-isolation-smoke"
