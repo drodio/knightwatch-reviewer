@@ -26,16 +26,14 @@ printf '#!/bin/bash\nexit 0\n'             > "$d/bin/chown"
 printf '#!/bin/bash\nexit 0\n'             > "$d/bin/pkill"
 printf '#!/bin/bash\nexit 1\n'             > "$d/bin/pgrep"
 # /scenario-shared is a root-owned named volume in prod; run_just_test's
-# `mkdir -p /scenario-shared && chmod 1777` on it (and the reclaim helper's
-# `mkdir /scenario-shared/{uv,pip}` under it) are privileged ops like the chown
-# above (they fail un-privileged, and as reviewer-test in the container self-
-# review chmod hits EPERM). No-op any /scenario-shared* path so this un-privileged
-# smoke doesn't trip; every other mkdir/chmod (the repo-dir mode-strip asserted
-# below) passes through to the real binary, kept honest. The reclaim seam's own
-# behavior is tested directly further down against a real temp root, not here.
+# `mkdir -p /scenario-shared && chmod 1777` on it is a privileged op like the
+# chown above (it fails un-privileged, and as reviewer-test in the container
+# self-review chmod hits EPERM). No-op those two ONLY for that path so this
+# un-privileged smoke doesn't trip; every other mkdir/chmod (the repo-dir
+# mode-strip asserted below) passes through to the real binary, kept honest.
 cat > "$d/bin/mkdir" <<'STUB'
 #!/bin/bash
-for a in "$@"; do case "$a" in /scenario-shared*) exit 0;; esac; done
+for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
 exec "$(command -v -p mkdir)" "$@"
 STUB
 cat > "$d/bin/chmod" <<'STUB'
@@ -43,21 +41,13 @@ cat > "$d/bin/chmod" <<'STUB'
 for a in "$@"; do [ "$a" = /scenario-shared ] && exit 0; done
 exec "$(command -v -p chmod)" "$@"
 STUB
-# reviewer-test (uid 10001) is created in the Dockerfile but does not exist on the
-# unprivileged test host, so reclaim_scenario_shared_caches's `id -u <user>` guard
-# would reject it. Fake ONLY that name as resolvable (like the chown/runuser stubs
-# paper over its non-existence); every other id query — the reclaim tests' own
-# `id -un`/`id -u`, the invalid-user fail-loud case — passes through, kept honest.
-cat > "$d/bin/id" <<'STUB'
-#!/bin/bash
-for a in "$@"; do [ "$a" = reviewer-test ] && exit 0; done
-exec "$(command -v -p id)" "$@"
-STUB
 cat > "$d/bin/just" <<'STUB'
 #!/bin/bash
 echo "GH_TOKEN_VISIBLE=${GH_TOKEN:-<unset>}"
 echo "DOCKER_HOST_VISIBLE=${DOCKER_HOST:-<unset>}"
 echo "XDG_CACHE_HOME_VISIBLE=${XDG_CACHE_HOME:-<unset>}"
+echo "UV_CACHE_DIR_VISIBLE=${UV_CACHE_DIR:-<unset>}"
+echo "PIP_CACHE_DIR_VISIBLE=${PIP_CACHE_DIR:-<unset>}"
 STUB
 chmod +x "$d/bin"/*
 export PATH="$d/bin:$PATH" DOCKER_HOST="tcp://dind:2375" GH_TOKEN="secret-xyz"
@@ -68,6 +58,12 @@ run_just_test /dev/null "$d/repo" "$d/log" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=<unset>" "$d/log"            || fail "GH_TOKEN leaked into the test command env despite the env -i scrub"
 grep -q "DOCKER_HOST_VISIBLE=tcp://dind:2375" "$d/log" || fail "DOCKER_HOST not preserved for the dind daemon"
 grep -q "XDG_CACHE_HOME_VISIBLE=/scenario-shared" "$d/log" || fail "XDG_CACHE_HOME not steered to /scenario-shared (nested-dind scenario token bridge missing)"
+# uv/pip package caches must be redirected OFF the dind-shared volume (onto the test
+# user's HOME) so no dind-side process can race them and no stale root ownership can
+# accrue there — while XDG_CACHE_HOME stays /scenario-shared for plow's bridge.
+grep -q "UV_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/uv" "$d/log"   || fail "UV_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
+grep -q "PIP_CACHE_DIR_VISIBLE=/home/reviewer-test/.cache/pip" "$d/log" || fail "PIP_CACHE_DIR not redirected off /scenario-shared to the test user's HOME"
+grep -qE "(UV|PIP)_CACHE_DIR_VISIBLE=/scenario-shared" "$d/log" && fail "a package cache is still pointed at the dind-shared /scenario-shared volume" || true
 
 # Mode-strip: the container branch strips group/other write from the checkout
 # after the test, so a leftover proc / a test that ran `chmod 777` can't write it
@@ -82,59 +78,5 @@ run_just_test /dev/null "$d/repo" "$d/log1b" 30s 5s
 unset REVIEWER_TEST_USER
 run_just_test /dev/null "$d/repo" "$d/log2" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpectedly scrubbed the env (should be container-only)"
-
-# reclaim_scenario_shared_caches: the run_just_test pre-runuser step that heals a
-# stale root-owned uv/pip cache on the persistent scenario-shared volume. Its core
-# root→test-user OWNERSHIP transition is uid-gated (needs root, like the chown/
-# runuser/reap above) so it's a bring-up + live-on-fleet check, not asserted here.
-# What IS unit-testable without a uid switch is the safety contract the isolation
-# leans on: leave a correctly-owned cache AND the sibling token bridge untouched,
-# and fail LOUD (non-zero) when a privileged op can't complete. Run with the real
-# chown/rm/stat unshadowed — the stubs above fake chown to exit 0, which would
-# mask the fail-loud path.
-realp="${PATH#"$d/bin:"}"
-sroot=$(mktemp -d)
-mkdir -p "$sroot/uv/pkgs" "$sroot/pip/pkgs" "$sroot/plow-scenario-shared"
-touch "$sroot/uv/pkgs/wheel" "$sroot/pip/pkgs/wheel" "$sroot/plow-scenario-shared/bridge-token"
-# Every entry already test-user-owned → the foreign-entry probe finds nothing →
-# no-op: caches survive intact (NOT discarded) and the sibling token bridge is
-# never touched (scoped to uv/pip). (The discard→recreate TRANSITION needs a
-# genuinely foreign-owned entry, which needs root to plant — so, like the chown/
-# runuser above, it's a bring-up + live-on-fleet check, incl. the mixed-tree heal.)
-PATH="$realp" reclaim_scenario_shared_caches "$sroot" "$(id -un)" || fail "reclaim returned non-zero on already-correct caches"
-{ [ -f "$sroot/uv/pkgs/wheel" ] && [ -f "$sroot/pip/pkgs/wheel" ]; } || fail "reclaim discarded a correctly-owned cache (should be a no-op)"
-[ -f "$sroot/plow-scenario-shared/bridge-token" ] || fail "reclaim touched the sibling token bridge (must be scoped to uv/pip)"
-rm -rf "$sroot"
-# Fail LOUD (non-zero) when it can't do its job, so run_just_test aborts instead of
-# running against a still-broken cache: an empty root is rejected outright, an
-# unresolvable user is rejected before the probe (else `find ! -user <bad>` errors
-# and silently reads as "nothing foreign"), and a create into an unwritable root
-# surfaces the mkdir failure.
-PATH="$realp" reclaim_scenario_shared_caches "" "$(id -un)" && fail "reclaim accepted an empty root"
-badroot=$(mktemp -d)   # disposable, not a shared path — so an ordering regression that ran the rm loop can't touch /tmp itself
-PATH="$realp" reclaim_scenario_shared_caches "$badroot" "nobody-does-not-exist" && fail "reclaim did not fail loud on an unresolvable user"
-rm -rf "$badroot"
-if [ "$(id -u)" != 0 ]; then   # root ignores the mode bits; the container self-review runs unprivileged
-    roroot=$(mktemp -d); chmod 500 "$roroot"
-    PATH="$realp" reclaim_scenario_shared_caches "$roroot" "$(id -un)" && fail "reclaim did not fail loud when it could not create the cache dir"
-    chmod 700 "$roroot"; rm -rf "$roroot"
-fi
-# A symlink raced into the cache path (a dind-side test process can, via DOCKER_HOST,
-# mutate this shared volume) must fail loud via the non-`-p` mkdir before chown can
-# dereference it and hand the target's ownership to the test user. Deterministic and
-# unprivileged with a DANGLING symlink: `[ -e ]` is false (target absent) so control
-# reaches `mkdir "$dir"`, which refuses the existing name (EEXIST). Locks the non-`-p`
-# contract against a revert to `mkdir -p` (which would accept the symlink and chown it).
-slroot=$(mktemp -d); ln -s "$slroot/no-such-target" "$slroot/uv"
-PATH="$realp" reclaim_scenario_shared_caches "$slroot" "$(id -un)" && fail "reclaim did not fail loud on a dangling symlink occupying the cache path"
-[ -L "$slroot/uv" ] || fail "reclaim followed/replaced the dangling symlink at the cache path instead of failing loud"
-rm -rf "$slroot"
-# ...and a symlink to an EXISTING dir: `[ -e ]` would be true and pass it through, so
-# the test would write its cache straight through the link into the sibling. `[ -d ] &&
-# [ ! -L ]` rejects it → mkdir EEXIST → fail loud, target neither followed nor written.
-sl2=$(mktemp -d); mkdir "$sl2/sibling"; touch "$sl2/sibling/keep"; ln -s "$sl2/sibling" "$sl2/uv"
-PATH="$realp" reclaim_scenario_shared_caches "$sl2" "$(id -un)" && fail "reclaim did not fail loud on a symlink to an existing dir at the cache path"
-{ [ -L "$sl2/uv" ] && [ -f "$sl2/sibling/keep" ]; } || fail "reclaim followed/clobbered the symlink target instead of failing loud"
-rm -rf "$sl2"
 
 echo "PASS: run-just-test-isolation-smoke"

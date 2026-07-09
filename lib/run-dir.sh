@@ -183,63 +183,6 @@ format_review_scope() {
 
 # run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
 #
-# reclaim_scenario_shared_caches ROOT USER — ensure the uv/pip package-manager
-# caches under ROOT are owned by (writable to) the unprivileged USER, called by
-# run_just_test before it drops privileges. The scenario-shared* named volume
-# PERSISTS across container recreates and image rebuilds, so a cache seeded
-# root-owned (e.g. a `just test` that ran as root before this unprivileged-test-
-# user isolation existed) stays root:root 0755 on that volume forever — and the
-# sticky 1777 parent does NOT make its contents writable. USER then hits EACCES
-# the first time uv/pip touches its cache and the whole run aborts before a
-# single test executes (uv: "Failed to initialize cache at /scenario-shared/uv …
-# Permission denied"), which the classifier reports as a spurious "Tests failed
-# (exit 2)" — with the PR's own CI green.
-#
-# Repair by DISCARD+RECREATE, not `chown -R`: a root-owned cache is unusable to
-# USER anyway (uv can't write its lock), so nothing usable is lost, and `rm`
-# never walks PR-influenceable content — so a hardlink planted in the cache tree
-# can't transfer a non-cache inode's ownership the way a recursive root `chown`
-# would (the scenario stack runs against privileged dind sharing this volume,
-# and fs.protected_hardlinks is an ambient kernel default this privileged seam
-# should not depend on). Scoped to uv/pip — never touches ROOT itself or its
-# sibling entries (the root-owned dind token bridge USER must not be handed).
-# Returns non-zero on any privileged-op failure OR an empty ROOT, so the caller
-# fails LOUD rather than running the test against a still-broken cache.
-reclaim_scenario_shared_caches() {
-    local root="$1" user="$2" cache dir
-    [ -n "$root" ] || return 1
-    # Validate USER resolves before the probe: `find ! -user <bad>` errors and
-    # prints nothing, which would read as "no foreign entry" and silently no-op a
-    # still-broken cache — fail loud on a misconfigured REVIEWER_TEST_USER instead.
-    id -u "$user" >/dev/null 2>&1 || return 1
-    for cache in uv pip; do
-        dir="$root/$cache"
-        # Discard when ANY entry (not just the top) is foreign-owned. A top-level
-        # ownership guard would skip a MIXED tree — user-owned top, root-owned deep
-        # child — which a `chown -R` interrupted by a SIGKILL (the fleet's timeout/
-        # reboot reap) can leave behind: uv creates its top-level lock fine but then
-        # hits EACCES on the root-owned package subdir, and a top-level guard would
-        # never self-heal it. `-print -quit` stops at the first foreign entry, so the
-        # probe is cheap; discard+recreate (not chown -R) keeps the repair hardlink-safe.
-        if [ -e "$dir" ] && [ -n "$(find "$dir" ! -user "$user" -print -quit)" ]; then
-            rm -rf "$dir" || return 1
-        fi
-        # Require a real, non-symlink directory here; anything else is discarded and
-        # recreated with a NON-`-p` mkdir that fails loud. PR-controlled tests get
-        # DOCKER_HOST and can leave a dind-side process racing a symlink into the cache
-        # path between the discard and here. Guarding on `[ -e ]` (which follows
-        # symlinks) would treat such a symlink as "already there" — a dangling one then
-        # breaks recreate, and one pointing at a sibling dir would silently pass, the
-        # later XDG_CACHE_HOME test run writing its package cache straight through the
-        # link into that sibling (and `mkdir -p` would additionally let a following
-        # chown dereference it, handing over the target's ownership). `[ -d ] && [ ! -L ]`
-        # routes every symlink variant to `mkdir`, which returns EEXIST on the existing
-        # name → fail loud before any chown or test run. (`-p` isn't needed: the parent
-        # /scenario-shared is created by the caller.)
-        [ -d "$dir" ] && [ ! -L "$dir" ] || { mkdir "$dir" && chown "$user" "$dir"; } || return 1
-    done
-}
-
 # Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
 # SIGTERM-ignoring test (the chat-postgres/pytest deadlock that motivated this)
 # dies at the deadline instead of accumulating. Output → TEST_LOG. Returns
@@ -270,7 +213,8 @@ run_just_test() {
         # dind daemon's filesystem, not this reviewer's, so the path must live
         # on a volume mounted into BOTH at the same location (docker-compose.yml:
         # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
-        # shared dir here (plow keys it off ${XDG_CACHE_HOME:-$HOME/.cache}); 1777
+        # shared dir here (plow keys ONLY its bridge dir off it —
+        # ${XDG_CACHE_HOME:-$HOME/.cache}/plow-scenario-shared, justfile:243); 1777
         # lets the unprivileged test user create its per-run subdir. Harmless when
         # the mount is absent (pre-recreate): root just creates a local cache dir.
         # Fail LOUD at this seam if prep genuinely can't happen (broken/read-only
@@ -279,18 +223,21 @@ run_just_test() {
         # reach your agent" instead of here at the cause.
         mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
             || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
-        # Reclaim any stale root-owned uv/pip cache on the persistent volume so the
-        # test user doesn't hit EACCES before a single test runs (see the helper's
-        # header for the full rationale + hardlink-safety reasoning). Fail LOUD at
-        # this seam like the mkdir/chmod above — review-one-pr.sh runs without
-        # `set -e`, so without the `||` a failed privileged repair would fall through
-        # to `runuser` and surface as an opaque mid-run failure instead of here.
-        reclaim_scenario_shared_caches /scenario-shared "$REVIEWER_TEST_USER" \
-            || { log "$PR_ID: FATAL — scenario-shared cache reclaim failed (privileged-op error?)"; exit 1; }
         local rc=0
+        # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
+        # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
+        # XDG_CACHE_HOME, which must stay /scenario-shared for plow's bridge above).
+        # Without this the caches default to $XDG_CACHE_HOME/{uv,pip} on the persistent,
+        # PR-influenceable shared volume — the source of both the stale-root-ownership
+        # EACCES that spuriously failed tests AND the symlink/ownership races a
+        # dind-side process could run against an in-place root repair. On HOME they're
+        # created fresh, test-user-owned, on a path dind can't touch — no repair needed.
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" XDG_CACHE_HOME=/scenario-shared \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+                XDG_CACHE_HOME=/scenario-shared \
+                UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
+                PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything
