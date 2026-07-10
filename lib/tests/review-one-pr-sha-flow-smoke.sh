@@ -91,7 +91,11 @@ case "\$fields" in
         printf 'PUBLIC\n'
         ;;
     *headRefOid*)
-        printf '{"headRefOid":"$head_oid"}\n'
+        # Real gh: --json headRefOid --jq '.headRefOid' (both call sites in
+        # review-one-pr.sh use --jq). The stub doesn't run real jq, so — same
+        # convention as the visibility/permission cases above — it prints the
+        # already-extracted bare SHA, not the wrapped JSON.
+        printf '%s\n' "$head_oid"
         ;;
     *)
         :
@@ -801,7 +805,7 @@ if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
         *visibility*)  printf 'PUBLIC\n' ;;
-        *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
+        *headRefOid*)  printf '%s\n' "$head_oid" ;;  # bare SHA — both call sites use --jq '.headRefOid'
     esac
     exit 0
 fi
