@@ -1518,6 +1518,27 @@ if [ -z "$COMMITS" ]; then
 fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 
+# Pre-spend stale-head gate: the last cheap moment to cancel before the
+# LLM fan-out. A push that landed during setup (checkout → just test →
+# kid → scratch staging — routinely 20-40 min) means this run's snapshot
+# is already superseded; posting it anyway is what stacked 61 stale
+# reviews across the last 60 plow PRs. Movement DURING the specialists is
+# still disclosed post-hoc via the existing ⚠️ Stale header — completed
+# reviews are paid for, so they post. Best-effort fetch, fail-open on gh
+# failure (empty PRE_SPEND_HEAD → proceed), same shape as the post-run
+# CURRENT_HEAD check below. exit 1 rides the normal abort convention:
+# the EXIT trap PATCHes the placeholder with EYES_ABORT_BODY and stamps
+# meta.json aborted, which keeps this run OUT of the KNOWN_SHA dedup —
+# the next orchestrator tick sees the new head as unreviewed and runs it.
+PRE_SPEND_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+SUPERSEDED_NOTE=$(superseded_abort_note "$REVIEWED_SHA" "$PRE_SPEND_HEAD")
+if [ -n "$SUPERSEDED_NOTE" ]; then
+    log "$PR_ID: head moved before specialist kickoff (reviewed=${REVIEWED_SHA:0:7}, now=${PRE_SPEND_HEAD:0:7}) — aborting pre-spend"
+    EYES_ABORT_BODY="$SUPERSEDED_NOTE"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
+
 # Run the LLM review pipeline (intent → dead-code → 8 angles parallel →
 # momentum (re-reviews only) → aggregator). Implementation in lib/pipeline.py.
 # Per-angle critics run inline within each angle pipeline; no central
