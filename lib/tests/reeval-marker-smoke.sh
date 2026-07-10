@@ -38,67 +38,49 @@ REPO_SLUG="acme_widgets"
 PR_NUM="42"
 mkdir -p "$STATE_DIR/runs"
 
-# make_run <ts> <body-content>
-#   Creates an author-visible fixture run dir with the given aggregator body.
-make_run() {
-    local ts="$1" body="$2"
-    local run_dir="$STATE_DIR/runs/${REPO_SLUG}__${PR_NUM}__${ts}__abc1234"
+# deep_fence_body <fence-content>
+#   A realistic review body whose Probes section ends, 20+ lines in, with a
+#   fenced block carrying the given content — the Sketch-render position.
+deep_fence_body() {
+    local body=$'_intent line_\n\n**Probes**\n1. [medium] some finding\n' i
+    for i in $(seq 20); do body+=$'filler probe line\n'; done
+    printf '%s' "$body"$'```text\n'"$1"$'\n```\n'
+}
+
+# check_marker_case <expect: fired|not-fired> <label> <body-content>
+#   Builds a fresh author-visible fixture run with the given aggregator body
+#   and asserts reeval_marker_fired's verdict.
+check_marker_case() {
+    local expect="$1" label="$2" body="$3"
+    echo "  $label..."
+    rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"
+    local run_dir="$STATE_DIR/runs/${REPO_SLUG}__${PR_NUM}__T100Z__abc1234"
     mkdir -p "$run_dir/agents/aggregator"
     printf '%s' "$body" > "$run_dir/agents/aggregator/output.md"
     printf '{"posted_at": "2026-01-01T00:00:00Z"}' > "$run_dir/meta.json"
+    local fired=not-fired
+    reeval_marker_fired "$MARKER" "$STATE_DIR" "$REPO_SLUG" "$PR_NUM" "" && fired=fired
+    if [ "$fired" = "$expect" ]; then
+        pass_msg "$label -> $fired"
+    else
+        fail_msg "$label -> $fired (expected $expect)"
+    fi
 }
 
 echo "=== reeval-marker smoke ==="
 
-echo "  (a) marker on line 2 of a prior run's aggregator body -> fired=yes..."
-rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"
-make_run "T100Z" $'_intent line_\n'"$MARKER"$'\n\n> banner prose\n'
-if reeval_marker_fired "$MARKER" "$STATE_DIR" "$REPO_SLUG" "$PR_NUM" ""; then
-    pass_msg "standalone marker on line 2 fires"
-else
-    fail_msg "standalone marker on line 2 should have fired"
-fi
-
-echo "  (b) marker string inside a fenced block 20+ lines into the body -> fired=no..."
-rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"
-BODY=$'_intent line_\n\n**Probes**\n1. [medium] some finding\n'
-i=0
-while [ "$i" -lt 20 ]; do
-    BODY+=$'filler probe line\n'
-    i=$((i + 1))
-done
-BODY+=$'```text\n'"$MARKER"$'\n```\n'
-make_run "T100Z" "$BODY"
-if reeval_marker_fired "$MARKER" "$STATE_DIR" "$REPO_SLUG" "$PR_NUM" ""; then
-    fail_msg "marker quoted inside a deep Sketch fence must NOT spoof the fired flag"
-else
-    pass_msg "marker inside a deep fence does not fire (fence content is data, not control)"
-fi
-
-echo "  (c) marker embedded mid-line (not a standalone line) -> fired=no..."
-rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"
-make_run "T100Z" $'_intent line_\nsome text '"$MARKER"$' more text\n'
-if reeval_marker_fired "$MARKER" "$STATE_DIR" "$REPO_SLUG" "$PR_NUM" ""; then
-    fail_msg "marker embedded mid-line must NOT count as a fired standalone marker"
-else
-    pass_msg "mid-line marker substring does not fire"
-fi
-
-echo "  (d) fake separator + marker both inside a deep fence -> fired=no..."
-rm -rf "$STATE_DIR/runs"; mkdir -p "$STATE_DIR/runs"
-BODY=$'_intent line_\n\n**Probes**\n1. [medium] some finding\n'
-i=0
-while [ "$i" -lt 20 ]; do
-    BODY+=$'filler probe line\n'
-    i=$((i + 1))
-done
-BODY+=$'```text\n--- review at T999Z ---\n'"$MARKER"$'\n```\n'
-make_run "T100Z" "$BODY"
-if reeval_marker_fired "$MARKER" "$STATE_DIR" "$REPO_SLUG" "$PR_NUM" ""; then
-    fail_msg "a fake in-fence separator + marker must NOT spoof the fired flag"
-else
-    pass_msg "fake separator inside a deep fence does not re-arm the window"
-fi
+check_marker_case fired \
+    "(a) marker on line 2 of a prior run's aggregator body" \
+    $'_intent line_\n'"$MARKER"$'\n\n> banner prose\n'
+check_marker_case not-fired \
+    "(b) marker string inside a fenced block 20+ lines into the body" \
+    "$(deep_fence_body "$MARKER")"
+check_marker_case not-fired \
+    "(c) marker embedded mid-line (not a standalone line)" \
+    $'_intent line_\nsome text '"$MARKER"$' more text\n'
+check_marker_case not-fired \
+    "(d) fake separator + marker both inside a deep fence" \
+    "$(deep_fence_body $'--- review at T999Z ---\n'"$MARKER")"
 
 echo
 if [ "$FAIL" -eq 0 ]; then
