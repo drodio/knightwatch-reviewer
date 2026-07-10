@@ -91,6 +91,18 @@ def _restore_fences(text: str, fences: list[str]) -> str:
     for i, fence in enumerate(fences):
         text = text.replace(f"\x00FENCE{i}\x00", fence)
     return text
+
+
+def _probe_ids(text: str) -> list[str]:
+    """Probe IDs in `text`, fence-protected: headers inside Sketch fences are
+    data, not structure."""
+    return _PROBE_HEADER_RE.findall(_protect_fences(text)[0])
+
+
+def _has_probe_contract(text: str) -> bool:
+    """True when `text` carries a probe block or the 'No probes.' sentinel
+    outside any fence."""
+    return bool(_PROBE_BLOCK_RE.search(_protect_fences(text)[0]))
 # Codex prints this when the user's ChatGPT/Codex usage limit is hit. The
 # capture group is pinned to Codex's two observed reset formats — short
 # rolling-window ("6:26 PM") or weekly cap ("May 26th, 2026 11:33 AM") —
@@ -433,7 +445,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         return 3
 
     if name in SPECIALISTS:
-        if not _PROBE_BLOCK_RE.search(_protect_fences(out_file.read_text())[0]):
+        if not _has_probe_contract(out_file.read_text()):
             with log_file.open("a") as lf:
                 lf.write(
                     f"[{_ts()}] agent={name} produced output that doesn't follow "
@@ -543,7 +555,7 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     spec_text, _ = _protect_fences(spec_text)
     crit_text, _ = _protect_fences(crit_text)
 
-    spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
+    spec_probe_id_list = _probe_ids(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
         return (
@@ -566,7 +578,7 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             "anchored '## Critic counter-arguments' H2 header"
         )
 
-    crit_probe_id_list = _PROBE_HEADER_RE.findall(crit_text)
+    crit_probe_id_list = _probe_ids(crit_text)
     # A duplicate of a *real* specialist probe is genuinely ambiguous — two
     # conflicting resolutions for one probe — so it stays fatal. A duplicate of
     # a surplus/orphan id is just more carried-in noise that run_specialist's
@@ -640,7 +652,7 @@ def run_specialist(
     # a bare 'No probes.' in that case, so the critic codex call is
     # deterministic waste. Synthesize the identical layered output and skip it
     # — the single biggest Wave-B quota saving on clean PRs.
-    if not _PROBE_HEADER_RE.findall(_protect_fences(spec_out)[0]):
+    if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
         scratch_path.write_text(layered)
@@ -682,7 +694,7 @@ def run_specialist(
     # none) so the layered file stays a clean bijection the aggregator can
     # trust, rather than aborting all 7 angles. Mirrors the rc=124 soft-degrade
     # below; logged so the drop isn't silent.
-    spec_probe_ids = set(_PROBE_HEADER_RE.findall(_protect_fences(spec_out)[0]))
+    spec_probe_ids = set(_probe_ids(spec_out))
     # Fence-protect crit_out too: a phantom `### Probe N` inside a Sketch: fence
     # would otherwise become a block *boundary* for this re.sub, splitting the
     # fence out of its real block and deleting the legitimate content after it
