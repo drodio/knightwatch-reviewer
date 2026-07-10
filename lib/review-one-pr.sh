@@ -1531,10 +1531,9 @@ write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
 # meta.json aborted, which keeps this run OUT of the KNOWN_SHA dedup —
 # the next orchestrator tick sees the new head as unreviewed and runs it.
 PRE_SPEND_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
-SUPERSEDED_NOTE=$(superseded_abort_note "$REVIEWED_SHA" "$PRE_SPEND_HEAD")
-if [ -n "$SUPERSEDED_NOTE" ]; then
+if [ -n "$PRE_SPEND_HEAD" ] && [ "$PRE_SPEND_HEAD" != "$REVIEWED_SHA" ]; then
     log "$PR_ID: head moved before specialist kickoff (reviewed=${REVIEWED_SHA:0:7}, now=${PRE_SPEND_HEAD:0:7}) — aborting pre-spend"
-    EYES_ABORT_BODY="$SUPERSEDED_NOTE"
+    EYES_ABORT_BODY="⏭ review superseded — head moved from \`${REVIEWED_SHA:0:7}\` to \`${PRE_SPEND_HEAD:0:7}\` before the LLM specialists started; aborted pre-spend. The next tick reviews the new head."
     rm -rf "$REPO_DIR"
     exit 1
 fi

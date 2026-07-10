@@ -1325,8 +1325,8 @@ fi
 echo "  PASS (12 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
-# superseded_abort_note has unit coverage (run-dir smoke), but nothing proved the
-# WORKER's wiring end-to-end: when gh reports a headRefOid that differs from the
+# The ONLY coverage of the pre-spend gate (the decision is inline in the
+# worker): when gh reports a headRefOid that differs from the
 # checked-out HEAD at the pre-spend gate (review-one-pr.sh, right before
 # pipeline.py — the token boundary), the run must abort BEFORE any LLM
 # specialist runs, PATCH the placeholder to the superseded body (naming both
