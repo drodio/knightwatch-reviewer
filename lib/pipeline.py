@@ -737,7 +737,13 @@ def run_pipeline(
     log(f"{pr_id}: Wave A — intent + dead-code-search")
     with ThreadPoolExecutor(max_workers=2) as ex:
         intent_fut = ex.submit(_run_standalone, "intent", **common_kwargs)
-        dc_fut = ex.submit(_run_standalone, "dead-code-search", **common_kwargs)
+        # dead-code-search is search-shaped (grep breadth, not reasoning
+        # depth) and anything load-bearing it finds is re-verified by the
+        # consumers specialist + critic, so it runs at medium regardless of
+        # PR size. Intent stays size-scaled: it is the anchor every
+        # specialist grades against.
+        dc_fut = ex.submit(_run_standalone, "dead-code-search",
+                           **dict(common_kwargs, effort="medium"))
         intent_rc = intent_fut.result()
         dc_rc = dc_fut.result()
     if intent_rc != 0:

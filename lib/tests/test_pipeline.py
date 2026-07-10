@@ -1246,11 +1246,12 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_reasoning_effort_scales_with_pr_diff_loc(self, mock_popen):
-        """Every codex call except the aggregator scales its reasoning effort
-        to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
-        medium, larger PRs at high, absent signal defaults to high. The
-        aggregator is the one exception — it always runs at xhigh (the single
-        premium synthesis step), independent of PR size."""
+        """Every codex call except the aggregator and dead-code-search scales
+        its reasoning effort to PR size via the PR_DIFF_LOC env var: small PRs
+        (< threshold) at medium, larger PRs at high, absent signal defaults to
+        high. Two exceptions, independent of PR size: the aggregator always
+        runs at xhigh (the single premium synthesis step), and dead-code-search
+        always runs at medium (search-shaped work re-verified downstream)."""
         for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
             with self.subTest(loc=loc_val):
                 mock_popen.reset_mock()
@@ -1265,14 +1266,20 @@ class TestRunPipeline(unittest.TestCase):
                         os.environ.pop("PR_DIFF_LOC", None)
                     rc = self._run()
                 self.assertEqual(rc, 0)
-                agg_efforts, scaled_efforts = set(), set()
+                agg_efforts, dc_efforts, scaled_efforts = set(), set(), set()
                 for c in mock_popen.call_args_list:
                     argv = c.args[0]
                     out_path = argv[argv.index("-o") + 1]
-                    bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
+                    if "/aggregator/" in out_path:
+                        bucket = agg_efforts
+                    elif "/dead-code-search/" in out_path:
+                        bucket = dc_efforts
+                    else:
+                        bucket = scaled_efforts
                     bucket.add(_effort_of(argv))
                 self.assertEqual(scaled_efforts, {expected})
                 self.assertEqual(agg_efforts, {"xhigh"})
+                self.assertEqual(dc_efforts, {"medium"})
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
