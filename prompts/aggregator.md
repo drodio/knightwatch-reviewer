@@ -165,6 +165,7 @@ When T1 and/or T2 is live this round:
 
    - For `Answer: yes`: `N. [<severity>] [from: <specialist>] [<class>] <Q recast as declarative outcome — name the failing path / structural shape / cost — one paragraph>. Files: <path:line>, …. Edit: <If yes, edit: clause verbatim>.`
    - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
+   - A probe carrying a `Sketch:` renders its fenced code block directly under its rendered line, verbatim. The sketch is the highest-value part of a removal-shaped finding — never drop it for length, and never invent one for a probe that lacks it.
 
 7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Path 1 (first-review redirect mode, above) overrides this length contract** — a redirect review is 200-400 words even when the underlying PR has 20 probes, because the redirect is the review. **Path 2 does NOT override the length contract** — it renders the full body plus the momentum callout banner, so the typical Path 2 round lands in the upper half of the 300-500 word range.
 
