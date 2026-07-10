@@ -91,7 +91,11 @@ case "\$fields" in
         printf 'PUBLIC\n'
         ;;
     *headRefOid*)
-        printf '{"headRefOid":"$head_oid"}\n'
+        # Real gh: --json headRefOid --jq '.headRefOid' (both call sites in
+        # review-one-pr.sh use --jq). The stub doesn't run real jq, so — same
+        # convention as the visibility/permission cases above — it prints the
+        # already-extracted bare SHA, not the wrapped JSON.
+        printf '%s\n' "$head_oid"
         ;;
     *)
         :
@@ -801,7 +805,7 @@ if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
         *visibility*)  printf 'PUBLIC\n' ;;
-        *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
+        *headRefOid*)  printf '%s\n' "$head_oid" ;;  # bare SHA — both call sites use --jq '.headRefOid'
     esac
     exit 0
 fi
@@ -1319,3 +1323,98 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
 fi
 
 echo "  PASS (12 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud)"
+
+# ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
+# The ONLY coverage of the pre-spend gate (the decision is inline in the
+# worker): when gh reports a headRefOid that differs from the
+# checked-out HEAD at the pre-spend gate (review-one-pr.sh, right before
+# pipeline.py — the token boundary), the run must abort BEFORE any LLM
+# specialist runs, PATCH the placeholder to the superseded body (naming both
+# short SHAs), and stamp meta.json status=aborted — which keeps the run out of
+# KNOWN_SHA dedup so the next tick reviews the new head.
+#
+# Fixture note: the stateful gh stub serves ONE fixed headRefOid for the whole
+# scenario. That's fine — the checkout comes from git (refs/pull/1/head →
+# NEW_PR_SHA → REVIEWED_SHA), so pinning the stub to OLD_PR_SHA makes the
+# gate-time gh answer ≠ REVIEWED_SHA without time-varying stub state. Only the
+# pre-spend abort contract is asserted.
+echo "  scenario: pre-spend stale-head gate — gh head ≠ REVIEWED_SHA → abort before specialists..."
+
+STORE11="$TMPDIR/comment-store-11.json"
+echo "[]" > "$STORE11"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE11" "main" "$OLD_PR_SHA"
+
+STATE11="$TMPDIR/state-11"
+seed_state_dir "$STATE11"
+git clone -q "$GITHUB_BARE" "$STATE11/repos/test-org_probe-repo"
+
+# Codex stub drops a marker if it EVER runs (inverse of scenario 9's snapshot):
+# the gate must fire before the pipeline, so the marker must stay absent. Full
+# prompts are still staged from scenario 7 ($HOME/.pr-reviewer/prompts), so a
+# regressed gate WOULD reach run_codex and write the marker — an honest fence,
+# not a vacuous pass on an early build_prompt abort.
+CODEX_RAN11="$STATE11/codex-ran.marker"
+cat > "$HOME/.local/bin/codex" <<STUB
+#!/usr/bin/env bash
+touch "$CODEX_RAN11"
+exit 1
+STUB
+chmod +x "$HOME/.local/bin/codex"
+
+(
+    export STATE_DIR="$STATE11"
+    export STATE_FILE="$STATE11/state.json"
+    export REPOS_DIR="$STATE11/repos"
+    export WORKDIRS_DIR="$STATE11/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE11/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE11/locks"
+    write_probe_repos_conf "$STATE11/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+RUN_DIR11=$(find "$STATE11/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR11" ]; then
+    echo "FAIL: scenario 11 — worker produced no run dir under $STATE11/runs"
+    exit 1
+fi
+LOG11="$RUN_DIR11/run.log"
+
+# (a) Aborted BEFORE the specialists: the codex stub never ran, so no tokens
+# would have been spent. This is the whole point of the pre-spend gate.
+if [ -f "$CODEX_RAN11" ]; then
+    echo "FAIL: scenario 11 — codex ran despite the stale head (pre-spend gate did not abort before the specialists)"
+    [ -f "$LOG11" ] && { echo "--- run.log ---"; tail -n 30 "$LOG11"; }
+    exit 1
+fi
+
+# (b) Placeholder PATCHed to the superseded body via the EXIT trap, naming both
+# short SHAs (reviewed → current) so the human sees why this run cancelled.
+if ! jq -e --arg new "${NEW_PR_SHA:0:7}" --arg old "${OLD_PR_SHA:0:7}" \
+        '[.[] | select((.body | contains("review superseded")) and (.body | contains($new)) and (.body | contains($old)))] | length == 1' \
+        "$STORE11" >/dev/null; then
+    echo "FAIL: scenario 11 — placeholder not PATCHed to the superseded body naming ${NEW_PR_SHA:0:7} → ${OLD_PR_SHA:0:7}"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE11"
+    [ -f "$LOG11" ] && { echo "--- run.log ---"; tail -n 30 "$LOG11"; }
+    exit 1
+fi
+
+# (c) meta.json stamped aborted — the run stays OUT of KNOWN_SHA dedup
+# (stage_prior_reviews includes only posted_at/completed runs), so the next
+# orchestrator tick sees the new head as unreviewed and re-runs it.
+META11="$RUN_DIR11/meta.json"
+if [ ! -f "$META11" ]; then
+    echo "FAIL: scenario 11 — $META11 not written"
+    exit 1
+fi
+meta_status11=$(jq -r '.status' "$META11")
+if [ "$meta_status11" != "aborted" ]; then
+    echo "FAIL: scenario 11 — meta.json.status = $meta_status11 (expected 'aborted' — a superseded run must not enter KNOWN_SHA dedup)"
+    exit 1
+fi
+
+echo "  PASS (13 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort)"
