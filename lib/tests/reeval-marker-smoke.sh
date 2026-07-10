@@ -39,12 +39,9 @@ AWK_PROGRAM='
         w>0 && $0==m {found=1; exit}
         w>0 {w--}
         END{exit !found}'
-while IFS= read -r awk_line; do
-    [ -z "$awk_line" ] && continue
-    if ! grep -qF "$awk_line" "$PROJECT_ROOT/lib/review-one-pr.sh"; then
-        fail_msg "lib/review-one-pr.sh's reeval_marker_fired awk program has drifted from this smoke's pinned copy (missing: $awk_line)"
-    fi
-done < <(printf '%s\n' "$AWK_PROGRAM" | sed 's/^[[:space:]]*//')
+if [[ "$(cat "$PROJECT_ROOT/lib/review-one-pr.sh")" != *"$AWK_PROGRAM"* ]]; then
+    fail_msg "lib/review-one-pr.sh's reeval_marker_fired awk program has drifted from this smoke's pinned copy"
+fi
 
 reeval_marker_fired() {
     local marker="$1"
