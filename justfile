@@ -70,6 +70,10 @@ test:
     bash lib/tests/gh-comments-smoke.sh
 
     echo ""
+    echo "=== superseded-abort smoke test ==="
+    bash lib/tests/superseded-abort-smoke.sh
+
+    echo ""
     echo "=== search-roots smoke test ==="
     bash lib/tests/search-roots-smoke.sh
 

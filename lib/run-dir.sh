@@ -453,6 +453,30 @@ format_specialist_timeouts() {
     printf '⏱️ Partial review — specialist(s) did not complete (timed out or model at capacity) and were skipped: `%s`' "$names"
 }
 
+# superseded_abort_note REVIEWED_SHA CURRENT_HEAD
+#
+# Pre-spend stale-head gate (worker seam). Echoes the abort body when the
+# PR head moved between checkout and specialist kickoff — the last cheap
+# moment to cancel a run before the LLM fan-out burns tokens. Empty
+# CURRENT_HEAD (the best-effort gh fetch failed) proceeds: fail-open
+# matches the post-run staleness disclosure, and a review beats no review
+# when GitHub is flaky. Post-pipeline movement is NOT this helper's
+# concern — completed reviews are paid for and always post (see the
+# aborting-forced-a-full-re-review rationale on format_specialist_timeouts
+# above). Empty REVIEWED_SHA is an invariant violation (the worker aborts
+# long before this point without one) — fail-fast.
+superseded_abort_note() {
+    local reviewed_sha="$1" current_head="$2"
+    if [ -z "$reviewed_sha" ]; then
+        printf 'superseded_abort_note: empty REVIEWED_SHA — internal invariant violated\n' >&2
+        return 1
+    fi
+    [ -z "$current_head" ] && return 0
+    [ "$current_head" = "$reviewed_sha" ] && return 0
+    printf '⏭ review superseded — head moved from `%s` to `%s` before the LLM specialists started; aborted pre-spend. The next tick reviews the new head.' \
+        "${reviewed_sha:0:7}" "${current_head:0:7}"
+}
+
 # timeout_note_for_run RUN_DIR
 #
 # Sentinel→note adapter: echoes the format_specialist_timeouts fragment when
