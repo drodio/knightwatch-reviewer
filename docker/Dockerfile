@@ -29,7 +29,7 @@ ARG COMPOSE_VERSION=5.1.4
 # shell. plow CI runs jq 1.7 (ubuntu noble); match it so the reviewer runs what
 # plow is actually tested against.
 ARG JQ_VERSION=1.7.1
-ARG CODEX_CLI_VERSION=0.134.0
+ARG CODEX_CLI_VERSION=0.144.1
 
 # System deps a reviewed repo's `just test` shells out to. The May-2026
 # containerization (#103) + host-reviewer retirement (#119) moved test execution
@@ -84,7 +84,7 @@ RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install 'vulture==2.16'
 RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install \
       'keepitdry @ git+https://github.com/srosro/knightwatch-kid.git@9893db6'
 
-# codex CLI (npm global) — the gpt-5.5 reviewer agents. Pinned so a rebuild
+# codex CLI (npm global) — the reviewer agents. Pinned so a rebuild
 # can't change reviewer behavior outside the PR diff (matches GH/JUST/DOCKER pins).
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
 

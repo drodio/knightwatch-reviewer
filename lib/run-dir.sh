@@ -588,6 +588,26 @@ stage_prior_reviews() {
     printf '%s' "$result"
 }
 
+# reeval_marker_fired <marker> <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   Returns 0 if <marker> has already fired in a prior author-visible round.
+#
+# Re-eval fire-once markers are standalone lines the aggregator emits at the
+# top of a review body. Read each prior run's aggregator output directly and
+# inspect only its first 8 lines — no in-band separator parsing, so nothing a
+# rendered Sketch fence can contain (fake separators, quoted markers) is ever
+# window-eligible.
+reeval_marker_fired() {
+    local marker="$1" state_dir="$2" repo_slug="$3" pr_num="$4" current_run_dir="$5"
+    local prior_run
+    while IFS= read -r prior_run; do
+        [ -f "$prior_run/agents/aggregator/output.md" ] || continue
+        if head -8 "$prior_run/agents/aggregator/output.md" | grep -qxF "$marker"; then
+            return 0
+        fi
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    return 1
+}
+
 # latest_author_visible_review <state_dir> <repo_slug> <pr_num> <current_run_dir>
 #   stdout: aggregator output of the most recent author-visible prior review
 #   (last by timestamp), or empty if no prior author-visible run exists.

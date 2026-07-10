@@ -71,6 +71,7 @@ Right: ✓ "DRY this — Broken-Glass favors collapsing the 3-place parser into 
 - **Q:** <one sentence — the assumption being asserted as if settled, in question form>
 - **Files:** path/to/file.ext:LINE (and additional citations as needed)
 - **If yes, edit:** <concrete code change this unlocks — name files + LOC delta>
+- **Sketch:** <optional — simplification/shape probes; see .codex-scratch/probe-schema.md>
 - **If no, cost:** <one clause naming what calcifies if we keep current shape>
 - **Confidence:** <high|medium|low>
 - **Severity if yes:** <blocking|medium|low|nit>
