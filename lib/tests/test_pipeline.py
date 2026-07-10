@@ -265,13 +265,13 @@ class TestRunCodex(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_codex_argv_pins_model_per_kind(self, mock_popen):
         """Per-kind model routing must reach codex (regression fence): the
-        critic pass runs on the cheap gpt-5.4-mini; specialists, standalones,
-        and the aggregator all run on the flagship gpt-5.5."""
+        critic pass runs on the cheap/fast gpt-5.6-luna tier; specialists,
+        standalones, and the aggregator all run on the flagship gpt-5.6-sol."""
         cases = {
-            "intent": "model=gpt-5.5",
-            "security": "model=gpt-5.5",
-            "aggregator": "model=gpt-5.5",
-            "critic-security": "model=gpt-5.4-mini",
+            "intent": "model=gpt-5.6-sol",
+            "security": "model=gpt-5.6-sol",
+            "aggregator": "model=gpt-5.6-sol",
+            "critic-security": "model=gpt-5.6-luna",
         }
         for name, model_pin in cases.items():
             with self.subTest(name=name):
@@ -283,7 +283,7 @@ class TestRunCodex(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_reasoning_effort_defaults_high(self, mock_popen):
-        """Unspecified effort keeps the pre-existing gpt-5.5 high-reasoning
+        """Unspecified effort keeps the pre-existing flagship high-reasoning
         behavior — the safe default when no PR-size signal is threaded in."""
         mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
         pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
@@ -310,7 +310,7 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(rc, 7)
         # Only watchdog kills (rc=124) retry; a normal codex failure (e.g. exit 7)
         # propagates immediately — those failures are not transient and a retry
-        # just wastes a gpt-5.5 budget.
+        # just wastes a flagship budget.
         self.assertEqual(mock_popen.call_count, 1)
 
     @patch("pipeline.os.killpg")
@@ -1249,7 +1249,7 @@ class TestRunPipeline(unittest.TestCase):
         """Every codex call except the aggregator scales its reasoning effort
         to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
         medium, larger PRs at high, absent signal defaults to high. The
-        aggregator is the one exception — it always runs at xhigh (the single
+        aggregator is the one exception — it always runs at max (the single
         premium synthesis step), independent of PR size."""
         for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
             with self.subTest(loc=loc_val):
@@ -1272,7 +1272,7 @@ class TestRunPipeline(unittest.TestCase):
                     bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
                     bucket.add(_effort_of(argv))
                 self.assertEqual(scaled_efforts, {expected})
-                self.assertEqual(agg_efforts, {"xhigh"})
+                self.assertEqual(agg_efforts, {"max"})
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
@@ -1828,7 +1828,7 @@ class TestPipelineCLI(unittest.TestCase):
 
         # Fake codex on PATH. Mirrors the real argv shape:
         #   codex exec -C <repo> --dangerously-bypass-approvals-and-sandbox \
-        #     -c model=gpt-5.5 -c model_reasoning_effort=high -o <out> <prompt>
+        #     -c model=gpt-5.6-sol -c model_reasoning_effort=high -o <out> <prompt>
         # Picks output by agent dir name (the parent of the -o target).
         self.fake_bin = root / "fakebin"
         self.fake_bin.mkdir()
