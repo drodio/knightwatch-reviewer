@@ -555,7 +555,9 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     spec_text, _ = _protect_fences(spec_text)
     crit_text, _ = _protect_fences(crit_text)
 
-    spec_probe_id_list = _probe_ids(spec_text)
+    # Both texts are protected above (load-bearing for every regex below), so
+    # scan them directly rather than through _probe_ids, which re-protects.
+    spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
         return (
@@ -578,7 +580,7 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
             "anchored '## Critic counter-arguments' H2 header"
         )
 
-    crit_probe_id_list = _probe_ids(crit_text)
+    crit_probe_id_list = _PROBE_HEADER_RE.findall(crit_text)
     # A duplicate of a *real* specialist probe is genuinely ambiguous — two
     # conflicting resolutions for one probe — so it stays fatal. A duplicate of
     # a surplus/orphan id is just more carried-in noise that run_specialist's
