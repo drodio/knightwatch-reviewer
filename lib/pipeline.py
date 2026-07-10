@@ -21,7 +21,7 @@ SPECIALISTS = (
 # is the dominant per-call quota cost; small PRs don't warrant it, so a diff
 # under SMALL_PR_LOC changed lines runs the whole review at medium.
 # review-one-pr.sh passes the changed-line count via PR_DIFF_LOC; absent →
-# high (safe default). The aggregator is the one exception — it runs at max
+# high (safe default). The aggregator is the one exception — it runs at xhigh
 # regardless of size (the single synthesis step is where a premium budget
 # pays off); see its call site in run_pipeline.
 SMALL_PR_LOC = 500
@@ -839,8 +839,8 @@ def run_pipeline(
     agg_dir = run / "agents" / "aggregator"
     # The aggregator is the single synthesis step that merges/dedupes/ranks
     # every angle into the posted review — the one place a premium reasoning
-    # budget pays off, so it runs at max regardless of the size-scaled effort.
-    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort="max")
+    # budget pays off, so it runs at xhigh regardless of the size-scaled effort.
+    rc = run_codex("aggregator", str(repo), agg_prompt, str(agg_dir), effort="xhigh")
     if rc != 0:
         return _abort(repo, f"{pr_id}: aggregator failed (exit={rc}) — aborting")
     log(f"{pr_id}: aggregator complete")

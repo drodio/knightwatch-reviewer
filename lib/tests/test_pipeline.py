@@ -1249,7 +1249,7 @@ class TestRunPipeline(unittest.TestCase):
         """Every codex call except the aggregator scales its reasoning effort
         to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
         medium, larger PRs at high, absent signal defaults to high. The
-        aggregator is the one exception — it always runs at max (the single
+        aggregator is the one exception — it always runs at xhigh (the single
         premium synthesis step), independent of PR size."""
         for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
             with self.subTest(loc=loc_val):
@@ -1272,7 +1272,7 @@ class TestRunPipeline(unittest.TestCase):
                     bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
                     bucket.add(_effort_of(argv))
                 self.assertEqual(scaled_efforts, {expected})
-                self.assertEqual(agg_efforts, {"max"})
+                self.assertEqual(agg_efforts, {"xhigh"})
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
