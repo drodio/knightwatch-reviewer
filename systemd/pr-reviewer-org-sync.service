@@ -36,8 +36,9 @@ ProtectControlGroups=yes
 ProtectHome=read-only
 # ReadWritePaths: broader than the sibling review/refresh units because
 # org-sync.sh creates NEW checkout directories under @KWR_CLONE_ROOT@
-# that aren't yet in @KID_RW_PATHS@ (rendered at install time, can't
-# know about repos discovered after the last install). Granting RW on
+# that aren't yet in the sibling kid-refresh unit's per-repo ReadWritePaths
+# (which renders from KID_PATHS at install time and can't know about repos
+# discovered since the last install). Granting RW on
 # @KWR_CLONE_ROOT@ is the only shape that lets `gh repo clone <new>`
 # succeed without a preceding install.sh re-render. The @KWR_CLONE_ROOT@
 # placeholder is substituted at install time from
@@ -58,6 +59,11 @@ ProtectHome=read-only
 # @KWR_CONFIG_DIR@ grants RW on the kwr-config cache (~/services/kwr-config, under
 # HOME → ProtectHome=read-only would otherwise block org-sync's clone/pull).
 # Rendered to a concrete path by install.sh on every run.
+# NB: never write the literal KID_RW_PATHS placeholder (the @...@-delimited kid
+# index-path token) anywhere in this file — org-sync isn't a kid-indexing unit,
+# and install.sh's global sed would inject the whole ever-growing path list here,
+# spuriously re-rendering + re-cp'ing this unit (and restarting every satellite
+# timer) on each deploy. Smoke-pinned in prompt-contracts.
 ReadWritePaths=/home/odio/.pr-reviewer @KWR_CLONE_ROOT@ @KWR_CONFIG_DIR@ /home/odio/.cache
 
 [Install]

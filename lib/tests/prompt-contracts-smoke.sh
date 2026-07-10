@@ -417,6 +417,24 @@ for unit in systemd/*.service; do
     fi
 done
 
+# @KID_RW_PATHS@ renders a VARIABLE, ever-growing path list (org-sync discovers
+# repos → repos.conf.auto grows → KID_PATHS grows). install.sh's sed substitutes
+# it globally (unanchored), so the token ANYWHERE in a unit — including a comment —
+# gets the whole list injected. On a unit that legitimately renders it in a real
+# ReadWritePaths= directive (kid-refresh) that's fine; but on a NON-kid unit the
+# token can only be a comment, and the injection makes the unit spuriously
+# re-render + re-cp (+ restart every satellite timer) on every deploy — org-sync
+# did exactly this. Pin: only kid-refresh may reference the token at all.
+# Scan BOTH *.service and *.timer — install.sh renders the token across every
+# unit template it copies (`units=( systemd/*.service systemd/*.timer )`), so a
+# *.timer carrying the token would drift the same way.
+echo "  asserting @KID_RW_PATHS@ appears only in the kid-refresh unit (no spurious-drift token injection elsewhere)..."
+for unit in systemd/*.service systemd/*.timer; do
+    [[ "$(basename "$unit")" == pr-reviewer-kid-refresh.service ]] && continue
+    assert_no_grep "$(basename "$unit") must not reference @KID_RW_PATHS@ — the growing-path-list token in a non-kid unit (only ever a comment there) injects the full list and spuriously re-renders the unit every deploy" \
+        '@KID_RW_PATHS@' "$unit"
+done
+
 # The fleet unit's lifecycle contract is load-bearing and fails silently if
 # broken: RemainAfterExit=yes keeps the Type=oneshot unit "active" so ExecStop
 # fires on shutdown/restart — drop it and `docker compose stop` never runs, so
