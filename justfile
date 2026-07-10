@@ -230,4 +230,8 @@ test:
     bash lib/tests/cmd-prefix-smoke.sh
 
     echo ""
+    echo "=== reeval-marker smoke test ==="
+    bash lib/tests/reeval-marker-smoke.sh
+
+    echo ""
     echo "all checks passed"

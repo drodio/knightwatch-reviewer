@@ -774,6 +774,20 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIn("critic emitted duplicate", err)
         self.assertIn("'1'", err)
 
+    def test_sketch_fence_phantom_probe_header_is_ignored(self):
+        """A `Sketch:` field's fenced code block is the probe contract's only
+        multi-line field, and PR-steered content can put a `### Probe N`-shaped
+        line inside it. That must be treated as data, not a real probe header
+        — otherwise a specialist that raised exactly one real probe (Probe 1,
+        fully resolved by the critic) spuriously fails validation because the
+        phantom `### Probe 2` inside the fence looks unresolved."""
+        spec = (
+            "### Probe 1\n- **From:** security\n- **Q:** Is X broken?\n"
+            "- **Sketch:**\n```python\n### Probe 2\nsome fake header inside a fence\n```\n"
+        )
+        crit = "## Critic counter-arguments\n\n### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+
     def test_critic_h2_must_be_anchored_to_start_of_line(self):
         """A mid-prose quote of '## Critic counter-arguments' must not pass —
         a paragraph mentioning the section name doesn't satisfy the layered
@@ -1042,6 +1056,38 @@ class TestRunSpecialist(unittest.TestCase):
         self.assertIn("keep-2", layered)             # resolution AFTER the orphan intact
         self.assertNotIn("### Probe 9", layered)     # mid-list orphan stripped
         self.assertNotIn("orphan-drop-me", layered)
+
+    @patch("pipeline.subprocess.Popen")
+    def test_deorphan_retains_sketch_fence_containing_fake_header(self, mock_popen):
+        """A critic resolution's `Sketch:` fence can contain a `### Probe N`-
+        shaped line as PR-steered data. Unprotected, the de-orphan re.sub
+        treats that fake header as a block *boundary*: it splits Probe 1's
+        real resolution at the fence, and — since the fake id isn't a real
+        specialist probe — deletes everything from the fence through the end
+        of the critic output as a bogus 'orphan', including legitimate content
+        after the fence. The layered output must retain the fence (and
+        whatever follows it) verbatim instead."""
+        mock_popen.side_effect = _make_codex_stub({
+            "security": (0, "### Probe 1\nbody\n"),
+            "critic-security": (0,
+                "## Critic counter-arguments\n\n"
+                "### Probe 1\n- **Answer:** yes\n- **Evidence:**\n"
+                "```python\n### Probe 9\nfake_header_in_fence\n```\n"
+                "extra prose after fence\n"),
+        })
+        rc = pipeline.run_specialist(
+            specialist="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
+        scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
+        self.assertEqual(layered, scratch)
+        self.assertIn("fake_header_in_fence", layered)   # fence content survives verbatim
+        self.assertIn("extra prose after fence", layered)  # content AFTER the fence survives
+        self.assertIn("```python\n### Probe 9\nfake_header_in_fence\n```", layered)
 
     @patch("pipeline.subprocess.Popen")
     def test_scratch_staged_before_critic_runs(self, mock_popen):

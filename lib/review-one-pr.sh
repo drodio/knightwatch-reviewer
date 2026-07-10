@@ -1397,12 +1397,28 @@ REEVAL_SIZE_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-SIZE-TRIGGER:' 
 if [ "$FORCE_WHOLE_PR" = "true" ]; then
     REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: not-fired (whole-PR re-review evaluates from scratch — no trajectory banner)"
 fi
+# Re-eval markers are standalone lines the aggregator emits at the top of a
+# review body (right after the italicized intent line). A PR can steer a
+# Sketch: fence rendered into that body's Probes section, so a raw substring
+# grep over $PRIOR_REVIEWS would let a marker string quoted inside a fence
+# spoof the fired flag — scan only the leading window after each
+# `--- review at <ts> ---` separator (stage_prior_reviews' prefix) so fenced
+# content deep in the body can't match.
+reeval_marker_fired() {
+    local marker="$1"
+    printf '%s' "${PRIOR_REVIEWS:-}" | awk -v m="$marker" '
+        /^--- review at /{w=8; next}
+        w>0 && $0==m {found=1; exit}
+        w>0 {w--}
+        END{exit !found}'
+}
+
 REEVAL_LOC_FIRED=no
 REEVAL_STALL_FIRED=no
-if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-loc -->'; then
+if reeval_marker_fired '<!-- knightwatch-reviewer:reeval-loc -->'; then
     REEVAL_LOC_FIRED=yes
 fi
-if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-stall -->'; then
+if reeval_marker_fired '<!-- knightwatch-reviewer:reeval-stall -->'; then
     REEVAL_STALL_FIRED=yes
 fi
 write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<REEVAL_EOF
