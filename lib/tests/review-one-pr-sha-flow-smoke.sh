@@ -453,8 +453,8 @@ fi
 #
 # The bug: PR #36 captures BASE_REF_SHA from canonical's
 # `refs/remotes/origin/$BASE_REF` (advanced by the just-completed
-# `git fetch origin $BASE_REF`). For SHALLOW canonical clones (cncorp/plow
-# uses --depth=500), `git clone --shared` does NOT set up
+# `git fetch origin $BASE_REF`). For SHALLOW canonical clones (the
+# pre-issue-#170 --depth=500 era), `git clone --shared` does NOT set up
 # `objects/info/alternates` in the workdir — git silently falls back to a
 # non-local clone path with `warning: source repository is shallow,
 # ignoring --local`. The workdir can only reach objects via refs propagated
@@ -471,10 +471,10 @@ fi
 # holds the fresh SHA — and its objects are now reachable in the workdir.
 #
 # Assertion strategy: a smoke fixture can't faithfully reproduce the
-# empty-diff abort (the worker's --depth=500 fetch deepens the test's
-# tiny canonical past its shallow boundary, undoing shallow-ness — which
-# doesn't happen in production where the real history is much deeper than
-# 500). What we CAN reliably assert is the invariant the fix establishes:
+# empty-diff abort (the worker's one-time --unshallow self-heal — the
+# issue-#170 fix — completes the tiny canonical's history before the
+# diff stage, by design). What we CAN reliably assert is the invariant
+# the fix establishes:
 # after the worker runs, canonical's refs/heads/$BASE_REF MUST equal
 # refs/remotes/origin/$BASE_REF. Without the fix, a default `git fetch`
 # only updates the remote-tracking ref; refs/heads/main would stay at
@@ -495,8 +495,14 @@ git clone -q "$GITHUB_BARE3" "$WORKING3"
     git config user.email t@t
     git config user.name t
     git config commit.gpgsign false
-    # M1: initial main (what canonical's refs/heads/main lands at on
-    # first clone). The PR forks from here.
+    # M0: pre-history so the --depth=1 canonical clone below actually
+    # truncates (a root commit at the depth cutoff wouldn't be marked
+    # shallow — nothing got cut off).
+    echo "main v0" > main-content.txt
+    git add main-content.txt
+    git commit -qm "main v0"
+    # M1: main at canonical-clone time (what canonical's refs/heads/main
+    # lands at on first clone). The PR forks from here.
     echo "main v1" > main-content.txt
     git add main-content.txt
     git commit -qm "main v1"
@@ -516,7 +522,15 @@ seed_state_dir "$STATE3"
 
 CANONICAL3="$STATE3/repos/test-org_probe-repo"
 mkdir -p "$(dirname "$CANONICAL3")"
-git clone -q "$GITHUB_BARE3" "$CANONICAL3"
+# Deliberately SHALLOW, mirroring a canonical cloned in the --depth=500
+# era (pre-issue-#170 fix) — exercises the worker's one-time
+# `fetch --unshallow` self-heal. file:// is load-bearing: --depth is
+# silently ignored on plain local-path clones.
+git clone -q --depth=1 --no-single-branch "file://$GITHUB_BARE3" "$CANONICAL3"
+if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "true" ]; then
+    echo "FAIL: scenario 3 fixture — canonical3 was expected to start shallow"
+    exit 1
+fi
 # Move HEAD off main onto a synthetic pr-2 branch so the worker's
 # update-ref of refs/heads/main has the same shape as production
 # (where canonical's HEAD is on a leftover pr-N branch from a prior
@@ -568,6 +582,19 @@ if grep -qE "local git diff origin/main\.{3}.* returned empty" "$LOG3"; then
     exit 1
 fi
 
+# --unshallow self-heal (issue #170): the fixture canonical started
+# shallow (--depth=1 above); the worker must detect that, fetch full
+# history once, and leave the canonical complete.
+if ! grep -q "canonical is shallow — fetching full history" "$LOG3"; then
+    echo "FAIL: scenario 3 — worker never ran the one-time --unshallow self-heal on a shallow canonical"
+    cat "$LOG3"
+    exit 1
+fi
+if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "false" ]; then
+    echo "FAIL: scenario 3 — canonical3 still shallow after the worker ran (--unshallow self-heal ineffective)"
+    exit 1
+fi
+
 # Decisive assertion: after the worker runs, canonical's
 # refs/heads/$BASE_REF MUST equal refs/remotes/origin/$BASE_REF.
 # That's the invariant the fix establishes via update-ref. Without the
@@ -584,13 +611,11 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
 fi
 
 # Note: the "update-ref BEFORE clone --shared" ordering can't be
-# directly fenced here. A smoke fixture's canonical gets deepened by
-# the worker's --depth=500 fetch and ends up non-shallow, so
-# clone --shared sets up alternates and the workdir reaches the
-# post-update-ref SHA via alternates regardless of timing. The
-# production-relevant failure mode requires a deeper-than-500-commit
-# shallow canonical. The canonical-state assertion above + the
-# full-diff.patch content check below cover the production-relevant
+# directly fenced here. The worker's --unshallow self-heal (issue #170)
+# completes the canonical's history up front, so clone --shared sets up
+# alternates and the workdir reaches the post-update-ref SHA via
+# alternates regardless of timing. The canonical-state assertion above +
+# the full-diff.patch content check below cover the production-relevant
 # failure modes — an unreachable BASE_REF_SHA produces an empty diff,
 # tripping the content check.
 
