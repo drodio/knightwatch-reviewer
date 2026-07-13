@@ -482,6 +482,14 @@ fi
 # update-ref propagates the fresh SHA so clone --shared (which mirrors
 # canonical's heads to workdir's remotes) gives the workdir a usable
 # base ref regardless of shallow state.
+#
+# Post-#170 (canonicals always complete), fail-mode 2's unreachability
+# is gone — alternates make every canonical object visible to the
+# workdir — so a missing update-ref no longer reproduces the original
+# abort. The alignment is still load-bearing for fail-mode 1, though:
+# without it, BASE_REF_SHA is read from a stale refs/heads/main and the
+# review silently diffs against an old base (wrong diff content, not an
+# error). The ref-equality assertion below fences that.
 
 echo "  scenario: canonical refs/heads/main aligned with refs/remotes/origin/main..."
 
@@ -585,7 +593,7 @@ fi
 # --unshallow self-heal (issue #170): the fixture canonical started
 # shallow (--depth=1 above); the worker must detect that, fetch full
 # history once, and leave the canonical complete.
-if ! grep -q "canonical is shallow — fetching full history" "$LOG3"; then
+if ! grep -q "one-time --unshallow" "$LOG3"; then
     echo "FAIL: scenario 3 — worker never ran the one-time --unshallow self-heal on a shallow canonical"
     cat "$LOG3"
     exit 1
