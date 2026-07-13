@@ -575,6 +575,7 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     echo "FAIL: scenario 3 — canonical refs/heads/main ($HEADS_MAIN) != refs/remotes/origin/main ($ORIGIN_MAIN)"
     echo "  the update-ref alignment didn't run; clone --shared would serve a stale base"
     echo "  SHA to the workdir, so the review would silently diff against an old base"
+    cat "$LOG3"
     exit 1
 fi
 
