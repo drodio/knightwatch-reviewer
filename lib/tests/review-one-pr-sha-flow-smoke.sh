@@ -93,6 +93,10 @@ if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
                 # (owner/name) and mis-drive the run instead of failing.
                 case " \$* " in *" .full_name "*) ;; *) continue ;; esac
                 queried="\${arg#repos/}"
+                # Probe trace: lets a scenario prove the resolution actually RAN
+                # (vs. silently returning nothing — the worker swallows gh
+                # failure, so an absent note alone can't tell those apart).
+                [ -n "\${GH_STUB_PROBE_LOG:-}" ] && printf '%s\n' "\$queried" >> "\$GH_STUB_PROBE_LOG"
                 for pair in \$GH_STUB_RENAME_MAP; do
                     case "\$pair" in
                         "\$queried="*) printf '%s\n' "\${pair#*=}"; exit 0 ;;
@@ -1265,9 +1269,45 @@ git clone -q "$GITHUB_BARE10" "$WORKING10"
 PR_SHA10=$(git -C "$WORKING10" rev-parse HEAD)
 git -C "$WORKING10" push -q origin feat/test:refs/pull/10/head
 
-STATE10="$TMPDIR/state-10"
-seed_state_dir "$STATE10"
-git clone -q "$GITHUB_BARE10" "$STATE10/repos/test-org_probe-repo"
+# --- shared drivers for the repo-env scenario family (10, 10b, 10c, 10d) ---
+#
+# The four runs differ ONLY in the repo-env fixture, the PR title, and an
+# optional rename map; state seeding, the canonical clone, the eight *_DIR vars
+# and repos.conf are identical. Split in two so 10b can corrupt canonical
+# between the clone and the run (its whole point is a seed that must fail loud).
+# Keeping them separate is what lets each scenario body show only its own
+# difference.
+new_probe_state() {
+    local state="$TMPDIR/state-$1"
+    seed_state_dir "$state"
+    git clone -q "$GITHUB_BARE10" "$state/repos/test-org_probe-repo"
+    printf '%s\n' "$state"
+}
+
+# run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [GH_STUB_RENAME_MAP]
+# Drives the real worker and echoes its run dir.
+run_probe_worker() {
+    local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" run_dir
+    write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+    (
+        export STATE_DIR="$state" STATE_FILE="$state/state.json" REPOS_DIR="$state/repos" \
+               WORKDIRS_DIR="$state/workdirs" CANONICAL_LOCKS_DIR="$state/canonical-locks" \
+               PR_REVIEW_LOCK_DIR="$state/locks" \
+               REPO_ENV_DIR="$repo_env" GH_STUB_PERMISSION_ROLE=write \
+               GH_STUB_RENAME_MAP="$rename_map" \
+               GH_STUB_PROBE_LOG="${GH_STUB_PROBE_LOG:-}"
+        write_probe_repos_conf "$state/repos.conf"
+        TRIGGER_COMMENT_FILE="" \
+            bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+            "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "$title" "false" \
+            >/dev/null 2>&1 || true
+    )
+    run_dir=$(find "$state/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+    [ -n "$run_dir" ] || { echo "FAIL: worker produced no run dir (state=$state)" >&2; exit 1; }
+    printf '%s\n' "$run_dir"
+}
+
+STATE10=$(new_probe_state 10)
 
 # Operator secret store (the read-only /root/.kwr/repo-env mount in prod): one
 # real env file under the repo slug, the seed source.
@@ -1275,22 +1315,7 @@ REPO_ENV10="$TMPDIR/repo-env-10"
 mkdir -p "$REPO_ENV10/test-org_probe-repo"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo/.env.test-live"
 
-write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
-
-(
-    export STATE_DIR="$STATE10" STATE_FILE="$STATE10/state.json" REPOS_DIR="$STATE10/repos" \
-           WORKDIRS_DIR="$STATE10/workdirs" CANONICAL_LOCKS_DIR="$STATE10/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10/locks" \
-           REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write
-    write_probe_repos_conf "$STATE10/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
-        >/dev/null 2>&1 || true
-)
-
-RUN_DIR10=$(find "$STATE10/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN_DIR10" ] || { echo "FAIL: scenario 10 — worker produced no run dir"; exit 1; }
+RUN_DIR10=$(run_probe_worker "$STATE10" "$REPO_ENV10" "Live-cred PR")
 LOG10="$RUN_DIR10/run.log"
 
 # Decisive: the seed wrote the real file into canonical, AND the trust-gated
@@ -1316,28 +1341,13 @@ fi
 # deterministic failure with `mkdir` over a pre-created FILE at the target's
 # parent (fails even as root, so it holds in the container self-review too).
 echo "  scenario: repo-env seed failure aborts loud (no silent continue to the test)..."
-STATE10B="$TMPDIR/state-10b"
-seed_state_dir "$STATE10B"
-git clone -q "$GITHUB_BARE10" "$STATE10B/repos/test-org_probe-repo"
+STATE10B=$(new_probe_state 10b)
 # Block the seed: source uses an api/ subdir, but canonical's `api` is a FILE.
 touch "$STATE10B/repos/test-org_probe-repo/api"
 REPO_ENV10B="$TMPDIR/repo-env-10b"
 mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
-write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
-(
-    export STATE_DIR="$STATE10B" STATE_FILE="$STATE10B/state.json" REPOS_DIR="$STATE10B/repos" \
-           WORKDIRS_DIR="$STATE10B/workdirs" CANONICAL_LOCKS_DIR="$STATE10B/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10B/locks" \
-           REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write
-    write_probe_repos_conf "$STATE10B/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
-        >/dev/null 2>&1 || true
-)
-RUN_DIR10B=$(find "$STATE10B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN_DIR10B" ] || { echo "FAIL: scenario 10b — worker produced no run dir"; exit 1; }
+RUN_DIR10B=$(run_probe_worker "$STATE10B" "$REPO_ENV10B" "Live-cred PR")
 LOG10B="$RUN_DIR10B/run.log"
 if ! grep -q "FATAL — repo-env seed of 'api/.env.test-live' failed" "$LOG10B"; then
     echo "FAIL: scenario 10b — run.log missing the fail-loud seed abort (silent-continue regressed)"
@@ -1363,33 +1373,16 @@ fi
 # the guard that keeps a credless repo from probing on an empty dir list.
 echo "  scenario: repo-env stranded by a rename → disclosed, not silently skipped..."
 
-STATE10C="$TMPDIR/state-10c"
-seed_state_dir "$STATE10C"
-git clone -q "$GITHUB_BARE10" "$STATE10C/repos/test-org_probe-repo"
+STATE10C=$(new_probe_state 10c)
 
 # Creds sit under the PRE-RENAME slug (old-org_probe-repo), not the repo's
-# current slug — exactly the stranded state. Plus an unrelated operator dir that
-# resolves to itself: the control that must NOT produce a note.
+# current slug — exactly the stranded state.
 REPO_ENV10C="$TMPDIR/repo-env-10c"
-mkdir -p "$REPO_ENV10C/old-org_probe-repo" "$REPO_ENV10C/other-org_other-repo"
+mkdir -p "$REPO_ENV10C/old-org_probe-repo"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/old-org_probe-repo/.env.test-live"
-echo "OTHER=x" > "$REPO_ENV10C/other-org_other-repo/.env.test-live"
 
-(
-    export STATE_DIR="$STATE10C" STATE_FILE="$STATE10C/state.json" REPOS_DIR="$STATE10C/repos" \
-           WORKDIRS_DIR="$STATE10C/workdirs" CANONICAL_LOCKS_DIR="$STATE10C/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10C/locks" \
-           REPO_ENV_DIR="$REPO_ENV10C" GH_STUB_PERMISSION_ROLE=write \
-           GH_STUB_RENAME_MAP="old-org/probe-repo=test-org/probe-repo"
-    write_probe_repos_conf "$STATE10C/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Renamed-repo PR" "false" \
-        >/dev/null 2>&1 || true
-)
-
-RUN_DIR10C=$(find "$STATE10C/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN_DIR10C" ] || { echo "FAIL: scenario 10c — worker produced no run dir"; exit 1; }
+RUN_DIR10C=$(run_probe_worker "$STATE10C" "$REPO_ENV10C" "Renamed-repo PR" \
+    "old-org/probe-repo=test-org/probe-repo")
 LOG10C="$RUN_DIR10C/run.log"
 
 # The detection: the old-slug dir resolves to this repo → say so.
@@ -1407,29 +1400,26 @@ fi
 # branch that keeps the ~56 repos which legitimately need no creds quiet.
 echo "  scenario: repo-env dir belonging to another repo → no note (cry-wolf fence)..."
 
-STATE10D="$TMPDIR/state-10d"
-seed_state_dir "$STATE10D"
-git clone -q "$GITHUB_BARE10" "$STATE10D/repos/test-org_probe-repo"
+STATE10D=$(new_probe_state 10d)
 
 REPO_ENV10D="$TMPDIR/repo-env-10d"
 mkdir -p "$REPO_ENV10D/other-org_other-repo"
 echo "OTHER=x" > "$REPO_ENV10D/other-org_other-repo/.env.test-live"
 
-(
-    export STATE_DIR="$STATE10D" STATE_FILE="$STATE10D/state.json" REPOS_DIR="$STATE10D/repos" \
-           WORKDIRS_DIR="$STATE10D/workdirs" CANONICAL_LOCKS_DIR="$STATE10D/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10D/locks" \
-           REPO_ENV_DIR="$REPO_ENV10D" GH_STUB_PERMISSION_ROLE=write \
-           GH_STUB_RENAME_MAP="old-org/probe-repo=test-org/probe-repo"
-    write_probe_repos_conf "$STATE10D/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Credless PR" "false" \
-        >/dev/null 2>&1 || true
-)
+GH_STUB_PROBE_LOG="$TMPDIR/probe-log-10d"
+RUN_DIR10D=$(run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
+    "old-org/probe-repo=test-org/probe-repo")
+unset GH_STUB_PROBE_LOG
 
-RUN_DIR10D=$(find "$STATE10D/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-[ -n "$RUN_DIR10D" ] || { echo "FAIL: scenario 10d — worker produced no run dir"; exit 1; }
+# Ground the absence: assert the probe actually RAN and resolved elsewhere. The
+# worker swallows gh failure (2>/dev/null), so "no note" alone can't distinguish
+# "resolved to another repo → correctly quiet" from "probe returned nothing →
+# quiet by accident" — the same swallowed-failure ambiguity this PR exists to
+# kill, so the test must not rely on it either.
+if ! grep -qx "other-org/other-repo" "$TMPDIR/probe-log-10d" 2>/dev/null; then
+    echo "FAIL: scenario 10d — the rename probe never ran; the absence below would prove nothing"
+    exit 1
+fi
 if grep -q "holds THIS repo's creds" "$RUN_DIR10D/run.log"; then
     echo "FAIL: scenario 10d — claimed another repo's creds dir as this repo's (cry-wolf regression)"
     tail -n 30 "$RUN_DIR10D/run.log"
