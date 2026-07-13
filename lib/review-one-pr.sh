@@ -473,26 +473,32 @@ if [ -d "$repo_env_src" ]; then
     done < <(find "$repo_env_src" -type f -print0)
     [ "$repo_env_seeded" -gt 0 ] && log "$PR_ID: seeded $repo_env_seeded operator repo-env file(s) into canonical"
 else
-    # No creds for this repo. Normal for most repos — unless an orphaned
-    # repo-env dir exists, which means SOME repo's creds were stranded. An
-    # orphan alone doesn't say WHICH repo it robbed, and warning every
-    # credless repo would spam ~56 innocent PRs with a bogus "your test
-    # failure may be infra". GitHub redirects renamed repos, so resolve each
-    # orphan to its current name and warn only on the repo it actually names.
-    # Plain `gh` (no gh_api_retry — the worker doesn't source gh-retry.sh, cf.
-    # `gh pr view` above); a transient failure just defers the note to the next
-    # PR, since the orphan persists until an operator clears it.
-    while IFS= read -r orphan_slug; do
-        log "$PR_ID: WARNING — repo-env/$orphan_slug matches no tracked repo (orphaned by a rename?)"
-        # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and a
-        # GitHub owner can't contain `_` (a repo name can), so the first one is
-        # always the separator.
-        orphan_repo=$(gh api "repos/${orphan_slug/_//}" --jq .full_name 2>/dev/null)
-        if [ "$orphan_repo" = "$REPO" ]; then
-            log "$PR_ID: WARNING — repo-env/$orphan_slug is THIS repo's creds stranded under its pre-rename slug; tests will run without them"
-            REPO_ENV_NOTE="⚠️ Operator creds not seeded — \`repo-env/$orphan_slug\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR"
-        fi
-    done < <(repo_env_orphans "${REPO_ENV_DIR:-/root/.kwr/repo-env}" "${REPOS[@]}" "${ORGS[@]}")
+    # No creds dir at this repo's slug. Normal for most repos — but it's also
+    # exactly how a RENAME presents, with the creds still sitting under the old
+    # slug. Ask the only question that settles it: does any repo-env dir resolve,
+    # through GitHub's rename redirect, to THIS repo? If so its creds are ours,
+    # stranded under a pre-rename name, and `just test` is about to run without
+    # them. Any dir that resolves to something else belongs to another repo (or
+    # is an operator's stale leftover) and is none of this review's business —
+    # so no cry-wolf on the ~56 repos that legitimately need no creds.
+    #
+    # Plain `gh` (the worker doesn't source gh-retry.sh — cf. `gh pr view`
+    # above); a transient failure just defers the note to the next PR, since the
+    # stranded dir persists until an operator moves it.
+    if ! repo_env_dirs=$(repo_env_slugs "${REPO_ENV_DIR:-/root/.kwr/repo-env}"); then
+        log "$PR_ID: WARNING — repo-env scan failed; cannot tell whether this repo's creds are stranded under a pre-rename slug"
+    elif [ -n "$repo_env_dirs" ]; then
+        while IFS= read -r env_slug; do
+            # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and
+            # a GitHub owner can't contain `_` (a repo name can), so the first
+            # one is always the separator.
+            if [ "$(gh api "repos/${env_slug/_//}" --jq .full_name 2>/dev/null)" = "$REPO" ]; then
+                log "$PR_ID: WARNING — repo-env/$env_slug holds THIS repo's creds under its pre-rename slug; \`just test\` will run without them (operator: rename the dir to $REPO_SLUG)"
+                REPO_ENV_NOTE="⚠️ Operator creds not seeded — \`repo-env/$env_slug\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR"
+                break
+            fi
+        done <<< "$repo_env_dirs"
+    fi
 fi
 
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed

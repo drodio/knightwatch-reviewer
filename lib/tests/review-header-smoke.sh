@@ -565,46 +565,41 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-# ===== repo_env_orphans =====
-# The rename guard (#171). A repo-env/<slug>/ dir exists only because an
-# operator made it, so one matching no tracked repo is an operator error —
-# in practice a rename that stranded the creds under the old slug, silently
-# no-op'ing the seed and posting a false "Tests failed" on every PR.
+# ===== repo_env_slugs =====
+# The rename guard (#171). The worker pairs each slug with the GitHub rename
+# redirect to ask "does one of these dirs hold THIS repo's creds under a
+# pre-rename name?" — deliberately NOT matched against the tracked manifest
+# (REPOS cries wolf on org repos not yet synced; claiming by ORGS owner re-hides
+# a rename WITHIN an org, the likeliest shape). So the unit under test is just:
+# list the dirs, and fail loud rather than silent if the mount can't be read.
 _reo_dir=$(mktemp -d)
 mkdir -p "$_reo_dir/plow-pbc_plow" "$_reo_dir/srosro_knightwatch-reviewer"
 
-# Orphans print one slug per line; the table compares them comma-joined so each
-# case stays a single row. A claim is `owner/name` (REPOS) or bare `owner`
-# (ORGS). Empty `want` = no orphans.
-while IFS='|' read -r desc claims want; do
-    [ -n "$desc" ] || continue
-    # shellcheck disable=SC2086  # deliberate word-split: claims is a list
-    got=$(repo_env_orphans "$_reo_dir" $claims | paste -sd,)
-    if [ "$got" != "$want" ]; then
-        echo "FAIL: repo_env_orphans — $desc"
-        echo "  claims:   ${claims:-(none)}"
-        echo "  expected: ${want:-(none)}"
-        echo "  got:      ${got:-(none)}"
-        exit 1
-    fi
-    echo "  repo_env_orphans: $desc..."
-done <<EOF
-all dirs claimed by a tracked repo → silent (the steady state)|plow-pbc/plow srosro/knightwatch-reviewer|
-renamed repo strands its creds under the old slug → orphan|cncorp/plow srosro/knightwatch-reviewer|plow-pbc_plow
-repo-name rename (not just owner) is caught too|plow-pbc/plow-old srosro/knightwatch-reviewer|plow-pbc_plow
-an ORGS owner claims every slug under it (org repos precede their REPOS entry)|srosro plow-pbc/plow|
-ORGS claims only its own owner — other owners still checked|srosro|plow-pbc_plow
-no claims at all (repos.conf unloaded) → silent, never manufacture orphans||
-EOF
+echo "  repo_env_slugs: lists each creds dir, sorted..."
+got=$(repo_env_slugs "$_reo_dir" | paste -sd,)
+want="plow-pbc_plow,srosro_knightwatch-reviewer"
+[ "$got" = "$want" ] || { echo "FAIL: repo_env_slugs — expected '$want', got '$got'"; exit 1; }
 
-echo "  repo_env_orphans: absent mount → silent (no creds is normal, not an error)..."
-got=$(repo_env_orphans "$_reo_dir/does-not-exist" "plow-pbc/plow")
-[ -z "$got" ] || { echo "FAIL: repo_env_orphans on absent dir should print nothing, got: $got"; exit 1; }
+echo "  repo_env_slugs: absent mount → silent, rc=0 (no creds is normal, not an error)..."
+got=$(repo_env_slugs "$_reo_dir/does-not-exist") \
+    || { echo "FAIL: repo_env_slugs on absent mount should rc=0 (absence is the normal state)"; exit 1; }
+[ -z "$got" ] || { echo "FAIL: repo_env_slugs on absent mount should print nothing, got: $got"; exit 1; }
 
-echo "  repo_env_orphans: empty mount → silent..."
+echo "  repo_env_slugs: empty mount → silent, rc=0..."
 _reo_empty=$(mktemp -d)
-got=$(repo_env_orphans "$_reo_empty" "plow-pbc/plow")
-[ -z "$got" ] || { echo "FAIL: repo_env_orphans on empty dir should print nothing, got: $got"; exit 1; }
+got=$(repo_env_slugs "$_reo_empty") || { echo "FAIL: repo_env_slugs on empty mount should rc=0"; exit 1; }
+[ -z "$got" ] || { echo "FAIL: repo_env_slugs on empty mount should print nothing, got: $got"; exit 1; }
+
+# The bug class #171 exists to close, turned on the guard itself: a mount that
+# can't be scanned must NOT read as "nothing stranded here". Fail loud, don't
+# no-op. Stubbing `find` (rather than chmod 000) keeps this deterministic and
+# uid-independent — the reviewer runs as root in-container, where a mode-000 dir
+# is still readable and the assertion would silently cover nothing.
+echo "  repo_env_slugs: scan failure → fail-fast, never a silent 'no creds here'..."
+(
+    find() { return 1; }
+    assert_fails_with "unscannable repo-env mount" "cannot scan" -- repo_env_slugs "$_reo_dir"
+) || exit 1
 rm -rf "$_reo_dir" "$_reo_empty"
 
 # The #171 payload, end to end. The whole design turns on these two fragments
@@ -624,4 +619,4 @@ assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disc
 assert_contains "$result" '`repo-env/cncorp_plow`' "names the stale slug the operator must fix"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 8 repo-env-orphans + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"

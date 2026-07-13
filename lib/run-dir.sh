@@ -433,56 +433,41 @@ format_kid_note() {
     esac
 }
 
-# repo_env_orphans REPO_ENV_DIR [CLAIM...]
+# repo_env_slugs REPO_ENV_DIR
 #
-# Prints every `repo-env/<slug>/` dir claimed by nothing, one slug per line. A
-# CLAIM is either `owner/name` (a REPOS entry) or a bare `owner` (an ORGS entry,
-# which claims every slug under that owner — an org repo is reviewable the moment
-# it has a PR, and only lands in REPOS after the next org-sync regeneration, so
-# matching REPOS alone would cry wolf during that window).
+# Prints each `repo-env/<slug>/` dir name, one per line, sorted. Empty output
+# for an absent or empty mount — no operator creds is the normal state for most
+# repos, not an error. Returns non-zero if the mount exists but can't be scanned
+# (permission-denied, unreadable), so the caller can tell "scan failed" from
+# "nothing there": a guard against silent no-ops that itself no-ops silently is
+# worse than no guard. That is the whole bug class this exists to close (#171).
 #
-# A repo-env dir exists only because an operator deliberately created it, so an
-# unclaimed one is unambiguously an operator error — in practice a repo RENAME
-# that stranded the creds under the old slug (#171: cncorp/plow → plow-pbc/plow
-# left api/.env.test-live at repo-env/cncorp_plow, the seed silently no-op'd, and
-# 208 plow reviews posted a false "Tests failed").
+# The caller pairs each slug with the GitHub rename redirect to answer the only
+# question that matters — does one of these dirs hold THIS repo's creds under a
+# pre-rename name? That check asserts a precondition the reviewer OWNS (did the
+# seed have creds to seed?) instead of classifying the downstream symptom.
+# Inferring "missing creds" from test output is whack-a-mole: a missing key
+# surfaces as a ${VAR:?} gate, a 401, a scenario timeout, or an empty-string key
+# failing a check further down — one branch per manifestation, and the next one
+# still escapes.
 #
-# This asserts a precondition the reviewer OWNS (did the seed have creds to
-# seed?) rather than classifying the downstream symptom. Inferring "missing
-# creds" from test output is whack-a-mole: a missing key surfaces as a
-# ${VAR:?} gate, a 401, a scenario timeout, or an empty-string key failing a
-# check further down — one branch per manifestation, and the next one still
-# escapes. An orphaned dir is a single exact fact, however the failure lands.
-#
-# Prints nothing when: the mount is absent/empty (no creds is the normal state
-# for most repos, not an error), or NO claims were passed at all — the worker
-# tolerates a missing repos.conf (tracked-repos.sh), and an unloaded manifest
-# would otherwise manufacture an "orphan" out of every legitimate dir.
-#
-# `find` failure is NOT silenced: a permission-denied or unreadable mount must
-# surface in the worker log rather than read as "no orphans" — a guard against
-# silent no-ops that no-ops silently is worse than none.
+# Deliberately does NOT filter against the tracked-repo manifest. Matching slugs
+# against REPOS cries wolf on org repos (reviewable the moment they have a PR,
+# but only in REPOS after the next org-sync regeneration) and on a missing
+# repos.conf (which the worker tolerates, leaving REPOS empty). Claiming by
+# ORGS owner instead re-hides the likeliest rename shape — one WITHIN a tracked
+# org. The redirect settles it exactly, so the manifest isn't needed at all.
 #
 # Pure function.
-repo_env_orphans() {
-    local dir="$1"; shift
+repo_env_slugs() {
+    local dir="$1" out
     [ -d "$dir" ] || return 0
-    [ "$#" -gt 0 ] || return 0
-    local -A repos=() orgs=()
-    local claim slug
-    for claim in "$@"; do
-        case "$claim" in
-            */*) repos["${claim//\//_}"]=1 ;;
-            *)   orgs["$claim"]=1 ;;
-        esac
-    done
-    while IFS= read -r slug; do
-        [ -n "${repos[$slug]:-}" ] && continue
-        # Owner = slug up to the first `_`: the slug is `tr '/' '_'` of
-        # owner/name, and a GitHub owner can't contain `_` (a repo name can).
-        [ -n "${orgs[${slug%%_*}]:-}" ] && continue
-        printf '%s\n' "$slug"
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+    if ! out=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'); then
+        printf 'repo_env_slugs: cannot scan %s\n' "$dir" >&2
+        return 1
+    fi
+    [ -n "$out" ] || return 0
+    printf '%s\n' "$out" | sort
 }
 
 # format_specialist_timeouts NAMES_CSV
