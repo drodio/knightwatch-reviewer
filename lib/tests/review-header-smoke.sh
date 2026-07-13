@@ -595,6 +595,9 @@ got=$(repo_env_slugs "$_reo_empty") || { echo "FAIL: repo_env_slugs on empty mou
 # no-op. Stubbing `find` (rather than chmod 000) keeps this deterministic and
 # uid-independent — the reviewer runs as root in-container, where a mode-000 dir
 # is still readable and the assertion would silently cover nothing.
+echo "  repo_env_slugs: empty dir arg → fail-fast (a caller that lost its default must not read as 'nothing stranded')..."
+assert_fails_with "empty repo-env dir arg" "empty REPO_ENV_DIR" -- repo_env_slugs ""
+
 echo "  repo_env_slugs: scan failure → fail-fast, never a silent 'no creds here'..."
 (
     find() { return 1; }
@@ -619,4 +622,4 @@ assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disc
 assert_contains "$result" '`repo-env/cncorp_plow`' "names the stale slug the operator must fix"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 5 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"

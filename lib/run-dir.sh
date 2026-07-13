@@ -460,7 +460,14 @@ format_kid_note() {
 #
 # Pure function.
 repo_env_slugs() {
-    local dir="$1" out
+    local dir="${1:-}" out
+    # Fence the empty arg loudly: `[ -d "" ]` is false, so a caller that lost its
+    # ${REPO_ENV_DIR:-…} default would degrade to "nothing stranded here" — the
+    # same silent no-op this function exists to prevent, one layer up.
+    if [ -z "$dir" ]; then
+        printf 'repo_env_slugs: empty REPO_ENV_DIR\n' >&2
+        return 1
+    fi
     [ -d "$dir" ] || return 0
     if ! out=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n'); then
         printf 'repo_env_slugs: cannot scan %s\n' "$dir" >&2

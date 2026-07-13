@@ -75,6 +75,27 @@ if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then
         esac
     done
 fi
+# Rename redirect: \`gh api repos/<owner>/<name>\` follows GitHub's redirect and
+# returns the repo's CURRENT full_name. The worker uses this to recognize its own
+# creds stranded under a pre-rename slug (#171). GH_STUB_RENAME_MAP is a
+# space-separated list of "<queried>=<current>" pairs; an unlisted repo answers
+# with its own name (not renamed). The deeper repos/*/*/* endpoints (permission
+# et al) are excluded so this only claims the two-segment repo lookup.
+if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+            repos/*/*/*) ;;
+            repos/*/*)
+                queried="\${arg#repos/}"
+                for pair in \$GH_STUB_RENAME_MAP; do
+                    case "\$pair" in
+                        "\$queried="*) printf '%s\n' "\${pair#*=}"; exit 0 ;;
+                    esac
+                done
+                printf '%s\n' "\$queried"; exit 0 ;;
+        esac
+    done
+fi
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -1322,7 +1343,64 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
     exit 1
 fi
 
-echo "  PASS (12 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud)"
+# ===== Scenario 10c: rename-stranded creds are DISCLOSED, not silently skipped =====
+# #171. A repo rename moves the seed lookup to the new slug while the creds stay
+# under the old one: the `[ -d ]` guard goes false, the seed no-ops clean, the
+# mirror finds nothing, and `just test` dies at its ${ANTHROPIC_API_KEY:?} gate —
+# posting a generic "Tests failed (exit 1)" the author reads as their own bug.
+# (cncorp/plow → plow-pbc/plow: 208 reviews, 0 passes.)
+#
+# The worker must instead notice that a repo-env dir resolves, through GitHub's
+# rename redirect, to THIS repo — i.e. those are OUR creds under a dead name —
+# and disclose it. This drives the real worker over the real resolution loop:
+# the slug→API-path conversion, the full_name comparison that gates the note, and
+# the guard that keeps a credless repo from probing on an empty dir list.
+echo "  scenario: repo-env stranded by a rename → disclosed, not silently skipped..."
+
+STATE10C="$TMPDIR/state-10c"
+seed_state_dir "$STATE10C"
+git clone -q "$GITHUB_BARE10" "$STATE10C/repos/test-org_probe-repo"
+
+# Creds sit under the PRE-RENAME slug (old-org_probe-repo), not the repo's
+# current slug — exactly the stranded state. Plus an unrelated operator dir that
+# resolves to itself: the control that must NOT produce a note.
+REPO_ENV10C="$TMPDIR/repo-env-10c"
+mkdir -p "$REPO_ENV10C/old-org_probe-repo" "$REPO_ENV10C/other-org_other-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/old-org_probe-repo/.env.test-live"
+echo "OTHER=x" > "$REPO_ENV10C/other-org_other-repo/.env.test-live"
+
+(
+    export STATE_DIR="$STATE10C" STATE_FILE="$STATE10C/state.json" REPOS_DIR="$STATE10C/repos" \
+           WORKDIRS_DIR="$STATE10C/workdirs" CANONICAL_LOCKS_DIR="$STATE10C/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE10C/locks" \
+           REPO_ENV_DIR="$REPO_ENV10C" GH_STUB_PERMISSION_ROLE=write \
+           GH_STUB_RENAME_MAP="old-org/probe-repo=test-org/probe-repo"
+    write_probe_repos_conf "$STATE10C/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Renamed-repo PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR10C=$(find "$STATE10C/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10C" ] || { echo "FAIL: scenario 10c — worker produced no run dir"; exit 1; }
+LOG10C="$RUN_DIR10C/run.log"
+
+# The detection: the old-slug dir resolves to this repo → say so.
+if ! grep -q "repo-env/old-org_probe-repo holds THIS repo's creds under its pre-rename slug" "$LOG10C"; then
+    echo "FAIL: scenario 10c — stranded creds went undisclosed (the silent no-op #171 exists to close)"
+    [ -f "$LOG10C" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10C"; }
+    exit 1
+fi
+# The control: a dir belonging to another repo is none of this review's business.
+# Fences the cry-wolf regression — a note here would fire on the ~56 repos that
+# legitimately need no creds.
+if grep -q "repo-env/other-org_other-repo holds THIS repo's creds" "$LOG10C"; then
+    echo "FAIL: scenario 10c — another repo's creds dir was mis-claimed as this repo's (cry-wolf regression)"
+    exit 1
+fi
+
+echo "  PASS (13 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
@@ -1417,4 +1495,4 @@ if [ "$meta_status11" != "aborted" ]; then
     exit 1
 fi
 
-echo "  PASS (13 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort)"
+echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + pre-spend superseded abort)"
