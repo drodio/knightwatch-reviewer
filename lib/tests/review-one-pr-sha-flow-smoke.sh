@@ -563,6 +563,7 @@ fi
 # shallow (--depth=1 above); the worker must leave it complete.
 if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "false" ]; then
     echo "FAIL: scenario 3 — canonical3 still shallow after the worker ran (--unshallow self-heal ineffective)"
+    cat "$LOG3"
     exit 1
 fi
 
@@ -572,8 +573,8 @@ HEADS_MAIN=$(git -C "$CANONICAL3" rev-parse refs/heads/main 2>/dev/null)
 ORIGIN_MAIN=$(git -C "$CANONICAL3" rev-parse refs/remotes/origin/main 2>/dev/null)
 if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     echo "FAIL: scenario 3 — canonical refs/heads/main ($HEADS_MAIN) != refs/remotes/origin/main ($ORIGIN_MAIN)"
-    echo "  the update-ref alignment didn't run; clone --shared from this canonical would"
-    echo "  serve a stale base SHA to the workdir, breaking the diff for shallow canonicals"
+    echo "  the update-ref alignment didn't run; clone --shared would serve a stale base"
+    echo "  SHA to the workdir, so the review would silently diff against an old base"
     exit 1
 fi
 
