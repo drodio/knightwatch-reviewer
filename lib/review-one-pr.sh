@@ -373,8 +373,20 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=500 --no-single-branch; then
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
+        exit 1
+    fi
+fi
+
+# One-time self-heal: canonicals cloned --depth=500 (before issue #170's
+# fix) are still shallow, and a plain fetch never deepens them — so any
+# PR whose merge base predates the shallow window keeps failing with
+# "no merge base". Convert in place; a no-op forever after.
+if [ "$(git -C "$CANONICAL_DIR" rev-parse --is-shallow-repository)" = "true" ]; then
+    log "$PR_ID: canonical is shallow — fetching full history (one-time --unshallow)"
+    if ! git -C "$CANONICAL_DIR" fetch --unshallow --quiet; then
+        log "$PR_ID: canonical --unshallow fetch failed — aborting"
         exit 1
     fi
 fi
@@ -394,10 +406,10 @@ fi
 # messages) can use the human-readable branch name.
 #
 # The base branch is fetched as `origin/$BASE_REF` so the per-PR clone
-# can diff against it locally. --depth=500 covers ~all PRs (deepening
-# logic could be added if a deep PR's merge-base falls outside that
-# window).
-if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
+# can diff against it locally. Fetches are full-history: a shallow
+# window (--depth=500 until issue #170) silently dropped any PR whose
+# merge base fell outside it.
+if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --quiet; then
     log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
@@ -410,7 +422,7 @@ if [ "$PR_BRANCH" = "$BASE_REF" ]; then
     log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
     exit 1
 fi
-if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet 2>&1); then
+if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --quiet 2>&1); then
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
 fi
@@ -545,7 +557,9 @@ fi
 #    points at a stale SHA that doesn't include the latest base
 #    commits.
 #
-# 2. For SHALLOW canonical clones (cncorp/plow uses --depth=500),
+# 2. For SHALLOW canonical clones (the pre-issue-#170 --depth=500 era;
+#    none remain after the --unshallow self-heal above, kept for the
+#    record),
 #    `git clone --shared` from a shallow source does NOT set up
 #    `objects/info/alternates` in the new clone. So the workdir has
 #    ONLY the objects reachable from refs propagated by the clone
@@ -709,7 +723,17 @@ fi
 # class flagged across PR #31 and PR #35 reviews — single source of
 # truth: the worktree). Also collapses the prior cap-exceeded fallback
 # into the primary path, since `git diff` has no server-side file cap.
-FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA")
+# Check the exit code, not just stdout: a git failure (e.g. "no merge
+# base") writes to stderr and leaves stdout empty, which the -z branch
+# below would misread as "PR has no changes" — the silent-drop bug of
+# issue #170. Failure path re-runs the diff to capture stderr; cheap,
+# since a failing diff fails fast.
+if ! FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null); then
+    diff_err=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>&1 >/dev/null | head -c 300)
+    log "$PR_ID: FATAL — git diff ${BASE_REF_SHA:0:7}...${REVIEWED_SHA:0:7} failed: ${diff_err}"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 if [ -z "$FULL_PR_DIFF" ]; then
     log "$PR_ID: local git diff origin/${BASE_REF}...${REVIEWED_SHA:0:7} returned empty — aborting"
     rm -rf "$REPO_DIR"
