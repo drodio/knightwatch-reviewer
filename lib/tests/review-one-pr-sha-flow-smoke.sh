@@ -86,6 +86,12 @@ if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
         case "\$arg" in
             repos/*/*/*) ;;
             repos/*/*)
+                # Only answer the call this arm actually models — the
+                # \`--jq .full_name\` rename probe. Claiming every two-segment
+                # repos/<owner>/<name> lookup would hand a future
+                # \`--jq .default_branch\` a plausible-looking wrong answer
+                # (owner/name) and mis-drive the run instead of failing.
+                case " \$* " in *" .full_name "*) ;; *) continue ;; esac
                 queried="\${arg#repos/}"
                 for pair in \$GH_STUB_RENAME_MAP; do
                     case "\$pair" in
@@ -1392,15 +1398,45 @@ if ! grep -q "repo-env/old-org_probe-repo holds THIS repo's creds under its pre-
     [ -f "$LOG10C" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10C"; }
     exit 1
 fi
-# The control: a dir belonging to another repo is none of this review's business.
-# Fences the cry-wolf regression — a note here would fire on the ~56 repos that
-# legitimately need no creds.
-if grep -q "repo-env/other-org_other-repo holds THIS repo's creds" "$LOG10C"; then
-    echo "FAIL: scenario 10c — another repo's creds dir was mis-claimed as this repo's (cry-wolf regression)"
+# ===== Scenario 10d: another repo's creds dir → stay quiet (the cry-wolf fence) =====
+# Must be its OWN run, not a second dir bolted onto 10c: repo_env_slugs sorts and
+# the worker breaks on the first match, so in 10c `old-org_probe-repo` is always
+# probed first and always matches — `other-org_*` would never be queried at all,
+# and the assertion could not fail even if the full_name comparison were inverted.
+# A negative control has to be a run where NOTHING resolves to $REPO. This is the
+# branch that keeps the ~56 repos which legitimately need no creds quiet.
+echo "  scenario: repo-env dir belonging to another repo → no note (cry-wolf fence)..."
+
+STATE10D="$TMPDIR/state-10d"
+seed_state_dir "$STATE10D"
+git clone -q "$GITHUB_BARE10" "$STATE10D/repos/test-org_probe-repo"
+
+REPO_ENV10D="$TMPDIR/repo-env-10d"
+mkdir -p "$REPO_ENV10D/other-org_other-repo"
+echo "OTHER=x" > "$REPO_ENV10D/other-org_other-repo/.env.test-live"
+
+(
+    export STATE_DIR="$STATE10D" STATE_FILE="$STATE10D/state.json" REPOS_DIR="$STATE10D/repos" \
+           WORKDIRS_DIR="$STATE10D/workdirs" CANONICAL_LOCKS_DIR="$STATE10D/canonical-locks" \
+           PR_REVIEW_LOCK_DIR="$STATE10D/locks" \
+           REPO_ENV_DIR="$REPO_ENV10D" GH_STUB_PERMISSION_ROLE=write \
+           GH_STUB_RENAME_MAP="old-org/probe-repo=test-org/probe-repo"
+    write_probe_repos_conf "$STATE10D/repos.conf"
+    TRIGGER_COMMENT_FILE="" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Credless PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR10D=$(find "$STATE10D/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10D" ] || { echo "FAIL: scenario 10d — worker produced no run dir"; exit 1; }
+if grep -q "holds THIS repo's creds" "$RUN_DIR10D/run.log"; then
+    echo "FAIL: scenario 10d — claimed another repo's creds dir as this repo's (cry-wolf regression)"
+    tail -n 30 "$RUN_DIR10D/run.log"
     exit 1
 fi
 
-echo "  PASS (13 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure)"
+echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + repo-env cry-wolf fence)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
@@ -1495,4 +1531,4 @@ if [ "$meta_status11" != "aborted" ]; then
     exit 1
 fi
 
-echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + pre-spend superseded abort)"
+echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + repo-env cry-wolf fence + pre-spend superseded abort)"
