@@ -574,14 +574,15 @@ _reo_dir=$(mktemp -d)
 mkdir -p "$_reo_dir/plow-pbc_plow" "$_reo_dir/srosro_knightwatch-reviewer"
 
 # Orphans print one slug per line; the table compares them comma-joined so each
-# case stays a single row. Empty `want` = no orphans.
-while IFS='|' read -r desc tracked want; do
+# case stays a single row. A claim is `owner/name` (REPOS) or bare `owner`
+# (ORGS). Empty `want` = no orphans.
+while IFS='|' read -r desc claims want; do
     [ -n "$desc" ] || continue
-    # shellcheck disable=SC2086  # deliberate word-split: tracked is a repo list
-    got=$(repo_env_orphans "$_reo_dir" $tracked | paste -sd,)
+    # shellcheck disable=SC2086  # deliberate word-split: claims is a list
+    got=$(repo_env_orphans "$_reo_dir" $claims | paste -sd,)
     if [ "$got" != "$want" ]; then
         echo "FAIL: repo_env_orphans — $desc"
-        echo "  tracked:  ${tracked:-(none)}"
+        echo "  claims:   ${claims:-(none)}"
         echo "  expected: ${want:-(none)}"
         echo "  got:      ${got:-(none)}"
         exit 1
@@ -591,7 +592,9 @@ done <<EOF
 all dirs claimed by a tracked repo → silent (the steady state)|plow-pbc/plow srosro/knightwatch-reviewer|
 renamed repo strands its creds under the old slug → orphan|cncorp/plow srosro/knightwatch-reviewer|plow-pbc_plow
 repo-name rename (not just owner) is caught too|plow-pbc/plow-old srosro/knightwatch-reviewer|plow-pbc_plow
-no tracked repos → every dir is an orphan||plow-pbc_plow,srosro_knightwatch-reviewer
+an ORGS owner claims every slug under it (org repos precede their REPOS entry)|srosro plow-pbc/plow|
+ORGS claims only its own owner — other owners still checked|srosro|plow-pbc_plow
+no claims at all (repos.conf unloaded) → silent, never manufacture orphans||
 EOF
 
 echo "  repo_env_orphans: absent mount → silent (no creds is normal, not an error)..."
@@ -604,4 +607,21 @@ got=$(repo_env_orphans "$_reo_empty" "plow-pbc/plow")
 [ -z "$got" ] || { echo "FAIL: repo_env_orphans on empty dir should print nothing, got: $got"; exit 1; }
 rm -rf "$_reo_dir" "$_reo_empty"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 6 repo-env-orphans + clean-PR composition + bakeoff-marker pin)"
+# The #171 payload, end to end. The whole design turns on these two fragments
+# coexisting: the test verdict stays HONEST and generic (we never teach the
+# classifier to recognize flavors of credential failure — that's whack-a-mole),
+# and the infra warning rides alongside it so a red result isn't read as the
+# author's bug. A refactor that drops either half reintroduces the false
+# "Tests failed (exit 1)" that cost 208 plow reviews.
+echo "  #171 composition: stranded-creds warning rides alongside the honest generic test failure..."
+result=$(prepend_review_header "$BODY" \
+    "$(format_review_scope "first" "")" \
+    "⚠️ Operator creds not seeded — \`repo-env/cncorp_plow\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR" \
+    "$(format_tests_note "true" "FAILED (exit 1)")" \
+    "$(format_kid_note "true")")
+assert_one_blockquote "$result" "repo-env-note"
+assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
+assert_contains "$result" '`repo-env/cncorp_plow`' "names the stale slug the operator must fix"
+assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
+
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 8 repo-env-orphans + #171 composition + clean-PR composition + bakeoff-marker pin)"

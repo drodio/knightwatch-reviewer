@@ -492,7 +492,7 @@ else
             log "$PR_ID: WARNING — repo-env/$orphan_slug is THIS repo's creds stranded under its pre-rename slug; tests will run without them"
             REPO_ENV_NOTE="⚠️ Operator creds not seeded — \`repo-env/$orphan_slug\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR"
         fi
-    done < <(repo_env_orphans "${REPO_ENV_DIR:-/root/.kwr/repo-env}" "${REPOS[@]}")
+    done < <(repo_env_orphans "${REPO_ENV_DIR:-/root/.kwr/repo-env}" "${REPOS[@]}" "${ORGS[@]}")
 fi
 
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed

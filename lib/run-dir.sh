@@ -433,14 +433,19 @@ format_kid_note() {
     esac
 }
 
-# repo_env_orphans REPO_ENV_DIR [TRACKED_REPO...]
+# repo_env_orphans REPO_ENV_DIR [CLAIM...]
 #
-# Prints every `repo-env/<slug>/` dir matching no tracked repo, one slug per
-# line. A repo-env dir exists only because an operator deliberately created it,
-# so an unclaimed one is unambiguously an operator error — in practice a repo
-# RENAME that stranded the creds under the old slug (#171: cncorp/plow →
-# plow-pbc/plow left api/.env.test-live at repo-env/cncorp_plow, the seed
-# silently no-op'd, and 208 plow reviews posted a false "Tests failed").
+# Prints every `repo-env/<slug>/` dir claimed by nothing, one slug per line. A
+# CLAIM is either `owner/name` (a REPOS entry) or a bare `owner` (an ORGS entry,
+# which claims every slug under that owner — an org repo is reviewable the moment
+# it has a PR, and only lands in REPOS after the next org-sync regeneration, so
+# matching REPOS alone would cry wolf during that window).
+#
+# A repo-env dir exists only because an operator deliberately created it, so an
+# unclaimed one is unambiguously an operator error — in practice a repo RENAME
+# that stranded the creds under the old slug (#171: cncorp/plow → plow-pbc/plow
+# left api/.env.test-live at repo-env/cncorp_plow, the seed silently no-op'd, and
+# 208 plow reviews posted a false "Tests failed").
 #
 # This asserts a precondition the reviewer OWNS (did the seed have creds to
 # seed?) rather than classifying the downstream symptom. Inferring "missing
@@ -449,19 +454,35 @@ format_kid_note() {
 # check further down — one branch per manifestation, and the next one still
 # escapes. An orphaned dir is a single exact fact, however the failure lands.
 #
-# Absent/empty REPO_ENV_DIR prints nothing: no creds mounted is the normal
-# state for most repos, not an error.
+# Prints nothing when: the mount is absent/empty (no creds is the normal state
+# for most repos, not an error), or NO claims were passed at all — the worker
+# tolerates a missing repos.conf (tracked-repos.sh), and an unloaded manifest
+# would otherwise manufacture an "orphan" out of every legitimate dir.
+#
+# `find` failure is NOT silenced: a permission-denied or unreadable mount must
+# surface in the worker log rather than read as "no orphans" — a guard against
+# silent no-ops that no-ops silently is worse than none.
 #
 # Pure function.
 repo_env_orphans() {
     local dir="$1"; shift
     [ -d "$dir" ] || return 0
-    local -A tracked=()
-    local repo slug
-    for repo in "$@"; do tracked["${repo//\//_}"]=1; done
+    [ "$#" -gt 0 ] || return 0
+    local -A repos=() orgs=()
+    local claim slug
+    for claim in "$@"; do
+        case "$claim" in
+            */*) repos["${claim//\//_}"]=1 ;;
+            *)   orgs["$claim"]=1 ;;
+        esac
+    done
     while IFS= read -r slug; do
-        [ -n "${tracked[$slug]:-}" ] || printf '%s\n' "$slug"
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+        [ -n "${repos[$slug]:-}" ] && continue
+        # Owner = slug up to the first `_`: the slug is `tr '/' '_'` of
+        # owner/name, and a GitHub owner can't contain `_` (a repo name can).
+        [ -n "${orgs[${slug%%_*}]:-}" ] && continue
+        printf '%s\n' "$slug"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
 }
 
 # format_specialist_timeouts NAMES_CSV
