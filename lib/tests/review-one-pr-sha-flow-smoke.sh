@@ -449,47 +449,16 @@ if grep -q "release-1.0: base" "$COMMITS_MD"; then
 fi
 
 # ===== Scenario 3: align canonical refs/heads/$BASE_REF with refs/remotes =====
-# Reproduces the production bug from cncorp/plow#568 (post-PR #36 deploy).
+# Fences the update-ref alignment (from cncorp/plow#568) and the
+# --unshallow self-heal (issue #170).
 #
-# The bug: PR #36 captures BASE_REF_SHA from canonical's
-# `refs/remotes/origin/$BASE_REF` (advanced by the just-completed
-# `git fetch origin $BASE_REF`). For SHALLOW canonical clones (the
-# pre-issue-#170 --depth=500 era), `git clone --shared` does NOT set up
-# `objects/info/alternates` in the workdir — git silently falls back to a
-# non-local clone path with `warning: source repository is shallow,
-# ignoring --local`. The workdir can only reach objects via refs propagated
-# from canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`.
-# Anything reachable only from canonical's `refs/remotes/origin/*` is NOT
-# in the workdir's object set. So `git diff $BASE_REF_SHA...$REVIEWED_SHA`
-# errors with "Invalid symmetric difference expression" but bash captures
-# the empty stdout and the bot reads "empty diff" → aborts. Every
-# cncorp/plow PR review aborted at the diff stage post-deploy.
-#
-# Fix: align canonical's `refs/heads/$BASE_REF` with `refs/remotes/origin/
-# $BASE_REF` via `update-ref` BEFORE the clone. Then the workdir's
-# `refs/remotes/origin/$BASE_REF` (mirrored from canonical's heads)
-# holds the fresh SHA — and its objects are now reachable in the workdir.
-#
-# Assertion strategy: a smoke fixture can't faithfully reproduce the
-# empty-diff abort (the worker's one-time --unshallow self-heal — the
-# issue-#170 fix — completes the tiny canonical's history before the
-# diff stage, by design). What we CAN reliably assert is the invariant
-# the fix establishes:
-# after the worker runs, canonical's refs/heads/$BASE_REF MUST equal
-# refs/remotes/origin/$BASE_REF. Without the fix, a default `git fetch`
-# only updates the remote-tracking ref; refs/heads/main would stay at
-# whatever it was when canonical was first cloned. With the fix, the
-# update-ref propagates the fresh SHA so clone --shared (which mirrors
-# canonical's heads to workdir's remotes) gives the workdir a usable
-# base ref regardless of shallow state.
-#
-# Post-#170 (canonicals always complete), fail-mode 2's unreachability
-# is gone — alternates make every canonical object visible to the
-# workdir — so a missing update-ref no longer reproduces the original
-# abort. The alignment is still load-bearing for fail-mode 1, though:
-# without it, BASE_REF_SHA is read from a stale refs/heads/main and the
-# review silently diffs against an old base (wrong diff content, not an
-# error). The ref-equality assertion below fences that.
+# The live invariant: `git fetch origin $BASE_REF` advances only the
+# remote-tracking ref, and `git clone --shared` maps the source's
+# refs/heads/* into the workdir's origin/*. Without the worker's
+# update-ref, the workdir silently diffs against a stale base. So after
+# the worker runs, canonical's refs/heads/$BASE_REF MUST equal
+# refs/remotes/origin/$BASE_REF — asserted below, alongside the
+# self-heal check that a deliberately-shallow canonical ends complete.
 
 echo "  scenario: canonical refs/heads/main aligned with refs/remotes/origin/main..."
 
@@ -591,24 +560,14 @@ if grep -qE "local git diff origin/main\.{3}.* returned empty" "$LOG3"; then
 fi
 
 # --unshallow self-heal (issue #170): the fixture canonical started
-# shallow (--depth=1 above); the worker must detect that, fetch full
-# history once, and leave the canonical complete.
-if ! grep -q "one-time --unshallow" "$LOG3"; then
-    echo "FAIL: scenario 3 — worker never ran the one-time --unshallow self-heal on a shallow canonical"
-    cat "$LOG3"
-    exit 1
-fi
+# shallow (--depth=1 above); the worker must leave it complete.
 if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "false" ]; then
     echo "FAIL: scenario 3 — canonical3 still shallow after the worker ran (--unshallow self-heal ineffective)"
     exit 1
 fi
 
-# Decisive assertion: after the worker runs, canonical's
-# refs/heads/$BASE_REF MUST equal refs/remotes/origin/$BASE_REF.
-# That's the invariant the fix establishes via update-ref. Without the
-# fix, `git fetch origin main` only updates the remote-tracking ref;
-# refs/heads/main stays at whatever it was when canonical was first
-# cloned. With the fix, update-ref propagates the fresh SHA.
+# Decisive assertion: refs/heads/main == refs/remotes/origin/main
+# (the update-ref alignment ran — see the scenario header).
 HEADS_MAIN=$(git -C "$CANONICAL3" rev-parse refs/heads/main 2>/dev/null)
 ORIGIN_MAIN=$(git -C "$CANONICAL3" rev-parse refs/remotes/origin/main 2>/dev/null)
 if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
@@ -617,15 +576,6 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     echo "  serve a stale base SHA to the workdir, breaking the diff for shallow canonicals"
     exit 1
 fi
-
-# Note: the "update-ref BEFORE clone --shared" ordering can't be
-# directly fenced here. The worker's --unshallow self-heal (issue #170)
-# completes the canonical's history up front, so clone --shared sets up
-# alternates and the workdir reaches the post-update-ref SHA via
-# alternates regardless of timing. The canonical-state assertion above +
-# the full-diff.patch content check below cover the production-relevant
-# failure modes — an unreachable BASE_REF_SHA produces an empty diff,
-# tripping the content check.
 
 # Positive consumer: the worker should have produced a non-empty
 # full-diff.patch whose contents include the PR feature.

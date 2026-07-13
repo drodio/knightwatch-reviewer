@@ -545,46 +545,13 @@ else
     log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
-# Align canonical's `refs/heads/$BASE_REF` with the just-fetched
-# `refs/remotes/origin/$BASE_REF` BEFORE the `git clone --shared`.
-# This is load-bearing for two coupled reasons:
-#
-# 1. The clone's `refs/remotes/origin/*` mirrors canonical's
-#    `refs/heads/*`, NOT canonical's `refs/remotes/origin/*`. So if
-#    canonical's `refs/heads/$BASE_REF` is stale (the typical state —
-#    `git fetch origin BASE_REF` only updates the remote-tracking
-#    ref, never the local head), the workdir's `origin/$BASE_REF`
-#    points at a stale SHA that doesn't include the latest base
-#    commits.
-#
-# 2. For SHALLOW canonical clones (the pre-issue-#170 --depth=500 era;
-#    none remain after the --unshallow self-heal above, kept for the
-#    record),
-#    `git clone --shared` from a shallow source does NOT set up
-#    `objects/info/alternates` in the new clone. So the workdir has
-#    ONLY the objects reachable from refs propagated by the clone
-#    (canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`).
-#    If BASE_REF_SHA is canonical's `refs/remotes/origin/$BASE_REF`
-#    but `refs/heads/$BASE_REF` is stale, that SHA is not in the
-#    workdir's reachable object set — and `git diff $BASE_REF_SHA...
-#    $REVIEWED_SHA` errors with "Invalid symmetric difference" but
-#    bash captures the empty stdout and the bot reads it as an
-#    empty diff, then aborts with `local git diff origin/<base>...
-#    <reviewed-sha> returned empty — aborting`.
-#
-# Both fail-modes were observed on cncorp/plow#568 after PR #36
-# deployed: every cncorp/plow review aborted at the diff stage
-# because the shallow canonical's `refs/heads/main` was at an old
-# SHA while `refs/remotes/origin/main` had been advanced by recent
-# fetches. The `update-ref` here makes both refs point at the same
-# SHA so the workdir gets a usable base via either path.
-#
-# Safe to run unconditionally: canonical's HEAD is on a per-PR
-# `pr-N` branch from a previous review, not on `$BASE_REF`, so
-# updating `refs/heads/$BASE_REF` doesn't move HEAD or touch the
-# working tree. The .env-mirror step that reads `$CANONICAL_DIR`'s
-# working tree is unaffected (working tree files persist across
-# ref updates).
+# Align canonical's local base ref BEFORE the `git clone --shared`.
+# The clone maps the source's refs/heads/* into its origin/* refs; it
+# does not copy the source's refs/remotes/origin/*. Fetch advances
+# only the latter, so update the local head first or the workdir
+# diffs against a stale base (observed on cncorp/plow#568). Safe to
+# run unconditionally: canonical's HEAD stays on a per-PR branch, so
+# this moves neither HEAD nor the working tree.
 if ! git -C "$CANONICAL_DIR" update-ref "refs/heads/$BASE_REF" "refs/remotes/origin/$BASE_REF"; then
     log "$PR_ID: failed to align refs/heads/$BASE_REF with refs/remotes/origin/$BASE_REF in canonical — aborting"
     exit 1
