@@ -446,6 +446,16 @@ fi
 # so untrusted authors never receive them. Absent dir = clean no-op (most repos
 # need no live creds). Runs after the KNOWN_SHA skip so a deduped review doesn't
 # seed pointlessly.
+#
+# Absent dir is normal, but it is ALSO how a repo rename presents: the lookup
+# moves to the new slug while the creds stay under the old one, the seed
+# no-ops, the mirror finds nothing to copy, and `just test` dies at its
+# ${ANTHROPIC_API_KEY:?} gate — publishing a false "Tests failed (exit 1)" the
+# author reads as their own bug. Disclose it instead (REPO_ENV_NOTE → the
+# REVIEW_NOTES banner). Set here, consumed at the assembly block near the end
+# of this file; REVIEW_NOTES=() initializes there and would clobber an append
+# made this early (same pattern as TIMEOUT_NOTE).
+REPO_ENV_NOTE=""
 repo_env_src="${REPO_ENV_DIR:-/root/.kwr/repo-env}/$REPO_SLUG"
 if [ -d "$repo_env_src" ]; then
     repo_env_seeded=0
@@ -462,6 +472,27 @@ if [ -d "$repo_env_src" ]; then
         repo_env_seeded=$((repo_env_seeded + 1))
     done < <(find "$repo_env_src" -type f -print0)
     [ "$repo_env_seeded" -gt 0 ] && log "$PR_ID: seeded $repo_env_seeded operator repo-env file(s) into canonical"
+else
+    # No creds for this repo. Normal for most repos — unless an orphaned
+    # repo-env dir exists, which means SOME repo's creds were stranded. An
+    # orphan alone doesn't say WHICH repo it robbed, and warning every
+    # credless repo would spam ~56 innocent PRs with a bogus "your test
+    # failure may be infra". GitHub redirects renamed repos, so resolve each
+    # orphan to its current name and warn only on the repo it actually names.
+    # Plain `gh` (no gh_api_retry — the worker doesn't source gh-retry.sh, cf.
+    # `gh pr view` above); a transient failure just defers the note to the next
+    # PR, since the orphan persists until an operator clears it.
+    while IFS= read -r orphan_slug; do
+        log "$PR_ID: WARNING — repo-env/$orphan_slug matches no tracked repo (orphaned by a rename?)"
+        # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and a
+        # GitHub owner can't contain `_` (a repo name can), so the first one is
+        # always the separator.
+        orphan_repo=$(gh api "repos/${orphan_slug/_//}" --jq .full_name 2>/dev/null)
+        if [ "$orphan_repo" = "$REPO" ]; then
+            log "$PR_ID: WARNING — repo-env/$orphan_slug is THIS repo's creds stranded under its pre-rename slug; tests will run without them"
+            REPO_ENV_NOTE="⚠️ Operator creds not seeded — \`repo-env/$orphan_slug\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR"
+        fi
+    done < <(repo_env_orphans "${REPO_ENV_DIR:-/root/.kwr/repo-env}" "${REPOS[@]}")
 fi
 
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
@@ -1706,6 +1737,13 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
+# Reviewer-infra precondition (set at the repo-env seed step): this repo's
+# operator creds were stranded under a pre-rename slug, so `just test` ran
+# without them. The test note below stays honest and generic — we don't teach
+# the classifier to recognize flavors of credential failure; we just disclose
+# that the reviewer's own inputs were broken, so a red result isn't read as the
+# author's bug.
+[ -n "$REPO_ENV_NOTE" ] && REVIEW_NOTES+=("$REPO_ENV_NOTE")
 # Specialist timeouts and per-call model-capacity bounces no longer abort —
 # pipeline.py completes the review with the surviving angles and names the
 # skipped ones in _wave_b_timeouts.txt (one shared soft-degrade sentinel for

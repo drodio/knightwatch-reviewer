@@ -433,6 +433,37 @@ format_kid_note() {
     esac
 }
 
+# repo_env_orphans REPO_ENV_DIR [TRACKED_REPO...]
+#
+# Prints every `repo-env/<slug>/` dir matching no tracked repo, one slug per
+# line. A repo-env dir exists only because an operator deliberately created it,
+# so an unclaimed one is unambiguously an operator error — in practice a repo
+# RENAME that stranded the creds under the old slug (#171: cncorp/plow →
+# plow-pbc/plow left api/.env.test-live at repo-env/cncorp_plow, the seed
+# silently no-op'd, and 208 plow reviews posted a false "Tests failed").
+#
+# This asserts a precondition the reviewer OWNS (did the seed have creds to
+# seed?) rather than classifying the downstream symptom. Inferring "missing
+# creds" from test output is whack-a-mole: a missing key surfaces as a
+# ${VAR:?} gate, a 401, a scenario timeout, or an empty-string key failing a
+# check further down — one branch per manifestation, and the next one still
+# escapes. An orphaned dir is a single exact fact, however the failure lands.
+#
+# Absent/empty REPO_ENV_DIR prints nothing: no creds mounted is the normal
+# state for most repos, not an error.
+#
+# Pure function.
+repo_env_orphans() {
+    local dir="$1"; shift
+    [ -d "$dir" ] || return 0
+    local -A tracked=()
+    local repo slug
+    for repo in "$@"; do tracked["${repo//\//_}"]=1; done
+    while IFS= read -r slug; do
+        [ -n "${tracked[$slug]:-}" ] || printf '%s\n' "$slug"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort)
+}
+
 # format_specialist_timeouts NAMES_CSV
 #
 # One header fragment naming the angle(s) that timed out (codex parallel-

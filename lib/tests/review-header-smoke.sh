@@ -565,4 +565,43 @@ assert_contains "$result" "✅ Tests passed" "clean-PR tests"
 assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + clean-PR composition + bakeoff-marker pin)"
+# ===== repo_env_orphans =====
+# The rename guard (#171). A repo-env/<slug>/ dir exists only because an
+# operator made it, so one matching no tracked repo is an operator error —
+# in practice a rename that stranded the creds under the old slug, silently
+# no-op'ing the seed and posting a false "Tests failed" on every PR.
+_reo_dir=$(mktemp -d)
+mkdir -p "$_reo_dir/plow-pbc_plow" "$_reo_dir/srosro_knightwatch-reviewer"
+
+# Orphans print one slug per line; the table compares them comma-joined so each
+# case stays a single row. Empty `want` = no orphans.
+while IFS='|' read -r desc tracked want; do
+    [ -n "$desc" ] || continue
+    # shellcheck disable=SC2086  # deliberate word-split: tracked is a repo list
+    got=$(repo_env_orphans "$_reo_dir" $tracked | paste -sd,)
+    if [ "$got" != "$want" ]; then
+        echo "FAIL: repo_env_orphans — $desc"
+        echo "  tracked:  ${tracked:-(none)}"
+        echo "  expected: ${want:-(none)}"
+        echo "  got:      ${got:-(none)}"
+        exit 1
+    fi
+    echo "  repo_env_orphans: $desc..."
+done <<EOF
+all dirs claimed by a tracked repo → silent (the steady state)|plow-pbc/plow srosro/knightwatch-reviewer|
+renamed repo strands its creds under the old slug → orphan|cncorp/plow srosro/knightwatch-reviewer|plow-pbc_plow
+repo-name rename (not just owner) is caught too|plow-pbc/plow-old srosro/knightwatch-reviewer|plow-pbc_plow
+no tracked repos → every dir is an orphan||plow-pbc_plow,srosro_knightwatch-reviewer
+EOF
+
+echo "  repo_env_orphans: absent mount → silent (no creds is normal, not an error)..."
+got=$(repo_env_orphans "$_reo_dir/does-not-exist" "plow-pbc/plow")
+[ -z "$got" ] || { echo "FAIL: repo_env_orphans on absent dir should print nothing, got: $got"; exit 1; }
+
+echo "  repo_env_orphans: empty mount → silent..."
+_reo_empty=$(mktemp -d)
+got=$(repo_env_orphans "$_reo_empty" "plow-pbc/plow")
+[ -z "$got" ] || { echo "FAIL: repo_env_orphans on empty dir should print nothing, got: $got"; exit 1; }
+rm -rf "$_reo_dir" "$_reo_empty"
+
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 6 repo-env-orphans + clean-PR composition + bakeoff-marker pin)"
