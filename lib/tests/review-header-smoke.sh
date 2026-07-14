@@ -606,6 +606,36 @@ assert_contains "$note" "Operator creds not seeded" "note states the infra fault
 printf '%s' "$note" | grep -q 'repo-env/' \
     && { echo "FAIL: format_repo_env_note leaked an operator dir path into the public banner"; exit 1; }
 
+# ===== repo_env_stranded_failure + format_test_results =====
+# The disclosure has TWO surfaces: the public header and test-results.md, which is
+# what the tests specialist reasons over. The specialist one is the load-bearing
+# half — leaving the caveat out of it lets the specialist raise findings against the
+# author for the reviewer's own broken input, which is the harm this exists to stop.
+# It shipped untested once already, which is how the presentation-only bug survived.
+while IFS='|' read -r note tests_ran summary want; do
+    got=$(repo_env_stranded_failure "$note" "$tests_ran" "$summary")
+    [ "$got" = "$want" ] || {
+        echo "FAIL: repo_env_stranded_failure('$note', $tests_ran, '$summary') = $got, want $want"; exit 1; }
+done <<EOF
+⚠️ note|true|FAILED (exit 1)|true
+⚠️ note|true|PASSED|false
+⚠️ note|false|not run (no justfile)|false
+|true|FAILED (exit 1)|false
+EOF
+echo "  repo_env_stranded_failure: only a real failure with stranded creds (pass/skip/no-note stay quiet)..."
+
+echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
+tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
+assert_contains "$tr_stranded" "Reviewer-infra caveat" "caveat reaches test-results.md, not just the header"
+assert_contains "$tr_stranded" "do not raise findings against the author" "specialist told not to blame the PR"
+assert_contains "$tr_stranded" "**Result:** FAILED (exit 1)" "verdict stays generic — no credential-flavored classification"
+
+echo "  format_test_results: no stranded failure → no caveat (a false claim beside a green result)..."
+tr_clean=$(format_test_results false "PASSED" "some output")
+printf '%s' "$tr_clean" | grep -q "Reviewer-infra caveat" \
+    && { echo "FAIL: caveat claimed reviewer-infra breakage on a run that passed"; exit 1; }
+assert_contains "$tr_clean" "**Result:** PASSED" "clean run still reports its verdict"
+
 echo "  #171 composition: stranded-creds warning rides alongside the honest generic test failure..."
 result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "first" "")" \
@@ -616,4 +646,4 @@ assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 4 stranded-failure predicate + 2 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"

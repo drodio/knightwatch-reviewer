@@ -1014,29 +1014,11 @@ for f in "${COPIED_ENV_FILES[@]}"; do
 done
 
 log "$PR_ID: just test ${TEST_SUMMARY}"
-# Did stranded creds actually break THIS run? Both surfaces that disclose it — the
-# public header and test-results.md, which is what the tests specialist reasons
-# over — must read the same predicate. Writing the condition twice is what let the
-# header and the specialist copy contradict each other. TESTS_RAN and TEST_SUMMARY
-# are final here.
-#
-# Gated on a real failure: the disclosure speaks of a test failure, so beside a
-# PASSED or a "not run" result it would be a flatly false claim — planted, in the
-# specialist's case, next to a standing "don't blame the author" instruction.
-REPO_ENV_STRANDED_FAILURE=false
-[ -n "$REPO_ENV_NOTE" ] && [ "$TESTS_RAN" = true ] && [ "$TEST_SUMMARY" != PASSED ] && \
-    REPO_ENV_STRANDED_FAILURE=true
-
-REPO_ENV_TEST_CAVEAT=""
-[ "$REPO_ENV_STRANDED_FAILURE" = true ] && REPO_ENV_TEST_CAVEAT="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. This failure may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
-
-"
-TEST_RESULTS="${REPO_ENV_TEST_CAVEAT}**Result:** ${TEST_SUMMARY}
-
-Last 500 lines of \`just test\` output:
-\`\`\`
-${TEST_LOG_TAIL:-(no output captured)}
-\`\`\`"
+# Both disclosure surfaces read ONE predicate (lib/run-dir.sh) so they cannot drift:
+# the public header below, and test-results.md here — what the tests specialist
+# reasons over. TESTS_RAN and TEST_SUMMARY are final at this point.
+REPO_ENV_STRANDED_FAILURE=$(repo_env_stranded_failure "$REPO_ENV_NOTE" "$TESTS_RAN" "$TEST_SUMMARY")
+TEST_RESULTS=$(format_test_results "$REPO_ENV_STRANDED_FAILURE" "$TEST_SUMMARY" "$TEST_LOG_TAIL")
 
 # ---- standards ----
 # $STANDARDS was captured in the early convention-read section above (alongside the

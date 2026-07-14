@@ -470,6 +470,48 @@ format_repo_env_note() {
     printf '⚠️ Operator creds not seeded — stranded under this repo'"'"'s pre-rename slug; a test failure below may be reviewer infra, not this PR'
 }
 
+# repo_env_stranded_failure REPO_ENV_NOTE TESTS_RAN TEST_SUMMARY
+#
+# Did stranded operator creds actually break THIS run? Prints true/false.
+#
+# ONE predicate for both surfaces that disclose it — the public header and
+# test-results.md, which the tests specialist reasons over. Expressing it twice is
+# what let those two contradict each other: the header got gated, the specialist
+# copy didn't, and a PASSING run carried "this failure may be reviewer infra" beside
+# `Result: PASSED`. Gated on a real failure because the disclosure speaks of one; on
+# a pass or a skipped run it would be a false claim — and in the specialist's case a
+# false claim next to a standing "don't blame the author" instruction.
+#
+# Pure function.
+repo_env_stranded_failure() {
+    local note="$1" tests_ran="$2" summary="$3"
+    if [ -n "$note" ] && [ "$tests_ran" = true ] && [ "$summary" != PASSED ]; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
+# format_test_results STRANDED TEST_SUMMARY LOG_TAIL
+#
+# Builds test-results.md — the artifact the tests specialist reasons over.
+#
+# When creds were stranded, the caveat rides HERE, not just in the public header.
+# Disclosing only to the human leaves the specialist free to raise findings against
+# the author for the reviewer's own broken input, which is the harm the disclosure
+# exists to stop. The verdict itself stays generic either way — no credential-
+# flavored classifier.
+#
+# Pure function.
+format_test_results() {
+    local stranded="$1" summary="$2" log_tail="$3" caveat=""
+    if [ "$stranded" = true ]; then
+        caveat="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. This failure may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it."$'\n\n'
+    fi
+    printf '%s**Result:** %s\n\nLast 500 lines of `just test` output:\n```\n%s\n```' \
+        "$caveat" "$summary" "${log_tail:-(no output captured)}"
+}
+
 # format_specialist_timeouts NAMES_CSV
 #
 # One header fragment naming the angle(s) that timed out (codex parallel-
