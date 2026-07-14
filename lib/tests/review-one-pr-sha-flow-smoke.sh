@@ -1451,13 +1451,12 @@ while IFS='|' read -r tag desc dir map rc err probe_expect want_slug want_warn <
 done 3<<'EOF'
 10c|creds stranded by a rename → disclosed, not silently skipped|old-org_probe-repo|old-org/probe-repo=test-org/probe-repo|||old-org/probe-repo|old-org_probe-repo|no
 10d|another repo's creds dir → stay quiet (cry-wolf fence)|other-org_other-repo|old-org/probe-repo=test-org/probe-repo|||other-org/other-repo||no
-10e|lookup 404 → silent (operator's leftover dir for a deleted repo)|deleted-org_gone-repo||1|gh: Not Found (HTTP 404)|deleted-org/gone-repo FAILED gh: Not Found (HTTP 404)||no
-10f|lookup fails non-404 → loud (ownership undetermined, not swallowed)|deleted-org_gone-repo||1|gh: Forbidden (HTTP 403)|deleted-org/gone-repo FAILED gh: Forbidden (HTTP 403)||yes
+10e|lookup fails → loud (ownership undetermined, never swallowed)|deleted-org_gone-repo||1|gh: Forbidden (HTTP 403)|deleted-org/gone-repo FAILED gh: Forbidden (HTTP 403)||yes
 EOF
-# 403 not 500 in 10f: gh_api_retry retries 5xx (3 attempts, ~6s backoff) and falls
-# through on 4xx, so the discriminator is asserted without paying for the retry.
+# 403 not 500: gh_api_retry retries 5xx (3 attempts, ~6s backoff) and falls through
+# on 4xx, so the warn path is asserted without paying for the retry.
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env stranded-creds decision x4: disclose / cry-wolf fence / 404 silent / non-404 loud)"
+echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env stranded-creds decision x3: disclose / cry-wolf fence / lookup-failure loud)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the

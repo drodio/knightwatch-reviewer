@@ -435,28 +435,16 @@ format_kid_note() {
 
 # repo_env_slugs REPO_ENV_DIR
 #
-# Prints each `repo-env/<slug>/` dir name, one per line, sorted. Empty output
-# for an absent or empty mount — no operator creds is the normal state for most
-# repos, not an error. Returns non-zero if the mount exists but can't be scanned
-# (permission-denied, unreadable), so the caller can tell "scan failed" from
-# "nothing there": a guard against silent no-ops that itself no-ops silently is
-# worse than no guard. That is the whole bug class this exists to close (#171).
+# Prints each `repo-env/<slug>/` dir name, one per line, sorted. Empty output for
+# an absent or empty mount — most repos need no operator creds, so absence is the
+# normal state, not an error. Returns NON-ZERO if the mount exists but can't be
+# scanned, so the caller can tell "scan failed" from "nothing there": a guard
+# against silent no-ops that itself no-ops silently is worse than no guard.
 #
-# The caller pairs each slug with the GitHub rename redirect to answer the only
-# question that matters — does one of these dirs hold THIS repo's creds under a
-# pre-rename name? That check asserts a precondition the reviewer OWNS (did the
-# seed have creds to seed?) instead of classifying the downstream symptom.
-# Inferring "missing creds" from test output is whack-a-mole: a missing key
-# surfaces as a ${VAR:?} gate, a 401, a scenario timeout, or an empty-string key
-# failing a check further down — one branch per manifestation, and the next one
-# still escapes.
-#
-# Deliberately does NOT filter against the tracked-repo manifest. Matching slugs
-# against REPOS cries wolf on org repos (reviewable the moment they have a PR,
-# but only in REPOS after the next org-sync regeneration) and on a missing
-# repos.conf (which the worker tolerates, leaving REPOS empty). Claiming by
-# ORGS owner instead re-hides the likeliest rename shape — one WITHIN a tracked
-# org. The redirect settles it exactly, so the manifest isn't needed at all.
+# Deliberately not filtered against the tracked-repo manifest. Matching REPOS
+# cries wolf on org repos not yet synced and on a missing repos.conf; claiming by
+# ORGS owner re-hides a rename WITHIN an org. The caller settles ownership with
+# GitHub's rename redirect instead, which needs no manifest. See #171.
 #
 # Pure function.
 repo_env_slugs() {

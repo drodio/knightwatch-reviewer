@@ -566,12 +566,7 @@ assert_contains "$result" "✅ Prior-art (KID) checked" "clean-PR kid"
 assert_contains "$result" "✅ Strict typing enforced" "clean-PR strict-typing"
 
 # ===== repo_env_slugs =====
-# The rename guard (#171). The worker pairs each slug with the GitHub rename
-# redirect to ask "does one of these dirs hold THIS repo's creds under a
-# pre-rename name?" — deliberately NOT matched against the tracked manifest
-# (REPOS cries wolf on org repos not yet synced; claiming by ORGS owner re-hides
-# a rename WITHIN an org, the likeliest shape). So the unit under test is just:
-# list the dirs, and fail loud rather than silent if the mount can't be read.
+# List the operator creds dirs; fail loud, not silent, if the mount can't be read.
 _reo_dir=$(mktemp -d)
 mkdir -p "$_reo_dir/plow-pbc_plow" "$_reo_dir/srosro_knightwatch-reviewer"
 
@@ -590,11 +585,9 @@ _reo_empty=$(mktemp -d)
 got=$(repo_env_slugs "$_reo_empty") || { echo "FAIL: repo_env_slugs on empty mount should rc=0"; exit 1; }
 [ -z "$got" ] || { echo "FAIL: repo_env_slugs on empty mount should print nothing, got: $got"; exit 1; }
 
-# The bug class #171 exists to close, turned on the guard itself: a mount that
-# can't be scanned must NOT read as "nothing stranded here". Fail loud, don't
-# no-op. Stubbing `find` (rather than chmod 000) keeps this deterministic and
-# uid-independent — the reviewer runs as root in-container, where a mode-000 dir
-# is still readable and the assertion would silently cover nothing.
+# An unscannable mount must not read as "nothing stranded here". `find` is stubbed
+# rather than chmod 000: the reviewer runs as root in-container, where a mode-000
+# dir is still readable and the assertion would silently cover nothing.
 echo "  repo_env_slugs: scan failure → fail-fast, never a silent 'no creds here'..."
 (
     find() { return 1; }
@@ -602,12 +595,9 @@ echo "  repo_env_slugs: scan failure → fail-fast, never a silent 'no creds her
 ) || exit 1
 rm -rf "$_reo_dir" "$_reo_empty"
 
-# The #171 payload, end to end. The whole design turns on these two fragments
-# coexisting: the test verdict stays HONEST and generic (we never teach the
-# classifier to recognize flavors of credential failure — that's whack-a-mole),
-# and the infra warning rides alongside it so a red result isn't read as the
-# author's bug. A refactor that drops either half reintroduces the false
-# "Tests failed (exit 1)" that cost 208 plow reviews.
+# Both fragments must coexist: the test verdict stays generic (no credential-
+# flavored classifier) AND the infra warning rides beside it. Dropping either half
+# reintroduces the false "Tests failed (exit 1)" attributed to the author.
 # Asserts on the PRODUCTION string, not a literal this test hard-codes — a grep
 # against its own literal could only fail if someone edited the test.
 echo "  format_repo_env_note: never leaks the operator's repo-env dir path (public-PR disclosure fence)..."

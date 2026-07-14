@@ -452,14 +452,11 @@ fi
 # need no live creds). Runs after the KNOWN_SHA skip so a deduped review doesn't
 # seed pointlessly.
 #
-# Absent dir is normal, but it is ALSO how a repo rename presents: the lookup
-# moves to the new slug while the creds stay under the old one, the seed
-# no-ops, the mirror finds nothing to copy, and `just test` dies at its
-# ${ANTHROPIC_API_KEY:?} gate — publishing a false "Tests failed (exit 1)" the
-# author reads as their own bug. Disclose it instead (REPO_ENV_NOTE → the
-# REVIEW_NOTES banner). Set here, consumed at the assembly block near the end
-# of this file; REVIEW_NOTES=() initializes there and would clobber an append
-# made this early (same pattern as TIMEOUT_NOTE).
+# An absent dir is normal, but it is also how a rename presents: the lookup moves
+# to the new slug while the creds stay under the old one, and the seed no-ops
+# silently (#171). Set here, consumed at the REVIEW_NOTES assembly block near the
+# end of this file — REVIEW_NOTES=() initializes there and would clobber an early
+# append (same pattern as TIMEOUT_NOTE).
 REPO_ENV_NOTE=""
 repo_env_src="${REPO_ENV_DIR:-/root/.kwr/repo-env}/$REPO_SLUG"
 if [ -d "$repo_env_src" ]; then
@@ -494,22 +491,19 @@ else
     if ! repo_env_dirs=$(repo_env_slugs "${REPO_ENV_DIR:-/root/.kwr/repo-env}"); then
         log "$PR_ID: WARNING — repo-env scan failed; cannot tell whether this repo's creds are stranded under a pre-rename slug"
     elif [ -n "$repo_env_dirs" ]; then
-        gh_err=$(mktemp)
         while IFS= read -r env_slug; do
             # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and
             # a GitHub owner can't contain `_` (a repo name can), so the first
             # one is always the separator.
-            env_full_name=$(gh_api_retry "repos/${env_slug/_//}" --jq .full_name 2>"$gh_err")
-            gh_rc=$?
-            # A 404 is EXPECTED — an operator's leftover dir for a deleted repo.
-            # Anything else (auth revoked, sustained outage, rate limit) means we
-            # could not determine ownership, and retrying past it silently would
-            # land exactly where the bare `gh` did: no note, and the author gets
-            # the false "Tests failed" this exists to remove. Stay quiet on the
-            # PR (a note here would cry wolf on the ~56 credless repos) but make
-            # it loud where the operator reads.
-            if [ "$gh_rc" -ne 0 ] && ! grep -q 'HTTP 404' "$gh_err"; then
-                log "$PR_ID: WARNING — repo-env/$env_slug ownership lookup failed (rc=$gh_rc); cannot tell whether this repo's creds are stranded under a pre-rename slug"
+            #
+            # Any failure is one outcome: ownership undetermined. A deleted repo's
+            # leftover dir (404) and a revoked token read the same here, and both
+            # are the operator's to clear — so warn and move on rather than owning
+            # a classifier over gh's stderr text. Log-only: a note on the PR would
+            # cry wolf on the ~56 repos that legitimately need no creds.
+            if ! env_full_name=$(gh_api_retry "repos/${env_slug/_//}" --jq .full_name); then
+                log "$PR_ID: WARNING — repo-env/$env_slug ownership lookup failed; cannot tell whether this repo's creds are stranded under a pre-rename slug"
+                continue
             fi
             if [ "$env_full_name" = "$REPO" ]; then
                 # Slug to the log (with the fix), never the note — see
@@ -519,7 +513,6 @@ else
                 break
             fi
         done <<< "$repo_env_dirs"
-        rm -f "$gh_err"
     fi
 fi
 
@@ -1021,7 +1014,15 @@ for f in "${COPIED_ENV_FILES[@]}"; do
 done
 
 log "$PR_ID: just test ${TEST_SUMMARY}"
-TEST_RESULTS="**Result:** ${TEST_SUMMARY}
+# A stranded-creds run is disclosed to the SPECIALISTS too, not just the header.
+# test-results.md is what the tests specialist reasons over; leaving the note out
+# of it lets the specialist blame the PR for the reviewer's own broken input —
+# the exact harm this disclosure exists to stop (#171).
+REPO_ENV_TEST_CAVEAT=""
+[ -n "$REPO_ENV_NOTE" ] && REPO_ENV_TEST_CAVEAT="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. A failure here may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
+
+"
+TEST_RESULTS="${REPO_ENV_TEST_CAVEAT}**Result:** ${TEST_SUMMARY}
 
 Last 500 lines of \`just test\` output:
 \`\`\`
@@ -1765,13 +1766,13 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
-# Reviewer-infra precondition (set at the repo-env seed step): this repo's
-# operator creds were stranded under a pre-rename slug, so `just test` ran
-# without them. The test note below stays honest and generic — we don't teach
-# the classifier to recognize flavors of credential failure; we just disclose
-# that the reviewer's own inputs were broken, so a red result isn't read as the
-# author's bug.
-[ -n "$REPO_ENV_NOTE" ] && REVIEW_NOTES+=("$REPO_ENV_NOTE")
+# Stranded operator creds (set at the seed step): disclose that the reviewer's own
+# inputs were broken, so a red result isn't read as the author's bug. The test note
+# stays honest and generic — no credential-flavored classifier. Only when the tests
+# actually RAN and FAILED: the note speaks of "a test failure below", so on a pass
+# or a skipped run it would contradict the line beside it.
+[ -n "$REPO_ENV_NOTE" ] && [ "$TESTS_RAN" = true ] && [ "$TEST_SUMMARY" != PASSED ] && \
+    REVIEW_NOTES+=("$REPO_ENV_NOTE")
 # Specialist timeouts and per-call model-capacity bounces no longer abort —
 # pipeline.py completes the review with the surviving angles and names the
 # skipped ones in _wave_b_timeouts.txt (one shared soft-degrade sentinel for
