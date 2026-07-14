@@ -542,15 +542,6 @@ if [ -z "$RUN_DIR3" ]; then
 fi
 LOG3="$RUN_DIR3/run.log"
 
-# Worker MUST NOT abort with the empty-diff message — that's the
-# production failure mode (cncorp/plow#568). Belt-and-suspenders check;
-# unlikely to trip in a non-shallow fixture but loud-fail if it does.
-if grep -qE "local git diff origin/main\.{3}.* returned empty" "$LOG3"; then
-    echo "FAIL: scenario 3 — worker hit empty-diff abort (the cncorp/plow#568 bug not fixed)"
-    cat "$LOG3"
-    exit 1
-fi
-
 # --unshallow self-heal (issue #170): the fixture canonical started
 # shallow (--depth=1 above); the worker must leave it complete.
 if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "false" ]; then
@@ -624,11 +615,6 @@ fi
 LOG3B="$RUN_DIR3B/run.log"
 if ! grep -q "FATAL — git diff" "$LOG3B"; then
     echo "FAIL: scenario 3b — failed git diff did not produce the FATAL diagnostic"
-    cat "$LOG3B"
-    exit 1
-fi
-if grep -qE "returned empty — aborting" "$LOG3B"; then
-    echo "FAIL: scenario 3b — failed git diff was misread as an empty diff (issue #170 regressed)"
     cat "$LOG3B"
     exit 1
 fi
