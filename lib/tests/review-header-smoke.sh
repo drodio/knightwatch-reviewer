@@ -608,19 +608,26 @@ rm -rf "$_reo_dir" "$_reo_empty"
 # and the infra warning rides alongside it so a red result isn't read as the
 # author's bug. A refactor that drops either half reintroduces the false
 # "Tests failed (exit 1)" that cost 208 plow reviews.
+# Disclosure fence — asserts on the PRODUCTION string (format_repo_env_note),
+# not on a literal this test hard-codes. That distinction is the whole point: a
+# grep against a locally-written literal can only fail if someone edits the test,
+# so it would guard nothing while reading as protection. The note lands on the
+# reviewed repo's PR and several tracked repos are public, so the operator's dir
+# layout must never appear in it — the slug belongs in the worker log.
+echo "  format_repo_env_note: never leaks the operator's repo-env dir path (public-PR disclosure fence)..."
+note=$(format_repo_env_note)
+assert_contains "$note" "Operator creds not seeded" "note states the infra fault"
+printf '%s' "$note" | grep -q 'repo-env/' \
+    && { echo "FAIL: format_repo_env_note leaked an operator dir path into the public banner"; exit 1; }
+
 echo "  #171 composition: stranded-creds warning rides alongside the honest generic test failure..."
 result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "first" "")" \
-    "⚠️ Operator creds not seeded — stranded under this repo's pre-rename slug; a test failure below may be reviewer infra, not this PR" \
+    "$(format_repo_env_note)" \
     "$(format_tests_note "true" "FAILED (exit 1)")" \
     "$(format_kid_note "true")")
 assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
-# Disclosure fence: this banner lands on the reviewed repo's PR, and several
-# tracked repos are public. The author needs "a red result may not be yours" —
-# not the operator's internal dir layout. The slug stays in the worker log.
-printf '%s' "$result" | grep -q 'repo-env/' \
-    && { echo "FAIL: repo-env note leaked an operator dir path into the public banner"; exit 1; }
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + #171 composition + clean-PR composition + bakeoff-marker pin)"

@@ -494,21 +494,34 @@ else
     if ! repo_env_dirs=$(repo_env_slugs "${REPO_ENV_DIR:-/root/.kwr/repo-env}"); then
         log "$PR_ID: WARNING — repo-env scan failed; cannot tell whether this repo's creds are stranded under a pre-rename slug"
     elif [ -n "$repo_env_dirs" ]; then
+        gh_err=$(mktemp)
         while IFS= read -r env_slug; do
             # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and
             # a GitHub owner can't contain `_` (a repo name can), so the first
             # one is always the separator.
-            if [ "$(gh_api_retry "repos/${env_slug/_//}" --jq .full_name 2>/dev/null)" = "$REPO" ]; then
-                # The slug stays OUT of the public note: this banner lands on the
-                # reviewed repo's PR (several tracked repos are public, incl. this
-                # one), and the author only needs "a red result may not be yours".
-                # The operator needs the dir name — and gets it here, in the log,
-                # along with the fix.
+            env_full_name=$(gh_api_retry "repos/${env_slug/_//}" --jq .full_name 2>"$gh_err")
+            gh_rc=$?
+            # A 404 is EXPECTED — an operator's leftover dir for a deleted repo.
+            # Anything else (auth revoked, sustained outage, rate limit) means we
+            # could not determine ownership, and retrying past it silently would
+            # land exactly where the bare `gh` did: no note, and the author gets
+            # the false "Tests failed" this exists to remove. Stay quiet on the
+            # PR (a note here would cry wolf on the ~56 credless repos) but make
+            # it loud where the operator reads.
+            if [ "$gh_rc" -ne 0 ] && ! grep -q 'HTTP 404' "$gh_err"; then
+                log "$PR_ID: WARNING — repo-env/$env_slug ownership lookup failed (rc=$gh_rc); cannot tell whether this repo's creds are stranded under a pre-rename slug"
+            fi
+            if [ "$env_full_name" = "$REPO" ]; then
+                # The slug goes to the log, never the public note — several
+                # tracked repos are public, and the author needs "a red result
+                # may not be yours", not the operator's dir layout. The operator
+                # gets the dir name here, with the fix.
                 log "$PR_ID: WARNING — repo-env/$env_slug holds THIS repo's creds under its pre-rename slug; \`just test\` will run without them (operator: rename the dir to $REPO_SLUG)"
-                REPO_ENV_NOTE="⚠️ Operator creds not seeded — stranded under this repo's pre-rename slug; a test failure below may be reviewer infra, not this PR"
+                REPO_ENV_NOTE=$(format_repo_env_note)
                 break
             fi
         done <<< "$repo_env_dirs"
+        rm -f "$gh_err"
     fi
 fi
 
