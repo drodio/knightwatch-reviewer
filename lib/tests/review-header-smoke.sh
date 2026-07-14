@@ -621,6 +621,7 @@ done <<EOF
 ⚠️ note|true|TIMED OUT (30m)|true
 ⚠️ note|true|PASSED|false
 ⚠️ note|false|not run (just pre-recipe failure: see test-results below)|true
+⚠️ note|false|not run (recipe ran but command-not-found inside, exit 127)|false
 ⚠️ note|false|not run (no justfile)|false
 ⚠️ note|false|not run (worker timeout budget exhausted by queue wait)|false
 |true|FAILED (exit 1)|false
@@ -631,6 +632,26 @@ EOF
 # skips where `just` never ran at all (no justfile, worker budget) must stay quiet
 # — creds are irrelevant there and a caveat would be a false claim.
 echo "  repo_env_stranded_failure: discloses a failure OR a pre-recipe death; silent on a pass and on never-ran skips..."
+
+# Producer -> consumer, not literal -> literal. The predicate recognizes a
+# pre-recipe death by prefix-matching a string classify_just_test_outcome emits
+# 140 lines away; pinning both sides to the same hard-coded literal would let a
+# reword of the producer keep this suite green while the disclosure went silent in
+# production — the exact written-twice drift this predicate exists to end.
+echo "  classify → repo_env_stranded_failure: a real pre-recipe failure discloses (producer feeds consumer)..."
+_prf_log=$(mktemp); printf 'error: Justfile does not contain recipe `test`\n' > "$_prf_log"
+IFS=$'\t' read -r _prf_ran _prf_summary < <(classify_just_test_outcome 1 "$_prf_log" 30m)
+[ "$(repo_env_stranded_failure "⚠️ note" "$_prf_ran" "$_prf_summary")" = true ] || {
+    echo "FAIL: classify emitted ran='$_prf_ran' summary='$_prf_summary' — predicate did NOT disclose; producer/consumer have drifted"
+    exit 1; }
+rm -f "$_prf_log"
+
+# And the sibling: the caveat must not claim the tests RAN when they died pre-recipe.
+echo '  format_test_results: pre-recipe death → caveat must not claim `just test` ran...'
+_prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-results below)" "")
+printf '%s' "$_prf_out" | grep -q "ran without them" \
+    && { echo "FAIL: caveat claims the tests ran on a run that died before the recipe"; exit 1; }
+assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
 
 echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
 tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
@@ -654,4 +675,4 @@ assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 7 stranded-failure predicate + 2 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 8 stranded-failure predicate + 4 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"

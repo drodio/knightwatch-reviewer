@@ -467,7 +467,7 @@ repo_env_slugs() {
 #
 # Pure function.
 format_repo_env_note() {
-    printf '⚠️ Operator creds not seeded — stranded under this repo'"'"'s pre-rename slug; the failing result below may be reviewer infra, not this PR'
+    printf '⚠️ Operator creds not seeded — stranded under this repo'"'"'s pre-rename slug; the result below may be reviewer infra, not this PR'
 }
 
 # repo_env_stranded_failure REPO_ENV_NOTE TESTS_RAN TEST_SUMMARY
@@ -495,9 +495,12 @@ repo_env_stranded_failure() {
     # env file looks like on a dotenv-load justfile, i.e. the stranded-creds case
     # itself. Classified TESTS_RAN=false, so the "did it fail" test above misses
     # it, and the author would get a red-looking "not run (…)" with no disclosure.
-    # The other TESTS_RAN=false reasons (no justfile, untrusted author, worker
-    # budget exhausted) mean `just` never ran at all: creds are irrelevant there,
-    # and a caveat would be a false claim.
+    # Every other TESTS_RAN=false reason stays quiet, and each is a considered
+    # exclusion, not an oversight:
+    #   no justfile / untrusted author / worker budget exhausted
+    #       — `just` never ran; creds are irrelevant and a caveat would be false.
+    #   exit 127 (recipe ran, command-not-found inside)
+    #       — a missing BINARY, not a missing env file. Creds wouldn't fix it.
     case "$summary" in
         "not run (just pre-recipe failure"*) printf 'true' ;;
         *) printf 'false' ;;
@@ -518,7 +521,7 @@ repo_env_stranded_failure() {
 format_test_results() {
     local stranded="$1" summary="$2" log_tail="$3" caveat=""
     if [ "$stranded" = true ]; then
-        caveat="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. The failure or harness error below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it."$'\n\n'
+        caveat="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` was invoked without them. The failing result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it."$'\n\n'
     fi
     printf '%s**Result:** %s\n\nLast 500 lines of `just test` output:\n```\n%s\n```' \
         "$caveat" "$summary" "${log_tail:-(no output captured)}"
