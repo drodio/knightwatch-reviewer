@@ -81,6 +81,21 @@ fi
 # space-separated list of "<queried>=<current>" pairs; an unlisted repo answers
 # with its own name (not renamed). The deeper repos/*/*/* endpoints (permission
 # et al) are excluded so this only claims the two-segment repo lookup.
+# Rename-probe failure injection. Independent of GH_STUB_RENAME_MAP: the lookup
+# fails before any mapping matters. The worker tells an EXPECTED 404 (leftover dir
+# for a deleted repo → silent) from any other failure (→ warn) by grepping gh's
+# stderr, so scenarios pin gh's REAL wording instead of assuming it.
+if [ -n "\${GH_STUB_RENAME_RC:-}" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+            repos/*/*/*) ;;
+            repos/*/*)
+                case " \$* " in *" .full_name "*) ;; *) continue ;; esac
+                printf '%s\n' "\${GH_STUB_RENAME_ERR:-}" >&2
+                exit "\$GH_STUB_RENAME_RC" ;;
+        esac
+    done
+fi
 if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
     for arg in "\$@"; do
         case "\$arg" in
@@ -93,9 +108,9 @@ if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
                 # (owner/name) and mis-drive the run instead of failing.
                 case " \$* " in *" .full_name "*) ;; *) continue ;; esac
                 queried="\${arg#repos/}"
-                # Probe trace: lets a scenario prove the resolution actually RAN
-                # (vs. silently returning nothing — the worker swallows gh
-                # failure, so an absent note alone can't tell those apart).
+                # Probe trace: lets a scenario prove the resolution actually RAN.
+                # The 404 path is deliberately silent, so an absent note alone
+                # can't distinguish "resolved elsewhere" from "never ran".
                 [ -n "\${GH_STUB_PROBE_LOG:-}" ] && printf '%s\n' "\$queried" >> "\$GH_STUB_PROBE_LOG"
                 for pair in \$GH_STUB_RENAME_MAP; do
                     case "\$pair" in
@@ -1284,13 +1299,14 @@ new_probe_state() {
     printf '%s\n' "$state"
 }
 
-# run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [RENAME_MAP] [PROBE_LOG]
+# run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [RENAME_MAP] [PROBE_LOG] [RENAME_RC] [RENAME_ERR]
 #
 # Drives the real worker and sets PROBE_RUN_DIR — deliberately not echoed: a
 # command substitution would subshell the no-run-dir guard's `exit`, and this
 # file has no `set -e`, so a worker that never ran would sail on silently.
 run_probe_worker() {
-    local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" probe_log="${5:-}" run_dir
+    local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" probe_log="${5:-}" \
+          rename_rc="${6:-}" rename_err="${7:-}" run_dir
     PROBE_RUN_DIR=""
     write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
     (
@@ -1299,7 +1315,8 @@ run_probe_worker() {
                PR_REVIEW_LOCK_DIR="$state/locks" \
                REPO_ENV_DIR="$repo_env" GH_STUB_PERMISSION_ROLE=write \
                GH_STUB_RENAME_MAP="$rename_map" \
-               GH_STUB_PROBE_LOG="$probe_log"
+               GH_STUB_PROBE_LOG="$probe_log" \
+               GH_STUB_RENAME_RC="$rename_rc" GH_STUB_RENAME_ERR="$rename_err"
         write_probe_repos_conf "$state/repos.conf"
         TRIGGER_COMMENT_FILE="" \
             bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
@@ -1418,11 +1435,11 @@ run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
     "old-org/probe-repo=test-org/probe-repo" "$PROBE_LOG10D"
 RUN_DIR10D="$PROBE_RUN_DIR"
 
-# Ground the absence: assert the probe actually RAN and resolved elsewhere. The
-# worker swallows gh failure (2>/dev/null), so "no note" alone can't distinguish
-# "resolved to another repo → correctly quiet" from "probe returned nothing →
-# quiet by accident" — the same swallowed-failure ambiguity this PR exists to
-# kill, so the test must not rely on it either.
+# Ground the absence: assert the probe actually RAN and resolved elsewhere. A
+# 404 is deliberately silent (an operator's leftover dir for a deleted repo), so
+# "no note" alone still can't distinguish "resolved to another repo → correctly
+# quiet" from "probe never ran → quiet by accident". The probe log is what tells
+# them apart.
 if ! grep -qx "other-org/other-repo" "$PROBE_LOG10D" 2>/dev/null; then
     echo "FAIL: scenario 10d — the rename probe never ran; the absence below would prove nothing"
     exit 1
@@ -1433,7 +1450,40 @@ if grep -q "holds THIS repo's creds" "$RUN_DIR10D/run.log"; then
     exit 1
 fi
 
-echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + repo-env cry-wolf fence)"
+# ===== Scenarios 10e/10f: the lookup-failure discriminator =====
+# The worker tells an EXPECTED 404 (leftover dir for a deleted repo → stay
+# silent) from any other failure (auth revoked / outage / rate limit → warn that
+# ownership is undetermined) by grepping gh's stderr. That makes gh's wording a
+# load-bearing contract, so pin it with gh's REAL text rather than an assumption:
+# `gh api repos/<missing>` prints exactly `gh: Not Found (HTTP 404)`.
+#
+# Without these, the failure branch has no coverage at all: a gh message-format
+# change would silently flip it back to swallowing the failure — the very
+# behaviour this PR removes — and the suite would stay green.
+echo "  scenario: rename lookup 404 → silent (leftover dir for a deleted repo)..."
+STATE10E=$(new_probe_state 10e)
+REPO_ENV10E="$TMPDIR/repo-env-10e"
+mkdir -p "$REPO_ENV10E/deleted-org_gone-repo"
+echo "X=y" > "$REPO_ENV10E/deleted-org_gone-repo/.env.test-live"
+run_probe_worker "$STATE10E" "$REPO_ENV10E" "404 PR" "" "" "1" "gh: Not Found (HTTP 404)"
+if grep -q "ownership lookup failed" "$PROBE_RUN_DIR/run.log"; then
+    echo "FAIL: scenario 10e — a 404 (expected: dir for a deleted repo) must not warn"
+    tail -n 20 "$PROBE_RUN_DIR/run.log"
+    exit 1
+fi
+
+# 403, not 500: gh_api_retry retries 5xx (3 attempts, ~6s of backoff) but falls
+# through on 4xx, so this asserts the discriminator without paying the retry.
+echo "  scenario: rename lookup fails non-404 → loud (ownership undetermined, not swallowed)..."
+STATE10F=$(new_probe_state 10f)
+run_probe_worker "$STATE10F" "$REPO_ENV10E" "403 PR" "" "" "1" "gh: Forbidden (HTTP 403)"
+if ! grep -q "ownership lookup failed" "$PROBE_RUN_DIR/run.log"; then
+    echo "FAIL: scenario 10f — a non-404 failure was swallowed; the false test verdict is back"
+    tail -n 20 "$PROBE_RUN_DIR/run.log"
+    exit 1
+fi
+
+echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + repo-env cry-wolf fence + repo-env 404 silent + repo-env non-404 loud)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the

@@ -472,16 +472,10 @@ repo_env_slugs() {
 
 # format_repo_env_note
 #
-# The banner fragment for creds stranded under a pre-rename slug (#171).
-#
-# Takes no arguments ON PURPOSE, and that's the invariant worth guarding: this
-# note lands on the reviewed repo's PR, and several tracked repos are public. The
-# author needs "a red result may not be yours" — never the operator's dir layout.
-# The slug goes to the worker log instead, where the operator (and only the
-# operator) reads it, with the fix. Owning the string here rather than inlining it
-# at the call site is what lets the suite fence the leak against the REAL
-# production text; a test asserting on its own hard-coded literal would only
-# guard itself.
+# The banner fragment for creds stranded under a pre-rename slug (#171). Takes no
+# arguments on purpose: this note lands on the reviewed repo's PR and several
+# tracked repos are public, so the author gets "a red result may not be yours" and
+# never the operator's dir layout. The slug goes to the worker log instead.
 #
 # Pure function.
 format_repo_env_note() {

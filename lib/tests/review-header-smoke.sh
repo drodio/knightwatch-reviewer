@@ -608,12 +608,8 @@ rm -rf "$_reo_dir" "$_reo_empty"
 # and the infra warning rides alongside it so a red result isn't read as the
 # author's bug. A refactor that drops either half reintroduces the false
 # "Tests failed (exit 1)" that cost 208 plow reviews.
-# Disclosure fence — asserts on the PRODUCTION string (format_repo_env_note),
-# not on a literal this test hard-codes. That distinction is the whole point: a
-# grep against a locally-written literal can only fail if someone edits the test,
-# so it would guard nothing while reading as protection. The note lands on the
-# reviewed repo's PR and several tracked repos are public, so the operator's dir
-# layout must never appear in it — the slug belongs in the worker log.
+# Asserts on the PRODUCTION string, not a literal this test hard-codes — a grep
+# against its own literal could only fail if someone edited the test.
 echo "  format_repo_env_note: never leaks the operator's repo-env dir path (public-PR disclosure fence)..."
 note=$(format_repo_env_note)
 assert_contains "$note" "Operator creds not seeded" "note states the infra fault"

@@ -512,10 +512,8 @@ else
                 log "$PR_ID: WARNING — repo-env/$env_slug ownership lookup failed (rc=$gh_rc); cannot tell whether this repo's creds are stranded under a pre-rename slug"
             fi
             if [ "$env_full_name" = "$REPO" ]; then
-                # The slug goes to the log, never the public note — several
-                # tracked repos are public, and the author needs "a red result
-                # may not be yours", not the operator's dir layout. The operator
-                # gets the dir name here, with the fix.
+                # Slug to the log (with the fix), never the note — see
+                # format_repo_env_note.
                 log "$PR_ID: WARNING — repo-env/$env_slug holds THIS repo's creds under its pre-rename slug; \`just test\` will run without them (operator: rename the dir to $REPO_SLUG)"
                 REPO_ENV_NOTE=$(format_repo_env_note)
                 break
