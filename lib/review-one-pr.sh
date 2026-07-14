@@ -373,8 +373,20 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=500 --no-single-branch; then
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
+        exit 1
+    fi
+fi
+
+# One-time self-heal: canonicals cloned --depth=500 (before issue #170's
+# fix) are still shallow, and a plain fetch never deepens them — so any
+# PR whose merge base predates the shallow window keeps failing with
+# "no merge base". Convert in place; a no-op forever after.
+if [ "$(git -C "$CANONICAL_DIR" rev-parse --is-shallow-repository)" = "true" ]; then
+    log "$PR_ID: canonical is shallow — fetching full history (one-time --unshallow)"
+    if ! git -C "$CANONICAL_DIR" fetch --unshallow --quiet; then
+        log "$PR_ID: canonical --unshallow fetch failed — aborting"
         exit 1
     fi
 fi
@@ -394,10 +406,10 @@ fi
 # messages) can use the human-readable branch name.
 #
 # The base branch is fetched as `origin/$BASE_REF` so the per-PR clone
-# can diff against it locally. --depth=500 covers ~all PRs (deepening
-# logic could be added if a deep PR's merge-base falls outside that
-# window).
-if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
+# can diff against it locally. Fetches are full-history: a shallow
+# window (--depth=500 until issue #170) silently dropped any PR whose
+# merge base fell outside it.
+if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --quiet; then
     log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
@@ -410,7 +422,7 @@ if [ "$PR_BRANCH" = "$BASE_REF" ]; then
     log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
     exit 1
 fi
-if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet 2>&1); then
+if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --quiet 2>&1); then
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
 fi
@@ -533,44 +545,13 @@ else
     log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
-# Align canonical's `refs/heads/$BASE_REF` with the just-fetched
-# `refs/remotes/origin/$BASE_REF` BEFORE the `git clone --shared`.
-# This is load-bearing for two coupled reasons:
-#
-# 1. The clone's `refs/remotes/origin/*` mirrors canonical's
-#    `refs/heads/*`, NOT canonical's `refs/remotes/origin/*`. So if
-#    canonical's `refs/heads/$BASE_REF` is stale (the typical state —
-#    `git fetch origin BASE_REF` only updates the remote-tracking
-#    ref, never the local head), the workdir's `origin/$BASE_REF`
-#    points at a stale SHA that doesn't include the latest base
-#    commits.
-#
-# 2. For SHALLOW canonical clones (cncorp/plow uses --depth=500),
-#    `git clone --shared` from a shallow source does NOT set up
-#    `objects/info/alternates` in the new clone. So the workdir has
-#    ONLY the objects reachable from refs propagated by the clone
-#    (canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`).
-#    If BASE_REF_SHA is canonical's `refs/remotes/origin/$BASE_REF`
-#    but `refs/heads/$BASE_REF` is stale, that SHA is not in the
-#    workdir's reachable object set — and `git diff $BASE_REF_SHA...
-#    $REVIEWED_SHA` errors with "Invalid symmetric difference" but
-#    bash captures the empty stdout and the bot reads it as an
-#    empty diff, then aborts with `local git diff origin/<base>...
-#    <reviewed-sha> returned empty — aborting`.
-#
-# Both fail-modes were observed on cncorp/plow#568 after PR #36
-# deployed: every cncorp/plow review aborted at the diff stage
-# because the shallow canonical's `refs/heads/main` was at an old
-# SHA while `refs/remotes/origin/main` had been advanced by recent
-# fetches. The `update-ref` here makes both refs point at the same
-# SHA so the workdir gets a usable base via either path.
-#
-# Safe to run unconditionally: canonical's HEAD is on a per-PR
-# `pr-N` branch from a previous review, not on `$BASE_REF`, so
-# updating `refs/heads/$BASE_REF` doesn't move HEAD or touch the
-# working tree. The .env-mirror step that reads `$CANONICAL_DIR`'s
-# working tree is unaffected (working tree files persist across
-# ref updates).
+# Align canonical's local base ref BEFORE the `git clone --shared`.
+# The clone maps the source's refs/heads/* into its origin/* refs; it
+# does not copy the source's refs/remotes/origin/*. Fetch advances
+# only the latter, so update the local head first or the workdir
+# diffs against a stale base (observed on cncorp/plow#568). Safe to
+# run unconditionally: canonical's HEAD stays on a per-PR branch, so
+# this moves neither HEAD nor the working tree.
 if ! git -C "$CANONICAL_DIR" update-ref "refs/heads/$BASE_REF" "refs/remotes/origin/$BASE_REF"; then
     log "$PR_ID: failed to align refs/heads/$BASE_REF with refs/remotes/origin/$BASE_REF in canonical — aborting"
     exit 1
@@ -709,7 +690,17 @@ fi
 # class flagged across PR #31 and PR #35 reviews — single source of
 # truth: the worktree). Also collapses the prior cap-exceeded fallback
 # into the primary path, since `git diff` has no server-side file cap.
-FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA")
+# Check the exit code, not just stdout: a git failure (e.g. "no merge
+# base") writes to stderr and leaves stdout empty, which the -z branch
+# below would misread as "PR has no changes" — the silent-drop bug of
+# issue #170. Failure path re-runs the diff to capture stderr; cheap,
+# since a failing diff fails fast.
+if ! FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null); then
+    diff_err=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>&1 >/dev/null | head -c 300)
+    log "$PR_ID: FATAL — git diff ${BASE_REF_SHA:0:7}...${REVIEWED_SHA:0:7} failed: ${diff_err}"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 if [ -z "$FULL_PR_DIFF" ]; then
     log "$PR_ID: local git diff origin/${BASE_REF}...${REVIEWED_SHA:0:7} returned empty — aborting"
     rm -rf "$REPO_DIR"
