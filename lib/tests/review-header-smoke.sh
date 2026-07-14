@@ -600,9 +600,19 @@ rm -rf "$_reo_dir" "$_reo_empty"
 # reintroduces the false "Tests failed (exit 1)" attributed to the author.
 # Asserts on the PRODUCTION string, not a literal this test hard-codes — a grep
 # against its own literal could only fail if someone edited the test.
-echo "  format_repo_env_note: never leaks the operator's repo-env dir path (public-PR disclosure fence)..."
+echo "  format_repo_env_note: outcome-neutral + never leaks the operator's repo-env dir path..."
 note=$(format_repo_env_note)
 assert_contains "$note" "Operator creds not seeded" "note states the infra fault"
+# Golden: this one constant rides runs that failed, timed out, or never ran at all
+# (a pre-recipe death), so it must claim neither a run nor a failure. Any reword
+# fails here on purpose — see the caveat golden below for why a blacklist can't
+# hold this property.
+_note_want='⚠️ Operator creds not seeded — stranded under this repo'"'"'s pre-rename slug; the result below may be reviewer infra, not this PR'
+[ "$note" = "$_note_want" ] || {
+    echo "FAIL: header note text changed — it must stay outcome-neutral (it rides failed, timed-out, and never-ran results)."
+    echo "  want: $_note_want"
+    echo "  got:  $note"
+    exit 1; }
 printf '%s' "$note" | grep -q 'repo-env/' \
     && { echo "FAIL: format_repo_env_note leaked an operator dir path into the public banner"; exit 1; }
 
@@ -657,15 +667,22 @@ rm -f "$_pass_log"
 # And the sibling: the caveat must not claim the tests RAN when they died pre-recipe.
 echo '  format_test_results: pre-recipe death → caveat must not claim `just test` ran...'
 _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-results below)" "")
-# Property, not literal: on a pre-recipe death the run never happened and there is
-# no failing result, so NEITHER disclosure string may claim one. Grepping only the
-# clause that was last fixed is how each rewrite re-acquired the claim in its sibling.
-printf '%s' "$_prf_out" | grep -qE 'ran without them|failing result' \
-    && { echo "FAIL: caveat claims a run/failure that never happened (pre-recipe death)"; exit 1; }
+# GOLDEN, not a blacklist. Four rounds running, a rewrite re-acquired a
+# run-happened/failure claim in whichever clause wasn't being watched, and a
+# blacklist grep only ever pins the phrasings already broken — "the failed result
+# below", "the red result below" would sail through. The property (this text must
+# stay true on a run that never happened) isn't expressible as a substring ban, so
+# pin the whole string: ANY reword fails here, and whoever rewords it has to
+# re-derive that the new wording is outcome-neutral on the pre-recipe path.
+_prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.'
+_prf_got=$(printf '%s' "$_prf_out" | head -1)
+[ "$_prf_got" = "$_prf_want" ] || {
+    echo "FAIL: caveat text changed. It rides runs that FAILED, TIMED OUT, or NEVER RAN (pre-recipe death),"
+    echo "      so it must claim neither a run nor a failure. Re-derive that, then update this golden."
+    echo "  want: $_prf_want"
+    echo "  got:  $_prf_got"
+    exit 1; }
 assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
-
-printf '%s' "$(format_repo_env_note)" | grep -qE 'ran without them|failing result' \
-    && { echo "FAIL: header note claims a run/failure that never happened (pre-recipe death)"; exit 1; }
 
 echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
 tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
