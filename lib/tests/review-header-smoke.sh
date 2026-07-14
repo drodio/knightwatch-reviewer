@@ -675,26 +675,26 @@ _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-
 # stay true on a run that never happened) isn't expressible as a substring ban, so
 # pin the whole string: ANY reword fails here, and whoever rewords it has to
 # re-derive that the new wording is outcome-neutral on the pre-recipe path.
-# Golden the caveat PARAGRAPH — not one line, not the whole artifact.
+# Golden the caveat REGION — everything the caveat contributes, which ends exactly
+# where `**Result:**` begins.
 #
-# One line was escapable: appending a second line re-acquires the claim and matches
-# byte-for-byte. The whole artifact over-pins the other direction — it also freezes
-# the "Last 500 lines" header and the ``` fence, so trimming the tail to 200 lines
-# would fail with "re-derive that it claims neither a run nor a failure", sending the
-# author to re-derive a property they never touched. The likely resolution of a false
-# alarm is to paste the new string into the golden, which trains away the exact
-# reflex the golden exists to enforce.
-#
-# The paragraph is the unit the property is about, and an appended claim lands inside
-# it, so this catches the escape without pinning incidental payload.
-_prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.'
-_prf_got=${_prf_out%%$'\n\n'*}
+# The boundary matters more than the text, because the escape kept relocating: a
+# one-line golden was beaten by a second line; a whole-artifact golden also froze the
+# tail header and fence, so an unrelated presentation change would fire a false alarm
+# (and a false alarm gets "fixed" by pasting the new string in, training away the very
+# reflex the golden enforces); a paragraph golden was beaten by a second PARAGRAPH.
+# Cutting at `**Result:**` pins every byte the caveat emits, in any shape — extra
+# sentence, line, or paragraph — while leaving the payload below it free to change.
+_prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
+
+'
+_prf_got=${_prf_out%%'**Result:**'*}
 [ "$_prf_got" = "$_prf_want" ] || {
     echo "FAIL: the caveat text changed. It rides runs that FAILED, TIMED OUT, and NEVER RAN"
     echo "      (a pre-recipe death), so it must claim neither a run nor a failure."
     echo "      Re-derive that for the new wording, then update this golden."
-    echo "  want: $_prf_want"
-    echo "  got:  $_prf_got"
+    echo "  want: [$_prf_want]"
+    echo "  got:  [$_prf_got]"
     exit 1; }
 assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
 
