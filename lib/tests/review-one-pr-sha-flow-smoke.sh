@@ -223,11 +223,8 @@ EXPECTED_TICK_AT="2026-04-30T16:14:23Z"
 # `Bad\nTitle\177X` would land in meta.json.title and the prompt
 # {{PR_TITLE}} header, injecting prompt content past the read-only fence.
 DIRTY_TITLE=$'Bad\nTitle\177X'
-TRIGGER_COMMENT_FILE="" \
-DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" \
-    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" \
-    >/dev/null 2>&1 || true
+DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" run_worker_in_state "$STATE_DIR" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" || true
 
 # ---- assertions ----
 # Find the run dir produced by this invocation.
@@ -675,10 +672,8 @@ cat > "$GATE_RUN_DIR/meta.json" <<EOF
 }
 EOF
 
-TRIGGER_COMMENT_FILE="" \
-    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" \
-    >/dev/null 2>&1
+run_worker_in_state "$STATE_DIR" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false"
 GATE_EC=$?
 
 # The worker DOES allocate a run-dir before the gate fires; find the new
