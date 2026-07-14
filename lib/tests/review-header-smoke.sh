@@ -598,8 +598,9 @@ rm -rf "$_reo_dir" "$_reo_empty"
 # Both fragments must coexist: the test verdict stays generic (no credential-
 # flavored classifier) AND the infra warning rides beside it. Dropping either half
 # reintroduces the false "Tests failed (exit 1)" attributed to the author.
-# Asserts on the PRODUCTION string, not a literal this test hard-codes — a grep
-# against its own literal could only fail if someone edited the test.
+# Asserts on the PRODUCTION string. The full literal below is a GOLDEN and the
+# hard-coding is the point: any reword fails, forcing the author to re-derive that
+# the new text stays true on runs that never ran (see the caveat golden below).
 echo "  format_repo_env_note: outcome-neutral + never leaks the operator's repo-env dir path..."
 note=$(format_repo_env_note)
 assert_contains "$note" "Operator creds not seeded" "note states the infra fault"
@@ -674,13 +675,24 @@ _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-
 # stay true on a run that never happened) isn't expressible as a substring ban, so
 # pin the whole string: ANY reword fails here, and whoever rewords it has to
 # re-derive that the new wording is outcome-neutral on the pre-recipe path.
-_prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.'
-_prf_got=$(printf '%s' "$_prf_out" | head -1)
-[ "$_prf_got" = "$_prf_want" ] || {
-    echo "FAIL: caveat text changed. It rides runs that FAILED, TIMED OUT, or NEVER RAN (pre-recipe death),"
-    echo "      so it must claim neither a run nor a failure. Re-derive that, then update this golden."
+# The WHOLE artifact, not a line slice. A golden scoped to `head -1` only holds for
+# rewords that stay on one line: appending a second line re-acquires the claim and
+# matches byte-for-byte — the same escape hatch, relocated from "the sibling clause"
+# to "the next line". The output is fully deterministic for these inputs.
+_prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
+
+**Result:** not run (just pre-recipe failure: see test-results below)
+
+Last 500 lines of `just test` output:
+```
+(no output captured)
+```'
+[ "$_prf_out" = "$_prf_want" ] || {
+    echo "FAIL: test-results.md text changed. The caveat rides runs that FAILED, TIMED OUT, or NEVER RAN"
+    echo "      (pre-recipe death), so it must claim neither a run nor a failure. Re-derive that, then"
+    echo "      update this golden."
     echo "  want: $_prf_want"
-    echo "  got:  $_prf_got"
+    echo "  got:  $_prf_out"
     exit 1; }
 assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
 
