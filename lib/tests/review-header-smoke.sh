@@ -685,6 +685,19 @@ _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-
 _prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
 
 '
+# Tell "the cut marker moved" from "the caveat changed" first. `**Result:**` is a
+# production literal from the payload region this golden deliberately leaves free, so
+# renaming it would otherwise fail with a message about caveat text that is
+# byte-identical — and the cheapest way out of a misdirected alarm is to paste the new
+# output into the golden, which is the reflex it exists to prevent.
+case "$_prf_out" in
+    *'**Result:**'*) ;;
+    *)
+        echo "FAIL: format_test_results no longer emits '**Result:**' — this golden's cut marker moved."
+        echo "      If the caveat text is unchanged, update the marker here."
+        echo "      Do NOT paste the new output into _prf_want."
+        exit 1 ;;
+esac
 case "$_prf_out" in
     "$_prf_want"'**Result:** not run ('*) ;;
     *)
