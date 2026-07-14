@@ -45,6 +45,29 @@ seed_state_dir() {
     echo "{}" > "$1/state.json"
 }
 
+# run_worker_in_state <state_dir> <worker arg>... — one worker run against a
+# state dir's standard layout (the six env exports + repos.conf that every
+# scenario repeats). Per-scenario extras (PATH shims, REVIEWER_CONTAINER_MODE,
+# KWR_CONFIG_*, ...) ride as env-prefixes on the call — bash's temporary
+# environment is inherited by the worker. The worker's exit code propagates;
+# append `|| true` at call sites that don't assert on it.
+run_worker_in_state() {
+    local state="$1"
+    shift
+    (
+        export STATE_DIR="$state"
+        export STATE_FILE="$state/state.json"
+        export REPOS_DIR="$state/repos"
+        export WORKDIRS_DIR="$state/workdirs"
+        export CANONICAL_LOCKS_DIR="$state/canonical-locks"
+        export PR_REVIEW_LOCK_DIR="$state/locks"
+        write_probe_repos_conf "$state/repos.conf"
+        TRIGGER_COMMENT_FILE="" \
+            bash "$PROJECT_ROOT/lib/review-one-pr.sh" "$@" \
+            >/dev/null 2>&1
+    )
+}
+
 # write_gh_stub <stub_path> <base_ref> <head_oid>
 #   gh pr view <N> --json baseRefName,... → returns the supplied base_ref.
 #   gh pr view <N> --json headRefOid       → returns head_oid.
@@ -352,19 +375,8 @@ git clone -q "$GITHUB_BARE2" "$CANONICAL2"
 # Stub gh — same shape, but baseRefName is "release-1.0" not "main".
 write_gh_stub "$HOME/.local/bin/gh" "release-1.0" "$PR_SHA2"
 
-(
-    export STATE_DIR="$STATE2"
-    export STATE_FILE="$STATE2/state.json"
-    export REPOS_DIR="$STATE2/repos"
-    export WORKDIRS_DIR="$STATE2/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE2/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE2/locks"
-    write_probe_repos_conf "$STATE2/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE2" \
+    "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" || true
 
 RUN_DIR2=$(find "$STATE2/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR2" ]; then
@@ -526,19 +538,8 @@ git -C "$CANONICAL3" checkout -qb pr-leftover
 # Stub gh — base is "main", PR head is the feat/test SHA.
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA3"
 
-(
-    export STATE_DIR="$STATE3"
-    export STATE_FILE="$STATE3/state.json"
-    export REPOS_DIR="$STATE3/repos"
-    export WORKDIRS_DIR="$STATE3/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE3/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE3/locks"
-    write_probe_repos_conf "$STATE3/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE3" \
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" || true
 
 RUN_DIR3=$(find "$STATE3/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR3" ]; then
@@ -618,19 +619,8 @@ seed_state_dir "$STATE3B"
 CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
 git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
 
-(
-    export STATE_DIR="$STATE3B"
-    export STATE_FILE="$STATE3B/state.json"
-    export REPOS_DIR="$STATE3B/repos"
-    export WORKDIRS_DIR="$STATE3B/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE3B/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE3B/locks"
-    write_probe_repos_conf "$STATE3B/repos.conf"
-    TRIGGER_COMMENT_FILE="" PATH="$STUB_DIR3B:$PATH" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" \
-        >/dev/null 2>&1 || true
-)
+PATH="$STUB_DIR3B:$PATH" run_worker_in_state "$STATE3B" \
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" || true
 
 RUN_DIR3B=$(find "$STATE3B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR3B" ]; then
@@ -737,16 +727,8 @@ echo "  scenario: container-mode gate skips untrusted-author PR before placehold
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
-(
-    export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
-           WORKDIRS_DIR="$STATE5/workdirs" CANONICAL_LOCKS_DIR="$STATE5/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE5/locks" REVIEWER_CONTAINER_MODE=1
-    write_probe_repos_conf "$STATE5/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" \
-        >/dev/null 2>&1
-)
+REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
 GATE5_EC=$?
 RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
 if [ -z "$RUN5" ]; then
@@ -781,16 +763,8 @@ echo "  scenario: container-mode gate DEFERS (exit 1) on an indeterminate trust 
 STATE_IND="$TMPDIR/state-ind"   # distinct dir — must not collide with later scenarios' STATE6
 seed_state_dir "$STATE_IND"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
-(
-    export STATE_DIR="$STATE_IND" STATE_FILE="$STATE_IND/state.json" REPOS_DIR="$STATE_IND/repos" \
-           WORKDIRS_DIR="$STATE_IND/workdirs" CANONICAL_LOCKS_DIR="$STATE_IND/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE_IND/locks" REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1
-    write_probe_repos_conf "$STATE_IND/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false" \
-        >/dev/null 2>&1
-)
+REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1 run_worker_in_state "$STATE_IND" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false"
 GATE_IND_EC=$?
 RUN_IND=$(find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
 [ -n "$RUN_IND" ] || { echo "FAIL: indeterminate-defer — worker allocated no run-dir"; exit 1; }
@@ -916,19 +890,8 @@ CANONICAL6="$STATE6/repos/test-org_probe-repo"
 git clone -q "$GITHUB_BARE" "$CANONICAL6"
 
 run_tick_6() {
-    (
-        export STATE_DIR="$STATE6"
-        export STATE_FILE="$STATE6/state.json"
-        export REPOS_DIR="$STATE6/repos"
-        export WORKDIRS_DIR="$STATE6/workdirs"
-        export CANONICAL_LOCKS_DIR="$STATE6/canonical-locks"
-        export PR_REVIEW_LOCK_DIR="$STATE6/locks"
-        write_probe_repos_conf "$STATE6/repos.conf"
-        TRIGGER_COMMENT_FILE="" \
-            bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-            "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-            >/dev/null 2>&1 || true
-    )
+    run_worker_in_state "$STATE6" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 }
 
 run_tick_6   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
@@ -981,19 +944,8 @@ STATE7="$TMPDIR/state-7"
 seed_state_dir "$STATE7"
 git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
 
-(
-    export STATE_DIR="$STATE7"
-    export STATE_FILE="$STATE7/state.json"
-    export REPOS_DIR="$STATE7/repos"
-    export WORKDIRS_DIR="$STATE7/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE7/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE7/locks"
-    write_probe_repos_conf "$STATE7/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE7" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1066,19 +1018,8 @@ STATE8="$TMPDIR/state-8"
 seed_state_dir "$STATE8"
 git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
 
-(
-    export STATE_DIR="$STATE8"
-    export STATE_FILE="$STATE8/state.json"
-    export REPOS_DIR="$STATE8/repos"
-    export WORKDIRS_DIR="$STATE8/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE8/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE8/locks"
-    write_probe_repos_conf "$STATE8/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE8" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1184,24 +1125,13 @@ exit 1
 STUB
 chmod +x "$CODEX_STUB_DIR/codex"
 
-(
-    export PATH="$CODEX_STUB_DIR:$PATH"
-    export STATE_DIR="$STATE9"
-    export STATE_FILE="$STATE9/state.json"
-    export REPOS_DIR="$STATE9/repos"
-    export WORKDIRS_DIR="$STATE9/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE9/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE9/locks"
-    # Wire the operator kwr-config: non-empty REPO marks it active; DIR points at
-    # the local fixture cache (no pull — that's org-sync's job).
-    export KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git"
-    export KWR_CONFIG_DIR="$KWRCFG9"
-    write_probe_repos_conf "$STATE9/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" \
-        >/dev/null 2>&1 || true
-)
+# Wire the operator kwr-config: non-empty REPO marks it active; DIR points at
+# the local fixture cache (no pull — that's org-sync's job).
+PATH="$CODEX_STUB_DIR:$PATH" \
+KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git" \
+KWR_CONFIG_DIR="$KWRCFG9" \
+    run_worker_in_state "$STATE9" \
+    "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" || true
 
 RUN_DIR9=$(find "$STATE9/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR9" ]; then
@@ -1297,17 +1227,8 @@ echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo
 
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
 
-(
-    export STATE_DIR="$STATE10" STATE_FILE="$STATE10/state.json" REPOS_DIR="$STATE10/repos" \
-           WORKDIRS_DIR="$STATE10/workdirs" CANONICAL_LOCKS_DIR="$STATE10/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10/locks" \
-           REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write
-    write_probe_repos_conf "$STATE10/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
-        >/dev/null 2>&1 || true
-)
+REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
 
 RUN_DIR10=$(find "$STATE10/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 [ -n "$RUN_DIR10" ] || { echo "FAIL: scenario 10 — worker produced no run dir"; exit 1; }
@@ -1345,17 +1266,8 @@ REPO_ENV10B="$TMPDIR/repo-env-10b"
 mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
-(
-    export STATE_DIR="$STATE10B" STATE_FILE="$STATE10B/state.json" REPOS_DIR="$STATE10B/repos" \
-           WORKDIRS_DIR="$STATE10B/workdirs" CANONICAL_LOCKS_DIR="$STATE10B/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE10B/locks" \
-           REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write
-    write_probe_repos_conf "$STATE10B/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" \
-        >/dev/null 2>&1 || true
-)
+REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10B" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
 RUN_DIR10B=$(find "$STATE10B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 [ -n "$RUN_DIR10B" ] || { echo "FAIL: scenario 10b — worker produced no run dir"; exit 1; }
 LOG10B="$RUN_DIR10B/run.log"
@@ -1408,19 +1320,8 @@ exit 1
 STUB
 chmod +x "$HOME/.local/bin/codex"
 
-(
-    export STATE_DIR="$STATE11"
-    export STATE_FILE="$STATE11/state.json"
-    export REPOS_DIR="$STATE11/repos"
-    export WORKDIRS_DIR="$STATE11/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE11/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE11/locks"
-    write_probe_repos_conf "$STATE11/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE11" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
