@@ -521,7 +521,7 @@ repo_env_stranded_failure() {
 format_test_results() {
     local stranded="$1" summary="$2" log_tail="$3" caveat=""
     if [ "$stranded" = true ]; then
-        caveat="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` was invoked without them. The failing result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it."$'\n\n'
+        caveat="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it."$'\n\n'
     fi
     printf '%s**Result:** %s\n\nLast 500 lines of `just test` output:\n```\n%s\n```' \
         "$caveat" "$summary" "${log_tail:-(no output captured)}"

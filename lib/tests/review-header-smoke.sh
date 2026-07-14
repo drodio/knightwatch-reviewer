@@ -646,12 +646,26 @@ IFS=$'\t' read -r _prf_ran _prf_summary < <(classify_just_test_outcome 1 "$_prf_
     exit 1; }
 rm -f "$_prf_log"
 
+echo "  classify → repo_env_stranded_failure: a real PASS stays silent (producer feeds consumer)..."
+_pass_log=$(mktemp)
+IFS=$'\t' read -r _pass_ran _pass_summary < <(classify_just_test_outcome 0 "$_pass_log" 30m)
+[ "$(repo_env_stranded_failure "⚠️ note" "$_pass_ran" "$_pass_summary")" = false ] || {
+    echo "FAIL: classify emitted ran='$_pass_ran' summary='$_pass_summary' — predicate disclosed on a GREEN run (the original ungated-caveat bug)"
+    exit 1; }
+rm -f "$_pass_log"
+
 # And the sibling: the caveat must not claim the tests RAN when they died pre-recipe.
 echo '  format_test_results: pre-recipe death → caveat must not claim `just test` ran...'
 _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-results below)" "")
-printf '%s' "$_prf_out" | grep -q "ran without them" \
-    && { echo "FAIL: caveat claims the tests ran on a run that died before the recipe"; exit 1; }
+# Property, not literal: on a pre-recipe death the run never happened and there is
+# no failing result, so NEITHER disclosure string may claim one. Grepping only the
+# clause that was last fixed is how each rewrite re-acquired the claim in its sibling.
+printf '%s' "$_prf_out" | grep -qE 'ran without them|failing result' \
+    && { echo "FAIL: caveat claims a run/failure that never happened (pre-recipe death)"; exit 1; }
 assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
+
+printf '%s' "$(format_repo_env_note)" | grep -qE 'ran without them|failing result' \
+    && { echo "FAIL: header note claims a run/failure that never happened (pre-recipe death)"; exit 1; }
 
 echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
 tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
@@ -675,4 +689,4 @@ assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 8 stranded-failure predicate + 4 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 8 stranded-failure predicate + 6 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
