@@ -1285,7 +1285,13 @@ new_probe_state() {
 }
 
 # run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [RENAME_MAP] [PROBE_LOG]
-# Drives the real worker; sets RUN_DIR (does NOT echo it).
+# Drives the real worker; sets PROBE_RUN_DIR (does NOT echo it).
+#
+# Owns PROBE_RUN_DIR exclusively — RUN_DIR is already scenario 1's at file
+# scope, and sharing it would leave one name with two owners: a caller that
+# interleaved two runs, or forgot to consume the value, would silently read the
+# PREVIOUS scenario's run dir. The no-run-dir guard can't catch that (a stale
+# value is non-empty), so it's cleared at entry as well.
 #
 # Returns via a global on purpose. Echoing the run dir would force callers into
 # `RUN_DIR=$(run_probe_worker …)`, and this file has no `set -e` — so the
@@ -1297,6 +1303,7 @@ new_probe_state() {
 # remember: with no subshell, `exit 1` kills the suite.
 run_probe_worker() {
     local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" probe_log="${5:-}" run_dir
+    PROBE_RUN_DIR=""
     write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
     (
         export STATE_DIR="$state" STATE_FILE="$state/state.json" REPOS_DIR="$state/repos" \
@@ -1313,7 +1320,7 @@ run_probe_worker() {
     )
     run_dir=$(find "$state/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
     [ -n "$run_dir" ] || { echo "FAIL: worker produced no run dir (state=$state)"; exit 1; }
-    RUN_DIR="$run_dir"
+    PROBE_RUN_DIR="$run_dir"
 }
 
 STATE10=$(new_probe_state 10)
@@ -1325,7 +1332,7 @@ mkdir -p "$REPO_ENV10/test-org_probe-repo"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo/.env.test-live"
 
 run_probe_worker "$STATE10" "$REPO_ENV10" "Live-cred PR"
-RUN_DIR10="$RUN_DIR"
+RUN_DIR10="$PROBE_RUN_DIR"
 LOG10="$RUN_DIR10/run.log"
 
 # Decisive: the seed wrote the real file into canonical, AND the trust-gated
@@ -1358,7 +1365,7 @@ REPO_ENV10B="$TMPDIR/repo-env-10b"
 mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
 run_probe_worker "$STATE10B" "$REPO_ENV10B" "Live-cred PR"
-RUN_DIR10B="$RUN_DIR"
+RUN_DIR10B="$PROBE_RUN_DIR"
 LOG10B="$RUN_DIR10B/run.log"
 if ! grep -q "FATAL — repo-env seed of 'api/.env.test-live' failed" "$LOG10B"; then
     echo "FAIL: scenario 10b — run.log missing the fail-loud seed abort (silent-continue regressed)"
@@ -1394,7 +1401,7 @@ echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/old-org_probe-repo
 
 run_probe_worker "$STATE10C" "$REPO_ENV10C" "Renamed-repo PR" \
     "old-org/probe-repo=test-org/probe-repo"
-RUN_DIR10C="$RUN_DIR"
+RUN_DIR10C="$PROBE_RUN_DIR"
 LOG10C="$RUN_DIR10C/run.log"
 
 # The detection: the old-slug dir resolves to this repo → say so.
@@ -1421,7 +1428,7 @@ echo "OTHER=x" > "$REPO_ENV10D/other-org_other-repo/.env.test-live"
 PROBE_LOG10D="$TMPDIR/probe-log-10d"
 run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
     "old-org/probe-repo=test-org/probe-repo" "$PROBE_LOG10D"
-RUN_DIR10D="$RUN_DIR"
+RUN_DIR10D="$PROBE_RUN_DIR"
 
 # Ground the absence: assert the probe actually RAN and resolved elsewhere. The
 # worker swallows gh failure (2>/dev/null), so "no note" alone can't distinguish
