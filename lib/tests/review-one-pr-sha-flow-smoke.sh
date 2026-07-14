@@ -75,52 +75,53 @@ if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then
         esac
     done
 fi
-# Rename redirect: \`gh api repos/<owner>/<name>\` follows GitHub's redirect and
-# returns the repo's CURRENT full_name. The worker uses this to recognize its own
-# creds stranded under a pre-rename slug (#171). GH_STUB_RENAME_MAP is a
-# space-separated list of "<queried>=<current>" pairs; an unlisted repo answers
-# with its own name (not renamed). The deeper repos/*/*/* endpoints (permission
-# et al) are excluded so this only claims the two-segment repo lookup.
-# Rename-probe failure injection. Independent of GH_STUB_RENAME_MAP: the lookup
-# fails before any mapping matters. The worker tells an EXPECTED 404 (leftover dir
-# for a deleted repo → silent) from any other failure (→ warn) by grepping gh's
-# stderr, so scenarios pin gh's REAL wording instead of assuming it.
-if [ -n "\${GH_STUB_RENAME_RC:-}" ]; then
-    for arg in "\$@"; do
-        case "\$arg" in
-            repos/*/*/*) ;;
-            repos/*/*)
-                case " \$* " in *" .full_name "*) ;; *) continue ;; esac
+# Rename probe — \`gh api repos/<owner>/<name> --jq .full_name\`. GitHub redirects a
+# renamed repo to its current name, which is how the worker spots its OWN creds
+# stranded under a pre-rename slug (#171). Knobs:
+#
+#   GH_STUB_RENAME_MAP  space-separated "<queried>=<current>" pairs; an unlisted
+#                       repo answers with its own name (i.e. not renamed).
+#   GH_STUB_RENAME_RC   fail with this rc, printing GH_STUB_RENAME_ERR on stderr.
+#                       The worker tells an EXPECTED 404 (an operator's leftover
+#                       dir for a deleted repo → stay silent) from any other
+#                       failure (→ warn: ownership undetermined) by grepping gh's
+#                       stderr, so scenarios pin gh's REAL wording, not a guess.
+#   GH_STUB_PROBE_LOG   append every queried repo. Lets a scenario prove the probe
+#                       actually RAN — the 404 path is deliberately silent, so an
+#                       absence alone can't tell "resolved elsewhere" from "never
+#                       ran". Written BEFORE the failure injection, so a scenario
+#                       can inject a failure and still prove the probe fired.
+#
+# ONE arm, not one per knob: the endpoint filter below is the contract, and two
+# copies of it would drift the moment the production probe changes its --jq field.
+# Deeper repos/*/*/* endpoints (permission et al) are excluded, and a non-.full_name
+# two-segment lookup falls through rather than getting a plausible wrong answer.
+for arg in "\$@"; do
+    case "\$arg" in
+        repos/*/*/*) ;;
+        repos/*/*)
+            case " \$* " in *" .full_name "*) ;; *) continue ;; esac
+            queried="\${arg#repos/}"
+            [ -n "\${GH_STUB_PROBE_LOG:-}" ] && printf '%s\n' "\$queried" >> "\$GH_STUB_PROBE_LOG"
+            if [ -n "\${GH_STUB_RENAME_RC:-}" ]; then
+                # Record the INJECTED failure, not just that the probe ran. The
+                # worker is silent on both a 404 and a non-matching success, so a
+                # scenario asserting "no warning" would pass green against a stub
+                # that quietly stopped failing — grounding on "probe fired" alone
+                # is not enough to prove the 404 path was the one exercised.
+                [ -n "\${GH_STUB_PROBE_LOG:-}" ] && \
+                    printf '%s FAILED %s\n' "\$queried" "\${GH_STUB_RENAME_ERR:-}" >> "\$GH_STUB_PROBE_LOG"
                 printf '%s\n' "\${GH_STUB_RENAME_ERR:-}" >&2
-                exit "\$GH_STUB_RENAME_RC" ;;
-        esac
-    done
-fi
-if [ -n "\${GH_STUB_RENAME_MAP:-}" ]; then
-    for arg in "\$@"; do
-        case "\$arg" in
-            repos/*/*/*) ;;
-            repos/*/*)
-                # Only answer the call this arm actually models — the
-                # \`--jq .full_name\` rename probe. Claiming every two-segment
-                # repos/<owner>/<name> lookup would hand a future
-                # \`--jq .default_branch\` a plausible-looking wrong answer
-                # (owner/name) and mis-drive the run instead of failing.
-                case " \$* " in *" .full_name "*) ;; *) continue ;; esac
-                queried="\${arg#repos/}"
-                # Probe trace: lets a scenario prove the resolution actually RAN.
-                # The 404 path is deliberately silent, so an absent note alone
-                # can't distinguish "resolved elsewhere" from "never ran".
-                [ -n "\${GH_STUB_PROBE_LOG:-}" ] && printf '%s\n' "\$queried" >> "\$GH_STUB_PROBE_LOG"
-                for pair in \$GH_STUB_RENAME_MAP; do
-                    case "\$pair" in
-                        "\$queried="*) printf '%s\n' "\${pair#*=}"; exit 0 ;;
-                    esac
-                done
-                printf '%s\n' "\$queried"; exit 0 ;;
-        esac
-    done
-fi
+                exit "\$GH_STUB_RENAME_RC"
+            fi
+            for pair in \${GH_STUB_RENAME_MAP:-}; do
+                case "\$pair" in
+                    "\$queried="*) printf '%s\n' "\${pair#*=}"; exit 0 ;;
+                esac
+            done
+            printf '%s\n' "\$queried"; exit 0 ;;
+    esac
+done
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -1465,7 +1466,16 @@ STATE10E=$(new_probe_state 10e)
 REPO_ENV10E="$TMPDIR/repo-env-10e"
 mkdir -p "$REPO_ENV10E/deleted-org_gone-repo"
 echo "X=y" > "$REPO_ENV10E/deleted-org_gone-repo/.env.test-live"
-run_probe_worker "$STATE10E" "$REPO_ENV10E" "404 PR" "" "" "1" "gh: Not Found (HTTP 404)"
+PROBE_LOG10E="$TMPDIR/probe-log-10e"
+run_probe_worker "$STATE10E" "$REPO_ENV10E" "404 PR" "" "$PROBE_LOG10E" "1" "gh: Not Found (HTTP 404)"
+# Ground the absence FIRST — an unguarded "no warning" passes just as well when
+# the branch never ran, which is not hypothetical: a harness bug (failure
+# injection nested under GH_STUB_RENAME_MAP, which this scenario doesn't set)
+# left this green while exercising nothing, and only 10f caught it.
+if ! grep -qxF "deleted-org/gone-repo FAILED gh: Not Found (HTTP 404)" "$PROBE_LOG10E" 2>/dev/null; then
+    echo "FAIL: scenario 10e — the 404 was never injected; the absence below would prove nothing"
+    exit 1
+fi
 if grep -q "ownership lookup failed" "$PROBE_RUN_DIR/run.log"; then
     echo "FAIL: scenario 10e — a 404 (expected: dir for a deleted repo) must not warn"
     tail -n 20 "$PROBE_RUN_DIR/run.log"
