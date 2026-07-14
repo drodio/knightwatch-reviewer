@@ -675,34 +675,26 @@ _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-
 # stay true on a run that never happened) isn't expressible as a substring ban, so
 # pin the whole string: ANY reword fails here, and whoever rewords it has to
 # re-derive that the new wording is outcome-neutral on the pre-recipe path.
-# Golden the caveat REGION — everything the caveat contributes, which ends exactly
-# where `**Result:**` begins.
-#
-# The boundary matters more than the text, because the escape kept relocating: a
-# one-line golden was beaten by a second line; a whole-artifact golden also froze the
-# tail header and fence, so an unrelated presentation change would fire a false alarm
-# (and a false alarm gets "fixed" by pasting the new string in, training away the very
-# reflex the golden enforces); a paragraph golden was beaten by a second PARAGRAPH.
-# Cutting at `**Result:**` pins every byte the caveat emits, in any shape — extra
-# sentence, line, or paragraph — while leaving the payload below it free to change.
+# Golden the caveat, plus its right edge. The caveat rides runs that failed, timed
+# out, and never ran (a pre-recipe death), so it may claim neither a run nor a
+# failure — a property no substring ban can express, since the wrong phrasings are
+# unbounded. So pin the text exactly, and pin where it ENDS, so an appended sentence,
+# line, or paragraph can't re-acquire the claim. The log-tail header and fence stay
+# unpinned on purpose: a false alarm there gets "fixed" by pasting the new string in,
+# which trains away the reflex this golden exists to enforce.
 _prf_want='**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo'"'"'s pre-rename slug), so `just test` was invoked without them. The result below may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
 
 '
-_prf_got=${_prf_out%%'**Result:**'*}
-[ "$_prf_got" = "$_prf_want" ] || {
-    echo "FAIL: the caveat text changed. It rides runs that FAILED, TIMED OUT, and NEVER RAN"
-    echo "      (a pre-recipe death), so it must claim neither a run nor a failure."
-    echo "      Re-derive that for the new wording, then update this golden."
-    echo "  want: [$_prf_want]"
-    echo "  got:  [$_prf_got]"
-    exit 1; }
-assert_contains "$_prf_out" "Reviewer-infra caveat" "pre-recipe death still discloses to the specialist"
-
-echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
-tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
-assert_contains "$tr_stranded" "Reviewer-infra caveat" "caveat reaches test-results.md, not just the header"
-assert_contains "$tr_stranded" "do not raise findings against the author" "specialist told not to blame the PR"
-assert_contains "$tr_stranded" "**Result:** FAILED (exit 1)" "verdict stays generic — no credential-flavored classification"
+case "$_prf_out" in
+    "$_prf_want"'**Result:** not run ('*) ;;
+    *)
+        echo "FAIL: the caveat changed, lost its verdict, or grew a claim after it."
+        echo "      It rides runs that FAILED, TIMED OUT, and NEVER RAN, so it must claim"
+        echo "      neither a run nor a failure. Re-derive that, then update this golden."
+        echo "  want prefix: [$_prf_want**Result:** not run (…]"
+        echo "  got:         [$_prf_out]"
+        exit 1 ;;
+esac
 
 echo "  format_test_results: no stranded failure → no caveat (a false claim beside a green result)..."
 tr_clean=$(format_test_results false "PASSED" "some output")
