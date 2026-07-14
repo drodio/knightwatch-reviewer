@@ -1383,117 +1383,74 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
     exit 1
 fi
 
-# ===== Scenario 10c: rename-stranded creds are DISCLOSED, not silently skipped =====
-# #171. A repo rename moves the seed lookup to the new slug while the creds stay
-# under the old one: the `[ -d ]` guard goes false, the seed no-ops clean, the
-# mirror finds nothing, and `just test` dies at its ${ANTHROPIC_API_KEY:?} gate —
-# posting a generic "Tests failed (exit 1)" the author reads as their own bug.
-# (cncorp/plow → plow-pbc/plow: 208 reviews, 0 passes.)
+# ===== Scenarios 10c-10f: the rename-stranded creds decision, all four outcomes =====
+# One arrange/act shape — build an operator repo-env fixture, drive the REAL
+# worker, read run.log — with four different inputs, so it's a table, not four
+# copies. A new case is a row.
 #
-# The worker must instead notice that a repo-env dir resolves, through GitHub's
-# rename redirect, to THIS repo — i.e. those are OUR creds under a dead name —
-# and disclose it. This drives the real worker over the real resolution loop:
-# the slug→API-path conversion, the full_name comparison that gates the note, and
-# the guard that keeps a credless repo from probing on an empty dir list.
-echo "  scenario: repo-env stranded by a rename → disclosed, not silently skipped..."
-
-STATE10C=$(new_probe_state 10c)
-
-# Creds sit under the PRE-RENAME slug (old-org_probe-repo), not the repo's
-# current slug — exactly the stranded state.
-REPO_ENV10C="$TMPDIR/repo-env-10c"
-mkdir -p "$REPO_ENV10C/old-org_probe-repo"
-echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/old-org_probe-repo/.env.test-live"
-
-run_probe_worker "$STATE10C" "$REPO_ENV10C" "Renamed-repo PR" \
-    "old-org/probe-repo=test-org/probe-repo"
-RUN_DIR10C="$PROBE_RUN_DIR"
-LOG10C="$RUN_DIR10C/run.log"
-
-# The detection: the old-slug dir resolves to this repo → say so.
-if ! grep -q "repo-env/old-org_probe-repo holds THIS repo's creds under its pre-rename slug" "$LOG10C"; then
-    echo "FAIL: scenario 10c — stranded creds went undisclosed (the silent no-op #171 exists to close)"
-    [ -f "$LOG10C" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10C"; }
-    exit 1
-fi
-# ===== Scenario 10d: another repo's creds dir → stay quiet (the cry-wolf fence) =====
-# Must be its OWN run, not a second dir bolted onto 10c: repo_env_slugs sorts and
-# the worker breaks on the first match, so in 10c `old-org_probe-repo` is always
-# probed first and always matches — `other-org_*` would never be queried at all,
-# and the assertion could not fail even if the full_name comparison were inverted.
-# A negative control has to be a run where NOTHING resolves to $REPO. This is the
-# branch that keeps the ~56 repos which legitimately need no creds quiet.
-echo "  scenario: repo-env dir belonging to another repo → no note (cry-wolf fence)..."
-
-STATE10D=$(new_probe_state 10d)
-
-REPO_ENV10D="$TMPDIR/repo-env-10d"
-mkdir -p "$REPO_ENV10D/other-org_other-repo"
-echo "OTHER=x" > "$REPO_ENV10D/other-org_other-repo/.env.test-live"
-
-PROBE_LOG10D="$TMPDIR/probe-log-10d"
-run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
-    "old-org/probe-repo=test-org/probe-repo" "$PROBE_LOG10D"
-RUN_DIR10D="$PROBE_RUN_DIR"
-
-# Ground the absence: assert the probe actually RAN and resolved elsewhere. A
-# 404 is deliberately silent (an operator's leftover dir for a deleted repo), so
-# "no note" alone still can't distinguish "resolved to another repo → correctly
-# quiet" from "probe never ran → quiet by accident". The probe log is what tells
-# them apart.
-if ! grep -qx "other-org/other-repo" "$PROBE_LOG10D" 2>/dev/null; then
-    echo "FAIL: scenario 10d — the rename probe never ran; the absence below would prove nothing"
-    exit 1
-fi
-if grep -q "holds THIS repo's creds" "$RUN_DIR10D/run.log"; then
-    echo "FAIL: scenario 10d — claimed another repo's creds dir as this repo's (cry-wolf regression)"
-    tail -n 30 "$RUN_DIR10D/run.log"
-    exit 1
-fi
-
-# ===== Scenarios 10e/10f: the lookup-failure discriminator =====
-# The worker tells an EXPECTED 404 (leftover dir for a deleted repo → stay
-# silent) from any other failure (auth revoked / outage / rate limit → warn that
-# ownership is undetermined) by grepping gh's stderr. That makes gh's wording a
-# load-bearing contract, so pin it with gh's REAL text rather than an assumption:
-# `gh api repos/<missing>` prints exactly `gh: Not Found (HTTP 404)`.
+# The decision under test (#171): does any repo-env dir resolve, through GitHub's
+# rename redirect, to THIS repo? If so its creds are ours, stranded under a dead
+# name, and `just test` is about to run without them — say so, or the author reads
+# the resulting red as their own bug (208 plow reviews did).
 #
-# Without these, the failure branch has no coverage at all: a gh message-format
-# change would silently flip it back to swallowing the failure — the very
-# behaviour this PR removes — and the suite would stay green.
-echo "  scenario: rename lookup 404 → silent (leftover dir for a deleted repo)..."
-STATE10E=$(new_probe_state 10e)
-REPO_ENV10E="$TMPDIR/repo-env-10e"
-mkdir -p "$REPO_ENV10E/deleted-org_gone-repo"
-echo "X=y" > "$REPO_ENV10E/deleted-org_gone-repo/.env.test-live"
-PROBE_LOG10E="$TMPDIR/probe-log-10e"
-run_probe_worker "$STATE10E" "$REPO_ENV10E" "404 PR" "" "$PROBE_LOG10E" "1" "gh: Not Found (HTTP 404)"
-# Ground the absence FIRST — an unguarded "no warning" passes just as well when
-# the branch never ran, which is not hypothetical: a harness bug (failure
-# injection nested under GH_STUB_RENAME_MAP, which this scenario doesn't set)
-# left this green while exercising nothing, and only 10f caught it.
-if ! grep -qxF "deleted-org/gone-repo FAILED gh: Not Found (HTTP 404)" "$PROBE_LOG10E" 2>/dev/null; then
-    echo "FAIL: scenario 10e — the 404 was never injected; the absence below would prove nothing"
-    exit 1
-fi
-if grep -q "ownership lookup failed" "$PROBE_RUN_DIR/run.log"; then
-    echo "FAIL: scenario 10e — a 404 (expected: dir for a deleted repo) must not warn"
-    tail -n 20 "$PROBE_RUN_DIR/run.log"
-    exit 1
-fi
+# Every row asserts the probe TRACE first. That is load-bearing, not ceremony:
+# the worker is silent on a 404 AND on a successful non-matching lookup, so a
+# bare "no warning" assertion passes just as well when the probe never ran at
+# all. That is not hypothetical — a stub bug once left the 404 row green while
+# exercising nothing. The trace records the injected failure itself, so each row
+# proves the path it names was the one taken.
+#
+# Columns: tag | description | repo-env dirs | rename map | gh rc | gh stderr |
+#          expected probe-trace line | slug expected in the disclosure ("" = none
+#          expected; a note here would be the cry-wolf regression) | warn?
+# Read on fd 3, not stdin: run_probe_worker spawns the real worker, which consumes
+# stdin and would swallow the remaining rows — the loop would run ONE row and
+# report green. (It did exactly that; the mutation matrix is what caught it.)
+while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn <&3; do
+    [ -n "$tag" ] || continue
+    echo "  scenario $tag: $desc..."
+    state=$(new_probe_state "$tag")
+    repo_env="$TMPDIR/repo-env-$tag"
+    for d in $dirs; do
+        mkdir -p "$repo_env/$d"
+        echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$repo_env/$d/.env.test-live"
+    done
+    probe_log="$TMPDIR/probe-log-$tag"
+    run_probe_worker "$state" "$repo_env" "$desc" "$map" "$probe_log" "$rc" "$err"
+    log_file="$PROBE_RUN_DIR/run.log"
 
-# 403, not 500: gh_api_retry retries 5xx (3 attempts, ~6s of backoff) but falls
-# through on 4xx, so this asserts the discriminator without paying the retry.
-echo "  scenario: rename lookup fails non-404 → loud (ownership undetermined, not swallowed)..."
-STATE10F=$(new_probe_state 10f)
-run_probe_worker "$STATE10F" "$REPO_ENV10E" "403 PR" "" "" "1" "gh: Forbidden (HTTP 403)"
-if ! grep -q "ownership lookup failed" "$PROBE_RUN_DIR/run.log"; then
-    echo "FAIL: scenario 10f — a non-404 failure was swallowed; the false test verdict is back"
-    tail -n 20 "$PROBE_RUN_DIR/run.log"
-    exit 1
-fi
+    if ! grep -qxF "$probe_expect" "$probe_log" 2>/dev/null; then
+        echo "FAIL: scenario $tag — expected probe trace '$probe_expect' absent; the assertions below would prove nothing"
+        exit 1
+    fi
+    if [ -n "$want_slug" ]; then
+        if ! grep -q "repo-env/$want_slug holds THIS repo's creds under its pre-rename slug" "$log_file"; then
+            echo "FAIL: scenario $tag — stranded creds went undisclosed (the silent no-op #171 exists to close)"
+            tail -n 20 "$log_file"; exit 1
+        fi
+    elif grep -q "holds THIS repo's creds" "$log_file"; then
+        echo "FAIL: scenario $tag — claimed another repo's creds dir as this repo's (cry-wolf regression)"
+        tail -n 20 "$log_file"; exit 1
+    fi
+    if [ "$want_warn" = yes ]; then
+        if ! grep -q "ownership lookup failed" "$log_file"; then
+            echo "FAIL: scenario $tag — a non-404 lookup failure was swallowed; the false test verdict is back"
+            tail -n 20 "$log_file"; exit 1
+        fi
+    elif grep -q "ownership lookup failed" "$log_file"; then
+        echo "FAIL: scenario $tag — warned on an outcome that is expected and benign"
+        tail -n 20 "$log_file"; exit 1
+    fi
+done 3<<EOF
+10c|creds stranded by a rename → disclosed, not silently skipped|old-org_probe-repo|old-org/probe-repo=test-org/probe-repo|||old-org/probe-repo|old-org_probe-repo|no
+10d|another repo's creds dir → stay quiet (cry-wolf fence)|other-org_other-repo|old-org/probe-repo=test-org/probe-repo|||other-org/other-repo||no
+10e|lookup 404 → silent (operator's leftover dir for a deleted repo)|deleted-org_gone-repo||1|gh: Not Found (HTTP 404)|deleted-org/gone-repo FAILED gh: Not Found (HTTP 404)||no
+10f|lookup fails non-404 → loud (ownership undetermined, not swallowed)|deleted-org_gone-repo||1|gh: Forbidden (HTTP 403)|deleted-org/gone-repo FAILED gh: Forbidden (HTTP 403)||yes
+EOF
+# 403 not 500 in 10f: gh_api_retry retries 5xx (3 attempts, ~6s backoff) and falls
+# through on 4xx, so the discriminator is asserted without paying for the retry.
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env rename-stranded disclosure + repo-env cry-wolf fence + repo-env 404 silent + repo-env non-404 loud)"
+echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + repo-env stranded-creds decision x4: disclose / cry-wolf fence / 404 silent / non-404 loud)"
 
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
