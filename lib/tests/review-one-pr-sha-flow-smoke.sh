@@ -576,8 +576,14 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     exit 1
 fi
 
-# (Positive full-diff.patch content is scenario 2's contract — not
-# re-asserted here.)
+# Liveness anchor: the diff stage was actually reached (the negative
+# empty-diff grep above is vacuous on an earlier abort). Content is
+# scenario 2's contract — existence only here.
+if [ ! -f "$RUN_DIR3/inputs/full-diff.patch" ]; then
+    echo "FAIL: scenario 3 — worker aborted before the diff stage"
+    cat "$LOG3"
+    exit 1
+fi
 
 # --- Scenario 3b: a FAILED git diff is FATAL, never "empty diff" ------
 # Fences issue #170's second flaw: the worker must distinguish a
@@ -639,6 +645,13 @@ if ! grep -q "FATAL — git diff" "$LOG3B"; then
 fi
 if grep -qE "returned empty — aborting" "$LOG3B"; then
     echo "FAIL: scenario 3b — failed git diff was misread as an empty diff (issue #170 regressed)"
+    cat "$LOG3B"
+    exit 1
+fi
+# State fence the log wording can't drift out from under: only a
+# successful diff writes the artifact; a FATAL run must not.
+if [ -f "$RUN_DIR3B/inputs/full-diff.patch" ]; then
+    echo "FAIL: scenario 3b — full-diff.patch written despite the failed diff"
     cat "$LOG3B"
     exit 1
 fi
