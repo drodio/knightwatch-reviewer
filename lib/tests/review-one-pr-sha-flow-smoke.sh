@@ -157,7 +157,6 @@ git -C "$WORKING" push -q origin feat/test:refs/pull/1/head
 # Canonical: clone of the bare repo. Worker will fetch into here.
 # Path matches the worker's REPO_SLUG (review-one-pr.sh:249: tr '/' '_').
 CANONICAL="$REPOS_DIR/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL")"
 git clone -q "$GITHUB_BARE" "$CANONICAL"
 
 # ---- gh stub via PATH ----
@@ -348,7 +347,6 @@ STATE2="$TMPDIR/state-2"
 seed_state_dir "$STATE2"
 
 CANONICAL2="$STATE2/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL2")"
 git clone -q "$GITHUB_BARE2" "$CANONICAL2"
 
 # Stub gh — same shape, but baseRefName is "release-1.0" not "main".
@@ -498,7 +496,6 @@ STATE3="$TMPDIR/state-3"
 seed_state_dir "$STATE3"
 
 CANONICAL3="$STATE3/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL3")"
 # Deliberately SHALLOW, mirroring a canonical cloned in the --depth=500
 # era (pre-issue-#170 fix) — exercises the worker's one-time
 # `fetch --unshallow` self-heal. file:// is load-bearing: --depth is
@@ -613,7 +610,6 @@ chmod +x "$STUB_DIR3B/git"
 STATE3B="$TMPDIR/state-3b"
 seed_state_dir "$STATE3B"
 CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL3B")"
 git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
 
 (
@@ -904,7 +900,6 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SH
 STATE6="$TMPDIR/state-6"
 seed_state_dir "$STATE6"
 CANONICAL6="$STATE6/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL6")"
 git clone -q "$GITHUB_BARE" "$CANONICAL6"
 
 run_tick_6() {
