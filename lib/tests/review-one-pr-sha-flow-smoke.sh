@@ -1406,13 +1406,25 @@ fi
 # row and the suite still reports green.
 while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn <&3; do
     [ -n "$tag" ] || continue
+    # Reject a malformed row instead of degrading to the weaker assertion: any
+    # want_warn that isn't exactly `yes` would otherwise read as "must not warn",
+    # so a typo — or a dropped column shifting every field — silently inverts what
+    # the row claims to prove and still passes.
+    case "$want_warn" in
+        yes|no) ;;
+        *) echo "FAIL: scenario $tag — want_warn must be yes|no, got '$want_warn' (malformed row?)"; exit 1 ;;
+    esac
+    [ -n "$probe_expect" ] && [ -n "$dirs" ] || {
+        echo "FAIL: scenario $tag — row is missing dirs/probe_expect (dropped column?)"; exit 1
+    }
     echo "  scenario $tag: $desc..."
     state=$(new_probe_state "$tag")
     repo_env="$TMPDIR/repo-env-$tag"
-    for d in $dirs; do
-        mkdir -p "$repo_env/$d"
-        echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$repo_env/$d/.env.test-live"
-    done
+    # One dir per row: repo_env_slugs sorts and the worker breaks on the first
+    # full_name match, so a second dir in the same row would never be probed and
+    # any assertion about it would be vacuous. Separate cases get separate rows.
+    mkdir -p "$repo_env/$dirs"
+    echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$repo_env/$dirs/.env.test-live"
     probe_log="$TMPDIR/probe-log-$tag"
     run_probe_worker "$state" "$repo_env" "$desc" "$map" "$probe_log" "$rc" "$err"
     log_file="$PROBE_RUN_DIR/run.log"
@@ -1439,7 +1451,7 @@ while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn 
         echo "FAIL: scenario $tag — warned on an outcome that is expected and benign"
         tail -n 20 "$log_file"; exit 1
     fi
-done 3<<EOF
+done 3<<'EOF'
 10c|creds stranded by a rename → disclosed, not silently skipped|old-org_probe-repo|old-org/probe-repo=test-org/probe-repo|||old-org/probe-repo|old-org_probe-repo|no
 10d|another repo's creds dir → stay quiet (cry-wolf fence)|other-org_other-repo|old-org/probe-repo=test-org/probe-repo|||other-org/other-repo||no
 10e|lookup 404 → silent (operator's leftover dir for a deleted repo)|deleted-org_gone-repo||1|gh: Not Found (HTTP 404)|deleted-org/gone-repo FAILED gh: Not Found (HTTP 404)||no
