@@ -1285,13 +1285,16 @@ new_probe_state() {
 }
 
 # run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [RENAME_MAP] [PROBE_LOG]
-# Drives the real worker and echoes its run dir.
+# Drives the real worker; sets RUN_DIR (does NOT echo it).
 #
-# Call sites MUST use `RUN_DIR=$(run_probe_worker …) || exit 1`: this file runs
-# without `set -e`, so the guard's `exit 1` below only kills the command-
-# substitution subshell. Without the `|| exit 1` the caller sails on with an
-# empty RUN_DIR and any absence-only assertion passes green against a worker
-# that never ran — the swallowed-failure class this whole PR exists to close.
+# Returns via a global on purpose. Echoing the run dir would force callers into
+# `RUN_DIR=$(run_probe_worker …)`, and this file has no `set -e` — so the
+# no-run-dir guard's `exit 1` would kill only the command-substitution subshell
+# and the caller would sail on with an empty RUN_DIR, leaving an absence-only
+# assertion (10d) to pass green against a worker that never ran. That is the
+# swallowed-failure class this whole PR exists to close, so the guard is made
+# structural rather than a `|| exit 1` convention every future call site has to
+# remember: with no subshell, `exit 1` kills the suite.
 run_probe_worker() {
     local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" probe_log="${5:-}" run_dir
     write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
@@ -1309,8 +1312,8 @@ run_probe_worker() {
             >/dev/null 2>&1 || true
     )
     run_dir=$(find "$state/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
-    [ -n "$run_dir" ] || { echo "FAIL: worker produced no run dir (state=$state)" >&2; exit 1; }
-    printf '%s\n' "$run_dir"
+    [ -n "$run_dir" ] || { echo "FAIL: worker produced no run dir (state=$state)"; exit 1; }
+    RUN_DIR="$run_dir"
 }
 
 STATE10=$(new_probe_state 10)
@@ -1321,7 +1324,8 @@ REPO_ENV10="$TMPDIR/repo-env-10"
 mkdir -p "$REPO_ENV10/test-org_probe-repo"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo/.env.test-live"
 
-RUN_DIR10=$(run_probe_worker "$STATE10" "$REPO_ENV10" "Live-cred PR") || exit 1
+run_probe_worker "$STATE10" "$REPO_ENV10" "Live-cred PR"
+RUN_DIR10="$RUN_DIR"
 LOG10="$RUN_DIR10/run.log"
 
 # Decisive: the seed wrote the real file into canonical, AND the trust-gated
@@ -1353,7 +1357,8 @@ touch "$STATE10B/repos/test-org_probe-repo/api"
 REPO_ENV10B="$TMPDIR/repo-env-10b"
 mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
-RUN_DIR10B=$(run_probe_worker "$STATE10B" "$REPO_ENV10B" "Live-cred PR") || exit 1
+run_probe_worker "$STATE10B" "$REPO_ENV10B" "Live-cred PR"
+RUN_DIR10B="$RUN_DIR"
 LOG10B="$RUN_DIR10B/run.log"
 if ! grep -q "FATAL — repo-env seed of 'api/.env.test-live' failed" "$LOG10B"; then
     echo "FAIL: scenario 10b — run.log missing the fail-loud seed abort (silent-continue regressed)"
@@ -1387,8 +1392,9 @@ REPO_ENV10C="$TMPDIR/repo-env-10c"
 mkdir -p "$REPO_ENV10C/old-org_probe-repo"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/old-org_probe-repo/.env.test-live"
 
-RUN_DIR10C=$(run_probe_worker "$STATE10C" "$REPO_ENV10C" "Renamed-repo PR" \
-    "old-org/probe-repo=test-org/probe-repo") || exit 1
+run_probe_worker "$STATE10C" "$REPO_ENV10C" "Renamed-repo PR" \
+    "old-org/probe-repo=test-org/probe-repo"
+RUN_DIR10C="$RUN_DIR"
 LOG10C="$RUN_DIR10C/run.log"
 
 # The detection: the old-slug dir resolves to this repo → say so.
@@ -1413,8 +1419,9 @@ mkdir -p "$REPO_ENV10D/other-org_other-repo"
 echo "OTHER=x" > "$REPO_ENV10D/other-org_other-repo/.env.test-live"
 
 PROBE_LOG10D="$TMPDIR/probe-log-10d"
-RUN_DIR10D=$(run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
-    "old-org/probe-repo=test-org/probe-repo" "$PROBE_LOG10D") || exit 1
+run_probe_worker "$STATE10D" "$REPO_ENV10D" "Credless PR" \
+    "old-org/probe-repo=test-org/probe-repo" "$PROBE_LOG10D"
+RUN_DIR10D="$RUN_DIR"
 
 # Ground the absence: assert the probe actually RAN and resolved elsewhere. The
 # worker swallows gh failure (2>/dev/null), so "no note" alone can't distinguish
