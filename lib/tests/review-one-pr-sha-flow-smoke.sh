@@ -579,21 +579,75 @@ if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     exit 1
 fi
 
-# Positive consumer: the worker should have produced a non-empty
-# full-diff.patch whose contents include the PR feature.
-FULL_DIFF3="$RUN_DIR3/inputs/full-diff.patch"
-if [ ! -f "$FULL_DIFF3" ]; then
-    echo "FAIL: scenario 3 — worker did not write $FULL_DIFF3 (likely aborted before diff stage)"
-    cat "$LOG3"
+# (Positive full-diff.patch content is scenario 2's contract — not
+# re-asserted here.)
+
+# --- Scenario 3b: a FAILED git diff is FATAL, never "empty diff" ------
+# Fences issue #170's second flaw: the worker must distinguish a
+# non-zero `git diff` exit (FATAL, error logged) from empty stdout
+# (the genuine no-changes abort). PATH-shims git (the loc-trend-smoke
+# pattern): any three-dot `diff` exits non-zero with empty stdout,
+# everything else passes through. Fresh state dir so the dedup gate
+# can't skip the run; gh stub from scenario 3 still applies.
+STUB_DIR3B="$TMPDIR/stub-bin-3b"
+mkdir -p "$STUB_DIR3B"
+REAL_GIT=$(command -v git)
+cat > "$STUB_DIR3B/git" <<STUB_EOF
+#!/bin/bash
+REAL_GIT='$REAL_GIT'
+STUB_EOF
+cat >> "$STUB_DIR3B/git" <<'STUB_EOF'
+is_diff=0; three_dot=0
+for arg in "$@"; do
+    [ "$arg" = "diff" ] && is_diff=1
+    case "$arg" in *...*) three_dot=1 ;; esac
+done
+if [ "$is_diff" = 1 ] && [ "$three_dot" = 1 ]; then
+    echo "fatal: simulated three-dot diff failure" >&2
+    exit 128
+fi
+exec "$REAL_GIT" "$@"
+STUB_EOF
+chmod +x "$STUB_DIR3B/git"
+
+STATE3B="$TMPDIR/state-3b"
+seed_state_dir "$STATE3B"
+CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
+mkdir -p "$(dirname "$CANONICAL3B")"
+git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
+
+(
+    export STATE_DIR="$STATE3B"
+    export STATE_FILE="$STATE3B/state.json"
+    export REPOS_DIR="$STATE3B/repos"
+    export WORKDIRS_DIR="$STATE3B/workdirs"
+    export CANONICAL_LOCKS_DIR="$STATE3B/canonical-locks"
+    export PR_REVIEW_LOCK_DIR="$STATE3B/locks"
+    write_probe_repos_conf "$STATE3B/repos.conf"
+    TRIGGER_COMMENT_FILE="" PATH="$STUB_DIR3B:$PATH" \
+        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+        "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" \
+        >/dev/null 2>&1 || true
+)
+
+RUN_DIR3B=$(find "$STATE3B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR3B" ]; then
+    echo "FAIL: scenario 3b — worker produced no run dir under $STATE3B/runs"
     exit 1
 fi
-if ! grep -q "PR feature content" "$FULL_DIFF3"; then
-    echo "FAIL: scenario 3 — full-diff.patch missing PR-feature content"
-    cat "$FULL_DIFF3"
+LOG3B="$RUN_DIR3B/run.log"
+if ! grep -q "FATAL — git diff" "$LOG3B"; then
+    echo "FAIL: scenario 3b — failed git diff did not produce the FATAL diagnostic"
+    cat "$LOG3B"
+    exit 1
+fi
+if grep -qE "returned empty — aborting" "$LOG3B"; then
+    echo "FAIL: scenario 3b — failed git diff was misread as an empty diff (issue #170 regressed)"
+    cat "$LOG3B"
     exit 1
 fi
 
-echo "  PASS (3 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned with origin/main; both diff and commits consumers fenced)"
+echo "  PASS (4 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned + --unshallow self-heal + failed-diff FATAL fence)"
 
 # ===== Scenario 4: worker dedup gate fires on fetched head =====
 # Fences the gate at lib/review-one-pr.sh (post canonical fetch, pre
