@@ -201,9 +201,6 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 mkdir -p "$HOME/.pr-reviewer/prompts"
 cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
 
-# ---- repos.conf with this repo declared (worker reads it) ----
-write_probe_repos_conf "$STATE_DIR/repos.conf"
-
 # ---- run the worker ----
 # Pass OLD_PR_SHA as PR_SHA — simulating "this is what the orchestrator
 # enumerated." The worker's fetch will receive NEW_PR_SHA, checkout
