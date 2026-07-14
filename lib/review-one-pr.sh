@@ -1014,12 +1014,21 @@ for f in "${COPIED_ENV_FILES[@]}"; do
 done
 
 log "$PR_ID: just test ${TEST_SUMMARY}"
-# A stranded-creds run is disclosed to the SPECIALISTS too, not just the header.
-# test-results.md is what the tests specialist reasons over; leaving the note out
-# of it lets the specialist blame the PR for the reviewer's own broken input —
-# the exact harm this disclosure exists to stop (#171).
+# Did stranded creds actually break THIS run? Both surfaces that disclose it — the
+# public header and test-results.md, which is what the tests specialist reasons
+# over — must read the same predicate. Writing the condition twice is what let the
+# header and the specialist copy contradict each other. TESTS_RAN and TEST_SUMMARY
+# are final here.
+#
+# Gated on a real failure: the disclosure speaks of a test failure, so beside a
+# PASSED or a "not run" result it would be a flatly false claim — planted, in the
+# specialist's case, next to a standing "don't blame the author" instruction.
+REPO_ENV_STRANDED_FAILURE=false
+[ -n "$REPO_ENV_NOTE" ] && [ "$TESTS_RAN" = true ] && [ "$TEST_SUMMARY" != PASSED ] && \
+    REPO_ENV_STRANDED_FAILURE=true
+
 REPO_ENV_TEST_CAVEAT=""
-[ -n "$REPO_ENV_NOTE" ] && REPO_ENV_TEST_CAVEAT="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. A failure here may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
+[ "$REPO_ENV_STRANDED_FAILURE" = true ] && REPO_ENV_TEST_CAVEAT="**Reviewer-infra caveat:** operator credentials were not seeded (stranded under this repo's pre-rename slug), so \`just test\` ran without them. This failure may be reviewer infrastructure, NOT this PR — do not raise findings against the author for it.
 
 "
 TEST_RESULTS="${REPO_ENV_TEST_CAVEAT}**Result:** ${TEST_SUMMARY}
@@ -1766,13 +1775,11 @@ fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
-# Stranded operator creds (set at the seed step): disclose that the reviewer's own
-# inputs were broken, so a red result isn't read as the author's bug. The test note
-# stays honest and generic — no credential-flavored classifier. Only when the tests
-# actually RAN and FAILED: the note speaks of "a test failure below", so on a pass
-# or a skipped run it would contradict the line beside it.
-[ -n "$REPO_ENV_NOTE" ] && [ "$TESTS_RAN" = true ] && [ "$TEST_SUMMARY" != PASSED ] && \
-    REVIEW_NOTES+=("$REPO_ENV_NOTE")
+# Stranded operator creds broke this run: disclose that the reviewer's own inputs
+# were bad, so a red result isn't read as the author's bug. The test note itself
+# stays generic — no credential-flavored classifier. Same predicate the specialist
+# caveat uses (computed once, beside the test result) so the two can't drift.
+[ "$REPO_ENV_STRANDED_FAILURE" = true ] && REVIEW_NOTES+=("$REPO_ENV_NOTE")
 # Specialist timeouts and per-call model-capacity bounces no longer abort —
 # pipeline.py completes the review with the surviving angles and names the
 # skipped ones in _wave_b_timeouts.txt (one shared soft-degrade sentinel for

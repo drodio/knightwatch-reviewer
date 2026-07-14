@@ -1441,7 +1441,7 @@ while IFS='|' read -r tag desc dir map rc err probe_expect want_slug want_warn <
     fi
     if [ "$want_warn" = yes ]; then
         if ! grep -q "ownership lookup failed" "$log_file"; then
-            echo "FAIL: scenario $tag — a non-404 lookup failure was swallowed; the false test verdict is back"
+            echo "FAIL: scenario $tag — a lookup failure was swallowed; ownership-undetermined must stay loud (the false test verdict is back)"
             tail -n 20 "$log_file"; exit 1
         fi
     elif grep -q "ownership lookup failed" "$log_file"; then
