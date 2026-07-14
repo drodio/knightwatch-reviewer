@@ -82,15 +82,15 @@ fi
 #   GH_STUB_RENAME_MAP  space-separated "<queried>=<current>" pairs; an unlisted
 #                       repo answers with its own name (i.e. not renamed).
 #   GH_STUB_RENAME_RC   fail with this rc, printing GH_STUB_RENAME_ERR on stderr.
-#                       The worker tells an EXPECTED 404 (an operator's leftover
-#                       dir for a deleted repo → stay silent) from any other
-#                       failure (→ warn: ownership undetermined) by grepping gh's
-#                       stderr, so scenarios pin gh's REAL wording, not a guess.
-#   GH_STUB_PROBE_LOG   append every queried repo. Lets a scenario prove the probe
-#                       actually RAN — the 404 path is deliberately silent, so an
-#                       absence alone can't tell "resolved elsewhere" from "never
-#                       ran". Written BEFORE the failure injection, so a scenario
-#                       can inject a failure and still prove the probe fired.
+#                       TAKES PRECEDENCE over GH_STUB_RENAME_MAP — the lookup fails
+#                       before any mapping matters. The worker discriminates an
+#                       EXPECTED 404 (leftover dir for a deleted repo → silent) from
+#                       any other failure (→ warn) by grepping gh's stderr, so
+#                       scenarios pin gh's REAL wording rather than a guess.
+#   GH_STUB_PROBE_LOG   append every queried repo, and the injected failure when one
+#                       fires. A scenario needs both: the worker is silent on a 404
+#                       AND on a non-matching success, so "no warning" alone can't
+#                       tell "resolved elsewhere" from "never ran".
 #
 # ONE arm, not one per knob: the endpoint filter below is the contract, and two
 # copies of it would drift the moment the production probe changes its --jq field.
@@ -1393,19 +1393,17 @@ fi
 # name, and `just test` is about to run without them — say so, or the author reads
 # the resulting red as their own bug (208 plow reviews did).
 #
-# Every row asserts the probe TRACE first. That is load-bearing, not ceremony:
-# the worker is silent on a 404 AND on a successful non-matching lookup, so a
-# bare "no warning" assertion passes just as well when the probe never ran at
-# all. That is not hypothetical — a stub bug once left the 404 row green while
-# exercising nothing. The trace records the injected failure itself, so each row
-# proves the path it names was the one taken.
+# Every row asserts the probe TRACE before its outcome: the worker is silent on a
+# 404 AND on a non-matching success, so a bare "no warning" assertion passes just
+# as well when the probe never ran. The trace records the injected failure itself,
+# so each row proves the path it names was the one taken.
 #
 # Columns: tag | description | repo-env dirs | rename map | gh rc | gh stderr |
 #          expected probe-trace line | slug expected in the disclosure ("" = none
 #          expected; a note here would be the cry-wolf regression) | warn?
-# Read on fd 3, not stdin: run_probe_worker spawns the real worker, which consumes
-# stdin and would swallow the remaining rows — the loop would run ONE row and
-# report green. (It did exactly that; the mutation matrix is what caught it.)
+# Rows are read on fd 3: run_probe_worker spawns the real worker, which consumes
+# stdin, and on plain stdin it eats the remaining rows — the loop silently runs one
+# row and the suite still reports green.
 while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn <&3; do
     [ -n "$tag" ] || continue
     echo "  scenario $tag: $desc..."
