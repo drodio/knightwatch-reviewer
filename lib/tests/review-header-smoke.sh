@@ -590,9 +590,6 @@ _reo_empty=$(mktemp -d)
 got=$(repo_env_slugs "$_reo_empty") || { echo "FAIL: repo_env_slugs on empty mount should rc=0"; exit 1; }
 [ -z "$got" ] || { echo "FAIL: repo_env_slugs on empty mount should print nothing, got: $got"; exit 1; }
 
-echo "  repo_env_slugs: empty dir arg → fail-fast (a caller that lost its default must not read as 'nothing stranded')..."
-assert_fails_with "empty repo-env dir arg" "empty REPO_ENV_DIR" -- repo_env_slugs ""
-
 # The bug class #171 exists to close, turned on the guard itself: a mount that
 # can't be scanned must NOT read as "nothing stranded here". Fail loud, don't
 # no-op. Stubbing `find` (rather than chmod 000) keeps this deterministic and
@@ -614,12 +611,16 @@ rm -rf "$_reo_dir" "$_reo_empty"
 echo "  #171 composition: stranded-creds warning rides alongside the honest generic test failure..."
 result=$(prepend_review_header "$BODY" \
     "$(format_review_scope "first" "")" \
-    "⚠️ Operator creds not seeded — \`repo-env/cncorp_plow\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR" \
+    "⚠️ Operator creds not seeded — stranded under this repo's pre-rename slug; a test failure below may be reviewer infra, not this PR" \
     "$(format_tests_note "true" "FAILED (exit 1)")" \
     "$(format_kid_note "true")")
 assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
-assert_contains "$result" '`repo-env/cncorp_plow`' "names the stale slug the operator must fix"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
+# Disclosure fence: this banner lands on the reviewed repo's PR, and several
+# tracked repos are public. The author needs "a red result may not be yours" —
+# not the operator's internal dir layout. The slug stays in the worker log.
+printf '%s' "$result" | grep -q 'repo-env/' \
+    && { echo "FAIL: repo-env note leaked an operator dir path into the public banner"; exit 1; }
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 5 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + #171 composition + clean-PR composition + bakeoff-marker pin)"

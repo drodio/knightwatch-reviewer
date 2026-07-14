@@ -155,6 +155,11 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # import) so the dependency is visible at the call site.
 . "$_LIB_DIR/gh-comments.sh"
 
+# --- gh-retry (gh_api_retry) — retries transient TLS/5xx blips around `gh api`,
+# falling through unretried on 4xx. Consumed by the repo-env rename lookup, where
+# a swallowed network blip would silently restore the false test-failure verdict.
+. "$_LIB_DIR/gh-retry.sh"
+
 # --- pr-comments (fetch_pr_comments) — the PR's human comment thread;
 # consumed by every specialist (so a specialist sees replies to its own
 # prior probes), the critic, and the aggregator. One trusted PR-thread
@@ -482,9 +487,10 @@ else
     # is an operator's stale leftover) and is none of this review's business —
     # so no cry-wolf on the ~56 repos that legitimately need no creds.
     #
-    # Plain `gh` (the worker doesn't source gh-retry.sh — cf. `gh pr view`
-    # above); a transient failure just defers the note to the next PR, since the
-    # stranded dir persists until an operator moves it.
+    # Through gh_api_retry, not bare `gh`: a transient TLS/5xx blip on this one
+    # lookup would silently drop the warning and hand the author back the same
+    # false "Tests failed" this exists to prevent. (Retries only network-level
+    # failures — a 404 on a stale leftover dir falls through unretried.)
     if ! repo_env_dirs=$(repo_env_slugs "${REPO_ENV_DIR:-/root/.kwr/repo-env}"); then
         log "$PR_ID: WARNING — repo-env scan failed; cannot tell whether this repo's creds are stranded under a pre-rename slug"
     elif [ -n "$repo_env_dirs" ]; then
@@ -492,9 +498,14 @@ else
             # First `_` back to `/`: the slug is `tr '/' '_'` of owner/name, and
             # a GitHub owner can't contain `_` (a repo name can), so the first
             # one is always the separator.
-            if [ "$(gh api "repos/${env_slug/_//}" --jq .full_name 2>/dev/null)" = "$REPO" ]; then
+            if [ "$(gh_api_retry "repos/${env_slug/_//}" --jq .full_name 2>/dev/null)" = "$REPO" ]; then
+                # The slug stays OUT of the public note: this banner lands on the
+                # reviewed repo's PR (several tracked repos are public, incl. this
+                # one), and the author only needs "a red result may not be yours".
+                # The operator needs the dir name — and gets it here, in the log,
+                # along with the fix.
                 log "$PR_ID: WARNING — repo-env/$env_slug holds THIS repo's creds under its pre-rename slug; \`just test\` will run without them (operator: rename the dir to $REPO_SLUG)"
-                REPO_ENV_NOTE="⚠️ Operator creds not seeded — \`repo-env/$env_slug\` is stale after this repo's rename; a test failure below may be reviewer infra, not this PR"
+                REPO_ENV_NOTE="⚠️ Operator creds not seeded — stranded under this repo's pre-rename slug; a test failure below may be reviewer infra, not this PR"
                 break
             fi
         done <<< "$repo_env_dirs"
