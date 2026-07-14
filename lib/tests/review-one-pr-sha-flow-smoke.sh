@@ -1285,22 +1285,10 @@ new_probe_state() {
 }
 
 # run_probe_worker STATE_DIR REPO_ENV_DIR PR_TITLE [RENAME_MAP] [PROBE_LOG]
-# Drives the real worker; sets PROBE_RUN_DIR (does NOT echo it).
 #
-# Owns PROBE_RUN_DIR exclusively — RUN_DIR is already scenario 1's at file
-# scope, and sharing it would leave one name with two owners: a caller that
-# interleaved two runs, or forgot to consume the value, would silently read the
-# PREVIOUS scenario's run dir. The no-run-dir guard can't catch that (a stale
-# value is non-empty), so it's cleared at entry as well.
-#
-# Returns via a global on purpose. Echoing the run dir would force callers into
-# `RUN_DIR=$(run_probe_worker …)`, and this file has no `set -e` — so the
-# no-run-dir guard's `exit 1` would kill only the command-substitution subshell
-# and the caller would sail on with an empty RUN_DIR, leaving an absence-only
-# assertion (10d) to pass green against a worker that never ran. That is the
-# swallowed-failure class this whole PR exists to close, so the guard is made
-# structural rather than a `|| exit 1` convention every future call site has to
-# remember: with no subshell, `exit 1` kills the suite.
+# Drives the real worker and sets PROBE_RUN_DIR — deliberately not echoed: a
+# command substitution would subshell the no-run-dir guard's `exit`, and this
+# file has no `set -e`, so a worker that never ran would sail on silently.
 run_probe_worker() {
     local state="$1" repo_env="$2" title="$3" rename_map="${4:-}" probe_log="${5:-}" run_dir
     PROBE_RUN_DIR=""
