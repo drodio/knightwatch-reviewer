@@ -1274,8 +1274,12 @@ git clone -q "$GITHUB_BARE10" "$WORKING10"
     # .env.test-live is untracked and arrives via the seed → mirror, not the clone.
     echo "ANTHROPIC_API_KEY=" > .env.test-live.example
     echo "readme" > README.md
-    git add .env.test-live.example README.md
-    git commit -qm "init: ships .env.test-live.example"
+    # A failing `just test` so the stranded-creds rows reach TESTS_RAN=true/FAILED —
+    # which is what puts the caveat into inputs/test-results.md, the artifact the
+    # tests specialist reads.
+    printf 'test:\n    @exit 1\n' > justfile
+    git add .env.test-live.example README.md justfile
+    git commit -qm "init: ships .env.test-live.example + a failing just test"
     git push -q origin main
     git checkout -qb feat/test
     echo "feature" > feature.txt
@@ -1438,6 +1442,19 @@ while IFS='|' read -r tag desc dir map rc err probe_expect want_slug want_warn <
     elif grep -q "holds THIS repo's creds" "$log_file"; then
         echo "FAIL: scenario $tag — claimed another repo's creds dir as this repo's (cry-wolf regression)"
         tail -n 20 "$log_file"; exit 1
+    fi
+    # The specialist's artifact, not just the human's log: a stranded run must carry
+    # the caveat into inputs/test-results.md, and a clean one must not.
+    results_md="$PROBE_RUN_DIR/inputs/test-results.md"
+    if [ -n "$want_slug" ]; then
+        if ! grep -q "Reviewer-infra caveat" "$results_md" 2>/dev/null; then
+            echo "FAIL: scenario $tag — caveat never reached test-results.md; the tests specialist still blames the PR"
+            [ -f "$results_md" ] && head -n 5 "$results_md"
+            exit 1
+        fi
+    elif grep -q "Reviewer-infra caveat" "$results_md" 2>/dev/null; then
+        echo "FAIL: scenario $tag — claimed reviewer-infra breakage to the specialist on a run whose creds were fine"
+        exit 1
     fi
     if [ "$want_warn" = yes ]; then
         if ! grep -q "ownership lookup failed" "$log_file"; then

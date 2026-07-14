@@ -618,11 +618,19 @@ while IFS='|' read -r note tests_ran summary want; do
         echo "FAIL: repo_env_stranded_failure('$note', $tests_ran, '$summary') = $got, want $want"; exit 1; }
 done <<EOF
 ⚠️ note|true|FAILED (exit 1)|true
+⚠️ note|true|TIMED OUT (30m)|true
 ⚠️ note|true|PASSED|false
+⚠️ note|false|not run (just pre-recipe failure: see test-results below)|true
 ⚠️ note|false|not run (no justfile)|false
+⚠️ note|false|not run (worker timeout budget exhausted by queue wait)|false
 |true|FAILED (exit 1)|false
 EOF
-echo "  repo_env_stranded_failure: only a real failure with stranded creds (pass/skip/no-note stay quiet)..."
+# The pre-recipe row is the one that matters: a missing env file on a dotenv-load
+# justfile dies BEFORE the recipe and classifies TESTS_RAN=false, so a naive
+# "did the tests fail?" gate stays silent on the stranded-creds case itself. The
+# skips where `just` never ran at all (no justfile, worker budget) must stay quiet
+# — creds are irrelevant there and a caveat would be a false claim.
+echo "  repo_env_stranded_failure: discloses a failure OR a pre-recipe death; silent on a pass and on never-ran skips..."
 
 echo "  format_test_results: stranded failure → the specialist sees the caveat AND the generic verdict..."
 tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
@@ -646,4 +654,4 @@ assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 4 stranded-failure predicate + 2 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 7 stranded-failure predicate + 2 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
