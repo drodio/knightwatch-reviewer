@@ -666,6 +666,18 @@ IFS=$'\t' read -r _pass_ran _pass_summary < <(classify_just_test_outcome 0 "$_pa
 rm -f "$_pass_log"
 
 # And the sibling: the caveat must not claim the tests RAN when they died pre-recipe.
+# The case the function exists for: creds stranded, `just test` actually ran and
+# FAILED. The caveat must reach test-results.md — the artifact the tests specialist
+# reasons over — or the specialist raises findings against the author for the
+# reviewer's own broken input, which is the whole harm (#171). And the verdict beside
+# it stays generic: no credential-flavored classifier.
+echo "  format_test_results: stranded creds + a real failure → specialist sees the caveat AND a generic verdict..."
+tr_stranded=$(format_test_results true "FAILED (exit 1)" "some output")
+assert_contains "$tr_stranded" "Reviewer-infra caveat" "caveat reaches test-results.md, not just the header"
+assert_contains "$tr_stranded" "do not raise findings against the author" "specialist told not to blame the PR"
+assert_contains "$tr_stranded" "**Result:** FAILED (exit 1)" "verdict stays generic — no credential-flavored classification"
+assert_contains "$tr_stranded" "some output" "the log tail still rides along"
+
 echo '  format_test_results: pre-recipe death → caveat must not claim `just test` ran...'
 _prf_out=$(format_test_results true "not run (just pre-recipe failure: see test-results below)" "")
 # GOLDEN, not a blacklist. Four rounds running, a rewrite re-acquired a
@@ -725,4 +737,4 @@ assert_one_blockquote "$result" "repo-env-note"
 assert_contains "$result" "⚠️ Operator creds not seeded" "infra warning disclosed"
 assert_contains "$result" "🧪 Tests failed (exit 1)" "test verdict stays generic — no credential-flavored classification"
 
-echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 8 stranded-failure predicate + 6 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
+echo "  PASS (join 1/2/3 + empty fail-fast + worst-case order + KID-only/diff-alone fence + 4 scope-fragment mappings + bogus-scope fail-fast + 5 compute_review_scope + 9 classify scenarios + 7 tests-note + 3 kid-note + 4 repo-env-slugs + repo-env-note disclosure fence + 8 stranded-failure predicate + 7 test-results composition + #171 composition + clean-PR composition + bakeoff-marker pin)"
