@@ -580,7 +580,7 @@ fi
 # empty-diff grep above is vacuous on an earlier abort). Content is
 # scenario 2's contract — existence only here.
 if [ ! -f "$RUN_DIR3/inputs/full-diff.patch" ]; then
-    echo "FAIL: scenario 3 — worker aborted before the diff stage"
+    echo "FAIL: scenario 3 — worker never staged full-diff.patch (aborted at or before scratch staging)"
     cat "$LOG3"
     exit 1
 fi
