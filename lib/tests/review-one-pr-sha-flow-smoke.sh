@@ -88,9 +88,9 @@ fi
 #                       any other failure (→ warn) by grepping gh's stderr, so
 #                       scenarios pin gh's REAL wording rather than a guess.
 #   GH_STUB_PROBE_LOG   append every queried repo, and the injected failure when one
-#                       fires. A scenario needs both: the worker is silent on a 404
-#                       AND on a non-matching success, so "no warning" alone can't
-#                       tell "resolved elsewhere" from "never ran".
+#                       fires. The plain line proves the probe ran; the FAILED line
+#                       proves WHICH failure it hit. See the arm below for why a
+#                       silent-outcome row must assert one of them.
 #
 # ONE arm, not one per knob: the endpoint filter below is the contract, and two
 # copies of it would drift the moment the production probe changes its --jq field.
@@ -1393,18 +1393,16 @@ fi
 # name, and `just test` is about to run without them — say so, or the author reads
 # the resulting red as their own bug (208 plow reviews did).
 #
-# Every row asserts the probe TRACE before its outcome: the worker is silent on a
-# 404 AND on a non-matching success, so a bare "no warning" assertion passes just
-# as well when the probe never ran. The trace records the injected failure itself,
-# so each row proves the path it names was the one taken.
+# Every row asserts the probe trace before its outcome — see the stub's
+# GH_STUB_PROBE_LOG arm for why an absence alone proves nothing.
 #
-# Columns: tag | description | repo-env dirs | rename map | gh rc | gh stderr |
+# Columns: tag | description | repo-env dir (exactly one) | rename map | gh rc | gh stderr |
 #          expected probe-trace line | slug expected in the disclosure ("" = none
 #          expected; a note here would be the cry-wolf regression) | warn?
 # Rows are read on fd 3: run_probe_worker spawns the real worker, which consumes
 # stdin, and on plain stdin it eats the remaining rows — the loop silently runs one
 # row and the suite still reports green.
-while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn <&3; do
+while IFS='|' read -r tag desc dir map rc err probe_expect want_slug want_warn <&3; do
     [ -n "$tag" ] || continue
     # Reject a malformed row instead of degrading to the weaker assertion: any
     # want_warn that isn't exactly `yes` would otherwise read as "must not warn",
@@ -1414,17 +1412,16 @@ while IFS='|' read -r tag desc dirs map rc err probe_expect want_slug want_warn 
         yes|no) ;;
         *) echo "FAIL: scenario $tag — want_warn must be yes|no, got '$want_warn' (malformed row?)"; exit 1 ;;
     esac
-    [ -n "$probe_expect" ] && [ -n "$dirs" ] || {
-        echo "FAIL: scenario $tag — row is missing dirs/probe_expect (dropped column?)"; exit 1
+    [ -n "$probe_expect" ] && [ -n "$dir" ] || {
+        echo "FAIL: scenario $tag — row is missing dir/probe_expect (dropped column?)"; exit 1
     }
     echo "  scenario $tag: $desc..."
     state=$(new_probe_state "$tag")
     repo_env="$TMPDIR/repo-env-$tag"
-    # One dir per row: repo_env_slugs sorts and the worker breaks on the first
-    # full_name match, so a second dir in the same row would never be probed and
-    # any assertion about it would be vacuous. Separate cases get separate rows.
-    mkdir -p "$repo_env/$dirs"
-    echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$repo_env/$dirs/.env.test-live"
+    # Exactly one dir: repo_env_slugs sorts and the worker breaks on the first
+    # full_name match, so a second dir in the same row would never be probed.
+    mkdir -p "$repo_env/$dir"
+    echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$repo_env/$dir/.env.test-live"
     probe_log="$TMPDIR/probe-log-$tag"
     run_probe_worker "$state" "$repo_env" "$desc" "$map" "$probe_log" "$rc" "$err"
     log_file="$PROBE_RUN_DIR/run.log"
