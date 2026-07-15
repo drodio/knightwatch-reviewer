@@ -215,14 +215,29 @@ run_just_test() {
         # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
         # shared dir here (plow keys ONLY its bridge dir off it —
         # ${XDG_CACHE_HOME:-$HOME/.cache}/plow-scenario-shared, justfile:243); 1777
-        # lets the unprivileged test user create its per-run subdir. Harmless when
-        # the mount is absent (pre-recreate): root just creates a local cache dir.
-        # Fail LOUD at this seam if prep genuinely can't happen (broken/read-only
-        # mount) — review-one-pr.sh runs without `set -e`, so a bare `&&` would
-        # otherwise let a broken bridge surface downstream as an opaque "Unable to
-        # reach your agent" instead of here at the cause.
-        mkdir -p /scenario-shared && chmod 1777 /scenario-shared \
-            || { log "$PR_ID: FATAL — /scenario-shared prep failed (broken token-bridge mount?)"; exit 1; }
+        # lets the unprivileged test user create its per-run subdir.
+        # (SCENARIO_SHARED_DIR is a test seam; prod always uses the default.)
+        local scenario_shared="${SCENARIO_SHARED_DIR:-/scenario-shared}"
+        # Reset the bridge before EVERY run: the named volume persists
+        # PR-written state, and a stale root-owned nested dir turns later runs'
+        # mktemp into EACCES rendered as a generic test failure (issue #172 —
+        # 66/66 false failures on one worker). Reap dind leftovers first (a
+        # timed-out/died review leaves its stack running; dind serves only
+        # this reviewer, so anything alive is an orphan that could race the
+        # delete), then discard contents outright — a chown -R repair could be
+        # steered via persisted hard links. Root keeps the 1777 volume root;
+        # consumers recreate their dirs. The endpoint pin makes a misrouted
+        # run (this code executed with a host daemon reachable, e.g. an
+        # unstubbed test harness) refuse instead of rm -f'ing the wrong
+        # daemon. Fail LOUD: the caller runs without `set -e`/`pipefail`.
+        case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
+            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint (docker-compose.yml)"; exit 1;;
+        esac
+        local orphans
+        # shellcheck disable=SC2086 — one container id per line, word-split intended
+        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
+            && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
+            || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
@@ -234,8 +249,8 @@ run_just_test() {
         # created fresh, test-user-owned, on a path dind can't touch — no repair needed.
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
-                XDG_CACHE_HOME=/scenario-shared \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
+                XDG_CACHE_HOME="$scenario_shared" \
                 UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
                 PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
