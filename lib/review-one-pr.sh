@@ -1265,6 +1265,11 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
+# review-task.md is the authoritative per-run task/scope statement
+# common-header.md points agents at — without it the static
+# "re-review diffs are normally incremental" default misreads
+# whole-PR and fallback runs (their diff.patch is the FULL PR diff).
+write_scratch "$REPO_DIR" "review-task.md" "$REVIEW_TASK"
 
 # Stage prior aggregator outputs for this PR (every preserved run dir
 # except the current one) so the aggregator's carry-forward rule (step 38)

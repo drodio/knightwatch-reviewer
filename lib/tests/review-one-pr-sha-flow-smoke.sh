@@ -1377,7 +1377,8 @@ IN12="$RUN12/inputs"
 for want in \
     "previous-review.md:seed-marker-unbounded-retry" \
     "prior-reviews.md:seed-marker-unbounded-retry" \
-    "pr-comments.md:the retry bound is intentional"; do
+    "pr-comments.md:the retry bound is intentional" \
+    "review-task.md:FULL PR diff"; do
     if ! grep -q "${want#*:}" "$IN12/${want%%:*}" 2>/dev/null; then
         echo "FAIL: scenario 12 — ${want%%:*} missing '${want#*:}' (whole-PR path dropped this memory surface)"
         [ -f "$RUN12/run.log" ] && { echo "--- run.log ---"; tail -n 30 "$RUN12/run.log"; }

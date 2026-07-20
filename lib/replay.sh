@@ -137,7 +137,7 @@ write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in review-priority.md pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
          file-history.md commits.md author-intent.md search-roots.md \
-         test-results.md; do
+         test-results.md review-task.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
 # reeval-status.md is a load-bearing prompt input (common-header / aggregator /
