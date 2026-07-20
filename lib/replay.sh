@@ -135,11 +135,17 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # so downstream prompts can fail-soft and the operator sees the gap.
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in review-priority.md pr-comments.md loc-trend.md \
-         prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
+         prior-art.md dead-code-static.md \
          file-history.md commits.md author-intent.md search-roots.md \
          test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# Memory surfaces stage EMPTY, not sentinel prose: a non-empty
+# previous-review.md flips pipeline.py's has_prev and the aggregator's
+# carry-forward into re-review mode over placeholder text. Empty is the
+# real first-review signal (matches review-task.md's stated contract).
+write_scratch "$REPO_DIR" "previous-review.md" ""
+write_scratch "$REPO_DIR" "prior-reviews.md" ""
 # Replay diffs are always the full PR diff — stage an accurate scope
 # statement, not the generic sentinel (review-task.md is authoritative
 # for diff scope in common-header/aggregator).

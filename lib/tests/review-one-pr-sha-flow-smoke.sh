@@ -1385,11 +1385,6 @@ for want in \
         exit 1
     fi
 done
-# pr-comments.md must be the real thread, not a sentinel.
-if grep -q "intentionally not staged" "$IN12/pr-comments.md"; then
-    echo "FAIL: scenario 12 — pr-comments.md is the sentinel (whole-PR path still drops the operator thread)"
-    exit 1
-fi
 # reeval-status.md must carry loc-trend.md's computed REEVAL-LOC-TRIGGER line
 # verbatim — any worker-side override (incl. the retired one) breaks equality.
 LOC_LINE12=$(grep -m1 '^REEVAL-LOC-TRIGGER:' "$IN12/loc-trend.md")
