@@ -262,12 +262,24 @@ n_enable="$(count_stub 'SYSTEMCTL enable --now')"
 grep -q 'SYSTEMCTL enable knightwatch-reviewer.service' "$STUB_LOG" || { echo "FAIL scenario 1: boot-managed fleet unit was not enabled (plain enable, no --now)"; cat "$STUB_LOG"; exit 1; }
 grep -q 'SYSTEMCTL enable --now knightwatch-reviewer.service' "$STUB_LOG" && { echo "FAIL scenario 1: fleet unit was enabled with --now (must be boot-wiring only — install.sh must not start the container stack)"; cat "$STUB_LOG"; exit 1; } || true
 
+# --- Scenario 1b: 0600 self-heal --------------------------------------------
+# The production symptom (pre-fix): a templated unit installed at mktemp's
+# 0600. Re-running install must detect the mode drift, reinstall exactly
+# that unit at 0644, and (scenario 2) go quiet again afterwards.
+echo "  scenario 1b: chmod 600 an installed unit — re-run heals it to 644..."
+HEAL_UNIT="$SYSTEMD_DIR/pr-reviewer-kid-refresh.service"
+chmod 600 "$HEAL_UNIT"
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 1b: install.sh exited non-zero on heal run"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SUDO install')" = "1" ] || { echo "FAIL scenario 1b: expected exactly 1 sudo install (the 0600 unit), got $(count_stub 'SUDO install')"; cat "$STUB_LOG"; exit 1; }
+[ "$(stat -c %a "$HEAL_UNIT")" = "644" ] || { echo "FAIL scenario 1b: unit still mode $(stat -c %a "$HEAL_UNIT") after heal run"; exit 1; }
+
 # --- Scenario 2: idempotent re-run -----------------------------------------
 echo "  scenario 2: re-run with everything already installed — no copy, no reload, no enable..."
 : > "$STUB_LOG"
 MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 2: install.sh exited non-zero on rerun"; cat "$STUB_LOG"; exit 1; }
 
-# No sudo cp (units in sync)
+# No sudo install (units in sync)
 [ "$(count_stub 'SUDO install')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo install on rerun, got $(count_stub 'SUDO install')"; cat "$STUB_LOG"; exit 1; }
 # No daemon-reload (nothing changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "0" ] || { echo "FAIL scenario 2: expected 0 daemon-reloads on rerun"; cat "$STUB_LOG"; exit 1; }
@@ -341,8 +353,8 @@ MOCK_NEWLY_ADDED_TIMERS="pr-reviewer-fakenew.timer" \
 # argv-fakenew .service) — every existing unit is in sync because
 # scenario 1 already copied them and SYSTEMD_DIR is preserved across
 # scenarios.
-n_cp="$(count_stub 'SUDO install')"
-[ "$n_cp" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo install (new .service + new .timer + argv .service), got $n_cp"; cat "$STUB_LOG"; exit 1; }
+n_install="$(count_stub 'SUDO install')"
+[ "$n_install" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo install (new .service + new .timer + argv .service), got $n_install"; cat "$STUB_LOG"; exit 1; }
 # daemon-reload called exactly once because something changed
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 3: expected 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 # All three new files exist in the sandboxed SYSTEMD_DIR

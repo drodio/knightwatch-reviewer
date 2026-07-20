@@ -249,7 +249,11 @@ for unit in "${units[@]}"; do
         -e "s|@KWR_CONFIG_DIR@|$KWR_CONFIG_DIR|g" \
         "$unit" > "$rendered"
   fi
-  if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then
+  # In-sync = content match AND mode 0644. The mode clause makes the
+  # 0600 self-heal deterministic: a root-0600 unit already fails cmp
+  # (EACCES), but a unit that's merely mode-drifted while readable
+  # would otherwise never converge.
+  if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst" && [[ "$(stat -c %a "$dst")" = "644" ]]; then
     [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
     continue   # already in sync, no sudo needed
   fi
