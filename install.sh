@@ -43,10 +43,10 @@ ok()   { echo "✓ $1"; }
 # Refuse to run as root. The systemd unit ExecStart= paths bake in
 # /home/odio/.pr-reviewer/ — under sudo, $HOME becomes /root and
 # INSTALL_DIR resolves to /root/.pr-reviewer/, so the install would
-# write to a path systemd never reads. The internal `sudo cp` /
+# write to a path systemd never reads. The internal `sudo install` /
 # `sudo systemctl` calls below escalate privilege only where needed.
 if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-    fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo cp / sudo systemctl handle the privileged bits."
+    fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo install / sudo systemctl handle the privileged bits."
 fi
 
 # pipeline.py runs under python3; fail loud here if unavailable rather
@@ -253,8 +253,13 @@ for unit in "${units[@]}"; do
     [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
     continue   # already in sync, no sudo needed
   fi
-  info "installing $name (sudo cp)"
-  sudo cp "$rendered" "$dst" || fail "cp failed for $name"
+  info "installing $name (sudo install)"
+  # install -m 0644, not cp: templated units render into mktemp files
+  # (mode 0600), and cp propagates that mode onto a NEW dst — leaving a
+  # root-only unit that the next user-run cmp can't read, so every
+  # install wants to "reinstall" it forever (observed on
+  # pr-reviewer-org-sync.service, 2026-07-20).
+  sudo install -m 0644 "$rendered" "$dst" || fail "install failed for $name"
   [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
   CHANGED=$((CHANGED + 1))
 done

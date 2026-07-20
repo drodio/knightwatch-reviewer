@@ -206,6 +206,10 @@ for unit in "${PROD_UNITS[@]}"; do
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
         grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
+        # Mode fence: templated renders come from mktemp (0600); a cp-style
+        # install propagates that onto new files, leaving a root-only unit
+        # the next user-run cmp can't read → perpetual reinstall.
+        [ "$(stat -c %a "$SYSTEMD_DIR/$name")" = "644" ] || { echo "FAIL scenario 1: installed $name mode $(stat -c %a "$SYSTEMD_DIR/$name") != 644 (mktemp 0600 leaked through)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
@@ -264,7 +268,7 @@ echo "  scenario 2: re-run with everything already installed — no copy, no rel
 MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 2: install.sh exited non-zero on rerun"; cat "$STUB_LOG"; exit 1; }
 
 # No sudo cp (units in sync)
-[ "$(count_stub 'SUDO cp')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo cp on rerun, got $(count_stub 'SUDO cp')"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SUDO install')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo install on rerun, got $(count_stub 'SUDO install')"; cat "$STUB_LOG"; exit 1; }
 # No daemon-reload (nothing changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "0" ] || { echo "FAIL scenario 2: expected 0 daemon-reloads on rerun"; cat "$STUB_LOG"; exit 1; }
 # No enable --now (timers already enabled+active per stub)
@@ -337,8 +341,8 @@ MOCK_NEWLY_ADDED_TIMERS="pr-reviewer-fakenew.timer" \
 # argv-fakenew .service) — every existing unit is in sync because
 # scenario 1 already copied them and SYSTEMD_DIR is preserved across
 # scenarios.
-n_cp="$(count_stub 'SUDO cp')"
-[ "$n_cp" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo cp (new .service + new .timer + argv .service), got $n_cp"; cat "$STUB_LOG"; exit 1; }
+n_cp="$(count_stub 'SUDO install')"
+[ "$n_cp" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo install (new .service + new .timer + argv .service), got $n_cp"; cat "$STUB_LOG"; exit 1; }
 # daemon-reload called exactly once because something changed
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 3: expected 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 # All three new files exist in the sandboxed SYSTEMD_DIR

@@ -300,7 +300,7 @@ done
 # repos.conf can otherwise persist across local smoke runs and skip
 # the bootstrap branch entirely.
 #
-# Stubs for sudo + systemctl: install.sh runs sudo cp + sudo systemctl
+# Stubs for sudo + systemctl: install.sh runs sudo install + sudo systemctl
 # in the full-install path; stubs let the smoke run without privilege.
 SAND_HOME="$TMPDIR/home"
 mkdir -p "$SAND_HOME/.local/bin"
