@@ -98,6 +98,10 @@ if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then
         esac
     done
 fi
+# Issue-comments endpoint: opt-in JSON fixture (scenario 12's operator thread).
+if [ -n "\${GH_STUB_ISSUE_COMMENTS_FILE:-}" ]; then
+    for arg in "\$@"; do case "\$arg" in repos/*/issues/*/comments) cat "\$GH_STUB_ISSUE_COMMENTS_FILE"; exit 0 ;; esac; done
+fi
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -1260,8 +1264,6 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
     exit 1
 fi
 
-echo "  PASS (12 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud)"
-
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
 # worker): when gh reports a headRefOid that differs from the
@@ -1344,4 +1346,56 @@ if [ "$meta_status11" != "aborted" ]; then
     exit 1
 fi
 
-echo "  PASS (13 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort)"
+# ===== Scenario 12: whole-PR re-review (FORCE_WHOLE_PR=true) keeps memory =====
+# Fences the plow#1032 fix: /srosro-review used to blank PREV_BODY, skip
+# prior-reviews.md, stage a pr-comments.md sentinel, and suppress REEVAL-LOC-
+# TRIGGER; whole-PR mode must now differ from incremental ONLY in diff scope.
+echo "  scenario: whole-PR re-review keeps memory (previous/prior reviews, pr-comments, REEVAL-LOC-TRIGGER)..."
+
+STATE12="$TMPDIR/state-12"
+seed_state_dir "$STATE12"
+git clone -q "$GITHUB_BARE" "$STATE12/repos/test-org_probe-repo"
+
+# Seed a prior posted round + an operator decline (the dropped memory).
+SEED12_ID="test-org_probe-repo__1__20260101T000000000Z__oldpr12"
+mkdir -p "$STATE12/runs/$SEED12_ID/agents/aggregator"
+printf 'Prior round probe: seed-marker-unbounded-retry\n\nVERDICT: COMMENT\n' > "$STATE12/runs/$SEED12_ID/agents/aggregator/output.md"
+printf '{"pr_id":"test-org/probe-repo#1","reviewed_sha":"%s","status":"completed","posted_at":"2026-01-01T00:00:00Z"}' \
+    "$OLD_PR_SHA" > "$STATE12/runs/$SEED12_ID/meta.json"
+COMMENTS12="$TMPDIR/issue-comments-12.json"
+printf '[{"user":{"login":"test-user"},"body":"Declining seed-marker-unbounded-retry: the retry bound is intentional.","created_at":"2026-01-02T00:00:00Z"}]' > "$COMMENTS12"
+
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
+GH_STUB_ISSUE_COMMENTS_FILE="$COMMENTS12" run_worker_in_state "$STATE12" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Whole-PR memory" "true" || true
+
+RUN12=$(find "$STATE12/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' ! -name "$SEED12_ID" | head -1)
+[ -n "$RUN12" ] || { echo "FAIL: scenario 12 — worker produced no run dir"; exit 1; }
+IN12="$RUN12/inputs"
+
+# Memory surfaces staged with real content ("file:required text").
+for want in \
+    "previous-review.md:seed-marker-unbounded-retry" \
+    "prior-reviews.md:seed-marker-unbounded-retry" \
+    "pr-comments.md:the retry bound is intentional"; do
+    if ! grep -q "${want#*:}" "$IN12/${want%%:*}" 2>/dev/null; then
+        echo "FAIL: scenario 12 — ${want%%:*} missing '${want#*:}' (whole-PR path dropped this memory surface)"
+        [ -f "$RUN12/run.log" ] && { echo "--- run.log ---"; tail -n 30 "$RUN12/run.log"; }
+        exit 1
+    fi
+done
+# pr-comments.md must be the real thread, not a sentinel.
+if grep -q "intentionally not staged" "$IN12/pr-comments.md"; then
+    echo "FAIL: scenario 12 — pr-comments.md is the sentinel (whole-PR path still drops the operator thread)"
+    exit 1
+fi
+# reeval-status.md must carry loc-trend.md's computed REEVAL-LOC-TRIGGER line
+# verbatim — any worker-side override (incl. the retired one) breaks equality.
+LOC_LINE12=$(grep -m1 '^REEVAL-LOC-TRIGGER:' "$IN12/loc-trend.md")
+[ -z "$LOC_LINE12" ] && LOC_LINE12="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
+    echo "FAIL: scenario 12 — reeval-status.md lost loc-trend's computed '$LOC_LINE12' (whole-PR override regressed)"
+    exit 1
+fi
+
+echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
