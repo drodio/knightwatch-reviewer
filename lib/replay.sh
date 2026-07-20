@@ -137,9 +137,14 @@ write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in review-priority.md pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md prior-reviews.md previous-review.md \
          file-history.md commits.md author-intent.md search-roots.md \
-         test-results.md review-task.md; do
+         test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# Replay diffs are always the full PR diff — stage an accurate scope
+# statement, not the generic sentinel (review-task.md is authoritative
+# for diff scope in common-header/aggregator).
+write_scratch "$REPO_DIR" "review-task.md" \
+    "Replay review. .codex-scratch/diff.patch contains the FULL PR diff. Prior-round memory surfaces may be absent — treat missing files as first-review context."
 # reeval-status.md is a load-bearing prompt input (common-header / aggregator /
 # momentum read it), so stage a well-shaped default rather than the generic
 # sentinel — otherwise a prompt/lib canary passes without the surface this
