@@ -725,20 +725,12 @@ KID_INPUT_DIFF="$FULL_PR_DIFF"
 # author_visible_runs_iter selection, so body/sha/approved/started_at
 # can't pick different rounds.
 #
-# state.json (state_get / state_set) was retired entirely with this
-# refactor — every runtime-decision seam now reads runs/, and the worker
-# no longer writes state.json. meta.json is stamped at run init and again
-# at finalize_run, both BEFORE the worker can crash mid-write, so the
-# "gh post succeeded but state_set failed" race that drove rounds 7-12
-# can no longer happen: there is no state_set to fail.
-#
 # Returns empty on first review (no prior author-visible run); empty
 # PREV_BODY then drives previous-review.md to be empty, which the
 # momentum gate uses as its "first review, skip momentum" signal.
 PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-[ "$FORCE_WHOLE_PR" = "true" ] && PREV_BODY=""
 
 # Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
 # when (a) the prior reviewed SHA is still on the branch's history AND
@@ -773,7 +765,7 @@ REVIEW_SCOPE=$(compute_review_scope "$FORCE_WHOLE_PR" "$KNOWN_SHA" "$USED_FALLBA
 # fallback path, diff.patch is the full PR, not an incremental subset).
 case "$REVIEW_SCOPE" in
     whole)
-        REVIEW_TASK="Whole-PR re-review (requested via /${BOT_CMD_PREFIX}-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+        REVIEW_TASK="Whole-PR re-review (requested via /${BOT_CMD_PREFIX}-review). Review the FULL PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md — evaluate the entire diff afresh, not just whether prior findings were addressed. Your prior review is in .codex-scratch/previous-review.md, older rounds in .codex-scratch/prior-reviews.md, and the operator thread in .codex-scratch/pr-comments.md — use them for carry-forward, argue-once, and operator-decline arbitration."
         ;;
     first)
         REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
@@ -1273,35 +1265,20 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
+# review-task.md is the authoritative per-run task/scope statement
+# common-header.md points agents at — without it the static
+# "re-review diffs are normally incremental" default misreads
+# whole-PR and fallback runs (their diff.patch is the FULL PR diff).
+write_scratch "$REPO_DIR" "review-task.md" "$REVIEW_TASK"
 
 # Stage prior aggregator outputs for this PR (every preserved run dir
 # except the current one) so the aggregator's carry-forward rule (step 38)
-# can check whether prior probes' cited shapes still exist at HEAD. Uses
-# the per-run layout from PR #11; before that layout only the most recent
-# scratch was kept. Empty / absent on the first review of a PR. Logic lives in
+# can check whether prior probes' cited shapes still exist at HEAD. Empty /
+# absent on the first review of a PR. Logic lives in
 # lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
 # function the worker calls.
-#
-# Skipped when FORCE_WHOLE_PR=true (i.e. the user explicitly invoked
-# /srosro-review): the trigger text on that path commits to "Any prior
-# review is intentionally NOT provided — evaluate this PR from scratch."
-# Staging prior-reviews.md anyway would silently break that contract,
-# letting the bot consult prior reviews while telling the reader it
-# didn't. loc-trend.md (LOC trajectory) is independent of prior review
-# content and stays staged — it's derived from runs/ metadata, not from
-# what previous reviewers said.
-# Read prior reviews UNCONDITIONALLY (cheap local read of runs/ dirs, no
-# scratch side-effect — the write below is the staging step). The
-# re-eval fire-once markers are grepped out of $PRIOR_REVIEWS, and they
-# must be detectable even on the /srosro-review (FORCE_WHOLE_PR) path —
-# otherwise a whole-PR re-review reads an empty prior set and re-fires a
-# banner already shown. So the *read* is unconditional; only the *write*
-# of prior-reviews.md stays gated (that path commits to evaluating the
-# PR from scratch, and staging prior reviews would break that contract).
 PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch; prior reviews still consulted for re-eval fire-once markers)"
-elif [ -n "$PRIOR_REVIEWS" ]; then
+if [ -n "$PRIOR_REVIEWS" ]; then
     PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
     log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
     write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
@@ -1379,15 +1356,6 @@ REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | 
 [ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
 REEVAL_SIZE_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-SIZE-TRIGGER:' | head -n1)
 [ -z "$REEVAL_SIZE_LINE" ] && REEVAL_SIZE_LINE="REEVAL-SIZE-TRIGGER: unknown (no flag emitted)"
-# Suppress T1 on the whole-PR (/srosro-review) path. That path evaluates
-# from scratch with an empty previous-review.md, so pipeline.py does not
-# run the momentum standalone — and the aggregator's re-eval banner
-# requires momentum prose. The trajectory banner is inherently a
-# re-review concept (it compares round-1 size to now); firing it on a
-# from-scratch review would demand prose that was never generated.
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: not-fired (whole-PR re-review evaluates from scratch — no trajectory banner)"
-fi
 # Re-eval markers are standalone lines the aggregator emits at the top of a
 # review body (right after the italicized intent line). reeval_marker_fired
 # (lib/run-dir.sh) reads each prior author-visible run's aggregator output
@@ -1420,31 +1388,14 @@ REEVAL-STALL-FIRED: $REEVAL_STALL_FIRED
 REEVAL_EOF
 )"
 
-# pr-comments.md — the PR's human comment thread, so every specialist
-# sees replies to its own prior probes (and the aggregator can arbitrate
-# operator declines against the assembled probe set). Empty/absent on
-# first reviews and on PRs with no human comments. Fail-soft on
-# gh-failure (helper emits a sentinel; consumers fall back to existing
-# behavior).
-#
-# Skipped on:
-#   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
-#     path commits to "Any prior review is intentionally NOT provided —
-#     evaluate this PR from scratch." Staging the thread (which carries the
-#     operator decline memory) anyway would silently break that contract.
-#   - First reviews (no PRIOR_REVIEWS) — there are no prior bot probes for
-#     a reply to address yet, and no operator declines for the aggregator
-#     to arbitrate. Staging pre-review human chatter would let a finding
-#     class be suppressed before the bot has ever raised it.
-# Mirrors the existing prior-reviews.md skip semantics above.
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — staging pr-comments.md sentinel (whole-PR re-review evaluates from scratch)"
-    # Sentinel keeps the prompt-input contract intact for the specialists /
-    # critic / aggregator, which list .codex-scratch/pr-comments.md as a
-    # required input. Empty/absent file would tempt those agents to explore
-    # the filesystem; the sentinel makes the "from scratch" decision explicit.
-    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
-elif [ -z "${PRIOR_REVIEWS:-}" ]; then
+# pr-comments.md — the PR's human comment thread, so every specialist sees
+# replies to its own prior probes and the aggregator can arbitrate operator
+# declines. Fail-soft on gh-failure. Skipped on first reviews (no
+# PRIOR_REVIEWS): no prior bot probes exist for a reply to address, and
+# staging pre-review chatter would let a finding class be suppressed before
+# the bot has ever raised it. The sentinel (vs an empty/absent file) keeps
+# the prompt-input contract intact for consumers that require pr-comments.md.
+if [ -z "${PRIOR_REVIEWS:-}" ]; then
     log "$PR_ID: first review (no prior bot reviews) — staging pr-comments.md sentinel"
     write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged — first review on this PR; no prior bot probes exist for a reply to address)"
 else

@@ -152,7 +152,7 @@ Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stab
 | Command | What |
 |---|---|
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
-| `/srosro-review` | Whole-PR re-review from scratch |
+| `/srosro-review` | Whole-PR re-review (full diff; keeps prior-review + decline memory) |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
 | `/srosro-props [from: <specialist>]` | Give props to a specialist's contribution |
 | `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread |
