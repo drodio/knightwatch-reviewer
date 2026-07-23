@@ -5,10 +5,8 @@
 #   1. No new comments → no worker dispatched.
 #   2. Bare @<bot> mention since last review → no worker dispatched
 #      (mentions are not triggers — only the slash commands are).
-#   3. /srosro-review on an unchanged SHA → declined, not dispatched
-#      (blanket: prose-bearing or bare alike — a whole-PR round on an
-#      already-reviewed head is duplicative). Changed-head scenarios
-#      (5, 6, 24b) cover the dispatch path with FORCE_WHOLE_PR=true.
+#   3. (folded into scenario 22's two-row table: /srosro-review on an
+#      unchanged SHA → declined, bare and prose-bearing alike.)
 #   4. Bot's own auto-post containing /srosro-review → no dispatch
 #      (self-trigger filter via the BOT_AUTO_POST_MARKER).
 #   5. /srosro-review by BOT_USER without the marker → 1 dispatch
@@ -167,6 +165,11 @@ elif [ "$1" = "api" ]; then
         # the skip happens before cooldown), but stub it anyway so a
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
+    elif [[ "$url" == */pulls/* ]]; then
+        # Live-head re-read (the decline TOCTOU guard). Defaults to the
+        # enumerated head; the TOCTOU scenario overrides MOCK_LIVE_HEAD_SHA
+        # to simulate a push landing mid-tick.
+        echo "${MOCK_LIVE_HEAD_SHA:-abc123}"
     elif [[ "$url" == */collaborators/*/permission ]]; then
         # Opt-in: simulate a 403 rate-limit on the permission check → an
         # INDETERMINATE trust result (rc=2). Default unset → normal path below.
@@ -378,26 +381,7 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-# Scenario 3: same SHA, /srosro-review → declined, not dispatched. The
-# unchanged-head decline is BLANKET — prose-bearing or bare alike — because
-# a whole-PR round on an already-reviewed head is duplicative either way
-# (~40-min worker slot; the plow#1109 thrash). Prose here proves no
-# prose carve-out exists; scenario 22 covers the bare form + dedup.
-echo "  scenario 3: same SHA + prose-bearing /srosro-review → declined..."
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"is the retry loop sound? /srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 3 (blanket unchanged-head decline): expected 0 dispatches, got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-d=$(count_decline_comments)
-if [ "$d" -ne 1 ]; then
-    echo "FAIL scenario 3: expected 1 decline comment on unchanged-head /srosro-review, got $d"
-    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
-    exit 1
-fi
+# (Scenario 3 folded into scenario 22's two-row unchanged-head decline table.)
 
 # Scenario 4 (bot self-trigger filter): same SHA, comment whose body
 # carries the auto-post marker → no dispatch. The bot's own posted review
@@ -1039,34 +1023,29 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-# Scenario 22: bare /srosro-review on an unchanged SHA → declined, not
-# dispatched. A body that is just the slash command on an already-reviewed
-# head is duplicative (same head, same full diff) — the pre-fix behavior
-# burned a full whole-PR worker slot on it (the plow#1109 thrash). The
-# decline must be VISIBLE (one marked comment naming the reviewed short
-# SHA + a log line) and DEDUPED: on the next tick, with the decline
-# comment now present in the fetched thread, the same trigger is consumed
-# by the decline-cutoff — no second decline, still no dispatch.
-echo "  scenario 22: bare /srosro-review on unchanged SHA → declined (no dispatch, one decline comment, deduped next tick)..."
+# Scenario 22: /srosro-review on an unchanged SHA → declined, not
+# dispatched — BLANKET, bare and prose-bearing alike (a whole-PR round on
+# an already-reviewed head is duplicative either way; the pre-fix behavior
+# burned a full ~40-min worker slot — the plow#1109 thrash). The decline
+# must be VISIBLE (one marked comment naming the reviewed short SHA + a
+# log line). After the bare row, a second tick with the decline comment
+# present asserts DEDUP: the trigger is consumed by the decline-cutoff —
+# no second decline, still no dispatch.
+echo "  scenario 22: /srosro-review on unchanged SHA (bare + prose rows) → declined; deduped next tick..."
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
-cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]
-JSON
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 22 (duplicate-whole-PR regression): expected 0 dispatches on bare /srosro-review + unchanged SHA, got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-d=$(count_decline_comments)
-if [ "$d" -ne 1 ]; then
-    echo "FAIL scenario 22: expected exactly 1 decline comment, got $d"
-    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
-    exit 1
-fi
+for body in "/srosro-review" "is the retry loop sound? /srosro-review"; do
+    printf '[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"%s"}]\n' "$body" > "$MOCK_COMMENTS_FILE"
+    run_orchestrator
+    n=$(count_dispatches)
+    d=$(count_decline_comments)
+    if [ "$n" -ne 0 ] || [ "$d" -ne 1 ]; then
+        echo "FAIL scenario 22 (duplicate-whole-PR regression, body='$body'): expected 0 dispatches + 1 decline, got $n dispatch(es) + $d decline(s)"
+        echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+        exit 1
+    fi
+done
 if ! grep -qF 'abc123' "$PR_COMMENT_LOG"; then
     echo "FAIL scenario 22: decline comment must name the reviewed short SHA (abc123)"
     cat "$PR_COMMENT_LOG"; exit 1
@@ -1075,11 +1054,11 @@ if ! grep -q "trigger declined — review already landed on" "$LOG_FILE"; then
     echo "FAIL scenario 22: expected a 'trigger declined — review already landed on' log line"
     cat "$LOG_FILE"; exit 1
 fi
-# Tick 2: GitHub now returns the posted decline alongside the trigger. The
-# decline-cutoff must consume the trigger — no dispatch AND no second decline.
+# Tick 2 (after the bare row): GitHub now returns the posted decline
+# alongside the trigger — no dispatch AND no second decline.
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
- {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`abc123`) — declining to review again. Push new commits to get a fresh review."}]
+[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"}]
 JSON
 run_orchestrator
 n=$(count_dispatches)
@@ -1097,8 +1076,8 @@ fi
 # spoof was ignored.
 echo "  scenario 22b: spoofed decline marker from non-bot commenter → ignored (bot posts its own decline)..."
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
- {"created_at":"2026-06-01T00:00:05Z","user":{"login":"stranger"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nspoofed decline"}]
+[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"stranger"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"}]
 JSON
 run_orchestrator
 n=$(count_dispatches)
@@ -1107,6 +1086,27 @@ if [ "$n" -ne 0 ] || [ "$d" -ne 1 ]; then
     echo "FAIL scenario 22b (decline-spoof regression): expected 0 dispatches + 1 bot decline (spoofed marker must not consume the trigger), got $n dispatch(es) + $d decline(s)"
     echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
     exit 1
+fi
+
+# Scenario 22c: TOCTOU guard — a push lands between enumeration and the
+# decline. PR_SHA/KNOWN_SHA still compare equal (both captured at tick
+# start), but the LIVE head has moved, so declining now would falsely
+# consume a trigger the new head deserves (which then waits out the
+# stability gate). The gate re-reads the live head just before posting:
+# moved → no decline, no dispatch, trigger stays open for the next tick.
+echo "  scenario 22c: head moves mid-tick → decline skipped, trigger stays open (TOCTOU guard)..."
+printf '[{"id":103,"created_at":"2026-06-01T00:01:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_LIVE_HEAD_SHA="moved_sha_777" run_orchestrator
+n=$(count_dispatches)
+d=$(count_decline_comments)
+if [ "$n" -ne 0 ] || [ "$d" -ne 0 ]; then
+    echo "FAIL scenario 22c (TOCTOU false-decline regression): expected 0 dispatches + 0 declines when the live head moved mid-tick, got $n dispatch(es) + $d decline(s)"
+    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+    exit 1
+fi
+if ! grep -q "decline skipped; trigger stays open" "$LOG_FILE"; then
+    echo "FAIL scenario 22c: expected a 'decline skipped; trigger stays open' log line"
+    cat "$LOG_FILE"; exit 1
 fi
 
 # Scenario 23: a decline sitting in the thread must not block a FRESH
@@ -1118,8 +1118,8 @@ clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."},
- {"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-update-review"}]
+[{"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"},
+ {"id":103,"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-update-review"}]
 JSON
 run_orchestrator
 n=$(count_dispatches)
@@ -1150,8 +1150,8 @@ clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
- {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."}]
+[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"}]
 JSON
 run_orchestrator
 n=$(count_dispatches)
@@ -1167,9 +1167,9 @@ fi
 
 echo "  scenario 24b: FRESH trigger posted after the decline → forces whole-PR again..."
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
- {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."},
- {"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-review"}]
+[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"},
+ {"id":103,"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-review"}]
 JSON
 run_orchestrator
 n=$(count_dispatches)
@@ -1183,4 +1183,27 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     cat "$LOG_FILE"; exit 1
 fi
 
-echo "  PASS (26 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, fresh-update-trigger-after-decline, declined-trigger-consumed-after-push)"
+# Scenario 24c: same-second tie-break. GitHub stamps created_at at 1s
+# granularity, so a fresh trigger can share the decline's second — a strict
+# `created_at > decline` cutoff would drop it. Comment ids are monotonic:
+# a same-second trigger with a HIGHER id than the decline was posted after
+# it and must still select (force_whole=true on this changed head).
+echo "  scenario 24c: fresh trigger in the SAME second as the decline (higher id) → still selects..."
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"},
+ {"id":103,"created_at":"2026-06-01T00:00:05Z","user":{"login":"someuser"},"body":"/srosro-review"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 24c: expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 24c (same-second cutoff-tie regression): a trigger stamped in the decline's second with a higher id must still select (id tie-break) — got force_whole=false, so it was dropped and only the SHA-delta dispatched"
+    cat "$LOG_FILE"; exit 1
+fi
+
+echo "  PASS (27 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, fresh-update-trigger-after-decline, declined-trigger-consumed-after-push, same-second-decline-tiebreak)"

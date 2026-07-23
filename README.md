@@ -137,7 +137,7 @@ Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<re
 
 ## Use on a PR
 
-Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window). To force a fresh review on the new head, post a slash command:
+Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window). To force a fresh review on the new head, post a slash command. Re-review commands act on a **newly pushed head** — on an already-reviewed head the bot posts a decline comment instead of re-running (push new commits to get a fresh review):
 
 > **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
 

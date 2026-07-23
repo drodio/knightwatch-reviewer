@@ -122,7 +122,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
-    local DECLINED_AT DECLINE_ERR
+    local DECLINE_JSON DECLINED_AT SINCE_ID DECLINE_ERR LIVE_SHA
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     while IFS= read -r PR_JSON; do
@@ -211,11 +211,22 @@ refresh_queue() {
             # Only the bot's OWN declines count: the marker string is public,
             # so without the author check a drive-by commenter could paste it
             # and silently consume other users' pending triggers.
-            DECLINED_AT=$(printf '%s' "$COMMENTS_JSON" |
-                jq -r --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
-                    '[.[] | select(.user.login == $bot_user and (.body | contains($dmark)))] | sort_by(.created_at) | last | .created_at // empty')
+            DECLINE_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                jq -c --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
+                    '[.[] | select(.user.login == $bot_user and (.body | contains($dmark)))] | sort_by(.created_at, .id) | last // empty')
+            DECLINED_AT=""; SINCE_ID=""
+            [ -n "$DECLINE_JSON" ] && DECLINED_AT=$(printf '%s' "$DECLINE_JSON" | jq -r '.created_at // empty')
             if [ -n "$DECLINED_AT" ] && [ "$DECLINED_AT" \> "$REVIEWED_AT_ISO" ]; then
                 REVIEWED_AT_ISO="$DECLINED_AT"
+                # GitHub stamps created_at at 1s granularity, so a fresh
+                # trigger can share the decline's second — a strict `>` would
+                # drop it. Comment ids are monotonic: carry the decline's id
+                # and tie-break on it (same second + higher id ⇒ posted after
+                # the decline). Applies ONLY to a decline-sourced cutoff:
+                # started_at is not a comment, and a trigger stamped in the
+                # same second as started_at must stay excluded or the trigger
+                # that started the current review would re-dispatch.
+                SINCE_ID=$(printf '%s' "$DECLINE_JSON" | jq -r '.id // empty')
             fi
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
@@ -231,12 +242,16 @@ refresh_queue() {
             # the strings are disjoint (neither contains the other as a
             # substring). Whole-PR check excludes /srosro-update-review so
             # the longer command doesn't accidentally satisfy both paths.
+            #
+            # The since-cutoff is strict `created_at > $since`, with a
+            # same-second id tie-break when the cutoff came from a decline
+            # comment ($since_id set above; empty disables the tie-break).
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -251,12 +266,12 @@ refresh_queue() {
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -298,6 +313,17 @@ refresh_queue() {
         # pure duplication (the plow#1109 thrash).
         if [ "$PR_SHA" = "$KNOWN_SHA" ]; then
             if [ "$FORCE_REVIEW" = "true" ]; then
+                # TOCTOU guard: PR_SHA was enumerated at tick start, so a
+                # push landing since then would make this a FALSE decline —
+                # consuming a trigger the new head deserves, which then waits
+                # out the stability gate. Re-read the live head just before
+                # declining; if it moved (or the read failed), skip the
+                # decline and leave the trigger open for the next tick.
+                LIVE_SHA=$(gh api "repos/$REPO/pulls/$PR_NUM" --jq '.head.sha' 2>/dev/null)
+                if [ "$LIVE_SHA" != "$KNOWN_SHA" ]; then
+                    log "$PR_ID: head moved since enumeration (or live-head read failed) — decline skipped; trigger stays open"
+                    continue
+                fi
                 # Decline visibly + consume: one auto-comment tells the
                 # requester why nothing ran. Its decline marker advances the
                 # trigger cutoff (computed above from COMMENTS_JSON), so the

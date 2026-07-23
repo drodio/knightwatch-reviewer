@@ -1600,7 +1600,7 @@ $COMMENT_BODY
 
 ---
 
-_How to use: auto-reviews every new PR and re-reviews after a period of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`._
+_How to use: auto-reviews every new PR and re-reviews after a period of inactivity. Trigger an incremental re-review with \`/${BOT_CMD_PREFIX}-update-review\`, or a whole-PR re-review with \`/${BOT_CMD_PREFIX}-review\`. Re-review commands act on a newly pushed head — on an already-reviewed head the bot declines instead of re-running._
 
 **For humans only:** push-access collaborators can post:
 - \`/${BOT_CMD_PREFIX}-approve\` — APPROVE the PR.
