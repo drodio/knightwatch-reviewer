@@ -5,9 +5,10 @@
 #   1. No new comments → no worker dispatched.
 #   2. Bare @<bot> mention since last review → no worker dispatched
 #      (mentions are not triggers — only the slash commands are).
-#   3. /srosro-review comment since last review → worker dispatched with
-#      FORCE_WHOLE_PR=true (the worker uses `gh pr diff` for the full PR
-#      diff regardless of base SHA, so there's always something to review).
+#   3. /srosro-review on an unchanged SHA → declined, not dispatched
+#      (blanket: prose-bearing or bare alike — a whole-PR round on an
+#      already-reviewed head is duplicative). Changed-head scenarios
+#      (5, 6, 24b) cover the dispatch path with FORCE_WHOLE_PR=true.
 #   4. Bot's own auto-post containing /srosro-review → no dispatch
 #      (self-trigger filter via the BOT_AUTO_POST_MARKER).
 #   5. /srosro-review by BOT_USER without the marker → 1 dispatch
@@ -17,9 +18,16 @@
 #      (the trigger itself is honored), but no trigger-comment.md is
 #      staged for the worker (trust gate keeps drive-by prose off the
 #      auto-approve path).
-#   7. /srosro-update-review on an unchanged SHA → no dispatch (skipped
-#      to avoid empty-diff aborts; the trigger stays open until commits
-#      land and a future tick picks it up).
+#   7. /srosro-update-review on an unchanged SHA → no dispatch; a marked
+#      decline comment is posted (visible skip) and the trigger is
+#      consumed via the decline-cutoff, so it can't re-fire later.
+#  22. Bare /srosro-review on an unchanged SHA → declined (no dispatch,
+#      one decline comment, no duplicate decline on the next tick).
+#  23. A decline in the thread must not block a FRESH /srosro-update-review
+#      posted after it once the head has moved → incremental dispatch.
+#  24. A declined trigger does NOT force a whole-PR round after a later
+#      push (SHA-delta dispatch runs force_whole=false); a FRESH trigger
+#      posted after the decline forces force_whole=true again.
 #  13. /srosro-update-review on PAGE 2 of the issue-comments endpoint
 #      → 1 dispatch. Stub emits page 2 only when --paginate is in args,
 #      so a regression that drops --paginate from lib/gh-comments.sh
@@ -42,6 +50,7 @@ export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
+export PR_COMMENT_LOG="$STATE_DIR/pr-comment.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -106,6 +115,17 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     else
         echo '[]'
     fi
+elif [ "$1" = "pr" ] && [ "$2" = "comment" ]; then
+    # Decline-comment capture: log the full (multi-line) --body so the
+    # unchanged-head decline scenarios can assert markers + content.
+    body=""
+    for ((i=1; i<=$#; i++)); do
+        if [ "${!i}" = "--body" ]; then
+            j=$((i+1)); body="${!j}"; break
+        fi
+    done
+    { echo "PR_COMMENT_BEGIN"; printf '%s\n' "$body"; echo "PR_COMMENT_END"; } >> "${PR_COMMENT_LOG:-/dev/null}"
+    echo "https://github.com/cncorp/plow/issues/1#issuecomment-fake"
 elif [ "$1" = "api" ]; then
     # The endpoint URL can land at any positional arg — `gh api URL` and
     # `gh api --paginate URL` both reach the orchestrator. Walk all args
@@ -287,6 +307,7 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
     : > "$COMMENT_FETCH_LOG"
+    : > "$PR_COMMENT_LOG"
     # ENUMERATE_SECS=0 forces a queue refresh every invocation (the floor is
     # always elapsed), so each scenario re-enumerates and re-evaluates its own
     # MOCK_COMMENTS from scratch rather than consuming a prior scenario's queue.
@@ -296,6 +317,12 @@ run_orchestrator() {
 count_comment_fetches() {
     local n
     n=$(grep -c '^FETCH ' "$COMMENT_FETCH_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
+}
+
+count_decline_comments() {
+    local n
+    n=$(grep -cF 'knightwatch-reviewer:declined-trigger' "$PR_COMMENT_LOG" 2>/dev/null || true)
     echo "${n:-0}"
 }
 
@@ -351,27 +378,24 @@ if [ "$n" -ne 0 ]; then
     exit 1
 fi
 
-# Scenario 3: same SHA, /srosro-review → 1 dispatch with FORCE_WHOLE_PR=true.
-# /srosro-review must still work even on an unchanged SHA; the worker uses
-# gh pr diff for the full PR diff regardless of base SHA, so there's
-# always something to review.
-echo "  scenario 3: same SHA + /srosro-review comment..."
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+# Scenario 3: same SHA, /srosro-review → declined, not dispatched. The
+# unchanged-head decline is BLANKET — prose-bearing or bare alike — because
+# a whole-PR round on an already-reviewed head is duplicative either way
+# (~40-min worker slot; the plow#1109 thrash). Prose here proves no
+# prose carve-out exists; scenario 22 covers the bare form + dedup.
+echo "  scenario 3: same SHA + prose-bearing /srosro-review → declined..."
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"is the retry loop sound? /srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 3: expected 1 dispatch, got $n"
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 3 (blanket unchanged-head decline): expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if ! grep -q 'force_whole=true' "$LOG_FILE"; then
-    echo "FAIL scenario 3: expected force_whole=true in dispatch"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
-    echo "FAIL scenario 3: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (someuser is in MOCK_TRUSTED_USERS) — anchors the bugfix path so a regression to /tmp fails here"
-    echo "--- log ---"; cat "$LOG_FILE"
+d=$(count_decline_comments)
+if [ "$d" -ne 1 ]; then
+    echo "FAIL scenario 3: expected 1 decline comment on unchanged-head /srosro-review, got $d"
+    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
     exit 1
 fi
 
@@ -399,7 +423,12 @@ fi
 # their legitimate slash commands along with the bot's auto-posts. The
 # content-marker filter must let unmarked comments through regardless of
 # author.
-echo "  scenario 5: same SHA + /srosro-review by BOT_USER without marker (single-account)..."
+echo "  scenario 5: changed SHA + /srosro-review by BOT_USER without marker (single-account)..."
+# Changed head (runs/ says older_sha_999, head is abc123) so the dispatch
+# itself is legal — this scenario fences the content-marker filter, not the
+# unchanged-head decline gate. Scenarios 6/6b reuse this seed.
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
@@ -427,7 +456,7 @@ fi
 # pipeline that ends in `gh pr review --approve`, so a drive-by
 # commenter's prose is kept off that path. Stranger is deliberately
 # omitted from MOCK_TRUSTED_USERS for this scenario.
-echo "  scenario 6: same SHA + /srosro-review from untrusted commenter (trigger-comment trust gate)..."
+echo "  scenario 6: changed SHA + /srosro-review from untrusted commenter (trigger-comment trust gate)..."
 MOCK_TRUSTED_USERS="srosro" \
     printf '[{"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-review please"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_TRUSTED_USERS="srosro" run_orchestrator
@@ -455,6 +484,11 @@ fi
 # unconsumed trigger retries next tick once the throttle clears. Fences
 # review.sh's trigger-defer branch.
 echo "  scenario 6b: same SHA + /srosro-review under indeterminate trust (403) → defer, no dispatch, no watermark..."
+# Same-SHA seed: the trust defer must win over BOTH dispatch and the
+# unchanged-head decline (the trigger stays unconsumed for a retry once
+# the permission-API throttle clears).
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # clear any residue so the assertion is decisive
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_PERMISSION_RC=1 run_orchestrator
@@ -473,12 +507,18 @@ if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
     echo "FAIL scenario 6b: idle watermark written on a deferred trigger — must stay unconsumed for next-tick retry"
     exit 1
 fi
+d=$(count_decline_comments)
+if [ "$d" -ne 0 ]; then
+    echo "FAIL scenario 6b: deferred trigger must not be declined (got $d decline comment(s)) — defer keeps it open for retry"
+    cat "$PR_COMMENT_LOG"; exit 1
+fi
 
 # Scenario 7: same SHA, /srosro-update-review → no dispatch. Incremental
-# triggers on an unchanged SHA hit the empty-diff abort path, so we skip
-# at the orchestrator instead of burning a worker. The trigger stays open
-# until commits land. The longer command must NOT also satisfy the
-# /srosro-review (whole-PR) substring check.
+# triggers on an unchanged SHA hit the empty-diff abort path, so we
+# decline at the orchestrator instead of burning a worker: a marked
+# decline comment makes the skip visible and consumes the trigger. The
+# longer command must NOT also satisfy the /srosro-review (whole-PR)
+# substring check.
 #
 # Plus: after the skip, no trigger-comment tempfile may remain in
 # $STATE_DIR/tmp. someuser is in MOCK_TRUSTED_USERS, so a regression that
@@ -501,6 +541,21 @@ if [ -n "$leaked" ]; then
     echo "FAIL scenario 7 (skip-path tempfile leak): pre-skip mktemp leaked a trigger file under \$STATE_DIR/tmp:"
     echo "$leaked"
     exit 1
+fi
+# The skip must be VISIBLE: one decline comment carrying both markers.
+d=$(count_decline_comments)
+if [ "$d" -ne 1 ]; then
+    echo "FAIL scenario 7 (silent-skip regression): expected 1 decline comment on unchanged-SHA /srosro-update-review, got $d"
+    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+    exit 1
+fi
+if ! grep -qF 'knightwatch-reviewer:auto-post' "$PR_COMMENT_LOG"; then
+    echo "FAIL scenario 7: decline comment must carry the auto-post marker (or it would match as a trigger itself)"
+    cat "$PR_COMMENT_LOG"; exit 1
+fi
+if ! grep -q "trigger declined — review already landed on" "$LOG_FILE"; then
+    echo "FAIL scenario 7: expected a 'trigger declined — review already landed on' log line for the visible skip"
+    cat "$LOG_FILE"; exit 1
 fi
 
 # Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
@@ -549,6 +604,9 @@ reap_worker() {
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
 }
 
+# Changed head so the trigger dispatches (unchanged heads decline).
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 
 # Time the orchestrator. If it returns in <5s the wait was correctly
@@ -688,6 +746,8 @@ while :; do sleep 1; done   # outlives WORKER_TIMEOUT
 TWORKER
 chmod +x "$REVIEWER_LIB_DIR/review-one-pr.sh"
 
+# Changed-head seed inherited from scenario 9 (older_sha_999) — the trigger
+# must dispatch for the timeout wrap to be exercised.
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 : > "$LOG_FILE"
 WORKER_TIMEOUT=1s WORKER_KILL_AFTER=1s ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 &
@@ -769,7 +829,8 @@ echo "  scenario 14: TMPDIR pin overrides both inherited TMPDIR and config.env (
 unset MOCK_COMMENTS_PAGE1_FILE MOCK_COMMENTS_PAGE2_FILE
 export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 clear_seeded_runs
-seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+# Changed head so the trigger dispatches (unchanged heads decline).
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 echo 'export TMPDIR="/tmp/should-not-be-honored-via-config-env"' > "$STATE_DIR/config.env"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
@@ -907,8 +968,9 @@ done
 # loop, so its actual contents are runtime-dependent.
 echo "  scenario 19: review.sh passes DISPATCHER_TICK_AT env var to the worker..."
 clear_seeded_runs
+# Changed head so the trigger dispatches (unchanged heads decline).
 MOCK_TRUSTED_USERS="srosro,someuser" \
-    seed_run "cncorp_plow" "1" "20260429T143000000Z" "abc123" "COMMENT" >/dev/null
+    seed_run "cncorp_plow" "1" "20260429T143000000Z" "older_sha_999" "COMMENT" >/dev/null
 printf '[{"created_at":"2026-04-30T16:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
@@ -976,4 +1038,129 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
+# Scenario 22: bare /srosro-review on an unchanged SHA → declined, not
+# dispatched. A body that is just the slash command on an already-reviewed
+# head is duplicative (same head, same full diff) — the pre-fix behavior
+# burned a full whole-PR worker slot on it (the plow#1109 thrash). The
+# decline must be VISIBLE (one marked comment naming the reviewed short
+# SHA + a log line) and DEDUPED: on the next tick, with the decline
+# comment now present in the fetched thread, the same trigger is consumed
+# by the decline-cutoff — no second decline, still no dispatch.
+echo "  scenario 22: bare /srosro-review on unchanged SHA → declined (no dispatch, one decline comment, deduped next tick)..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 22 (duplicate-whole-PR regression): expected 0 dispatches on bare /srosro-review + unchanged SHA, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+d=$(count_decline_comments)
+if [ "$d" -ne 1 ]; then
+    echo "FAIL scenario 22: expected exactly 1 decline comment, got $d"
+    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+    exit 1
+fi
+if ! grep -qF 'abc123' "$PR_COMMENT_LOG"; then
+    echo "FAIL scenario 22: decline comment must name the reviewed short SHA (abc123)"
+    cat "$PR_COMMENT_LOG"; exit 1
+fi
+if ! grep -q "trigger declined — review already landed on" "$LOG_FILE"; then
+    echo "FAIL scenario 22: expected a 'trigger declined — review already landed on' log line"
+    cat "$LOG_FILE"; exit 1
+fi
+# Tick 2: GitHub now returns the posted decline alongside the trigger. The
+# decline-cutoff must consume the trigger — no dispatch AND no second decline.
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`abc123`) — declining to review again. Push new commits to get a fresh review."}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+d=$(count_decline_comments)
+if [ "$n" -ne 0 ] || [ "$d" -ne 0 ]; then
+    echo "FAIL scenario 22 (decline-spam regression): tick 2 expected 0 dispatches + 0 new declines, got $n dispatch(es) + $d decline(s) — the ~60s tick cadence would re-post this every minute"
+    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+    exit 1
+fi
+
+# Scenario 23: a decline sitting in the thread must not block a FRESH
+# /srosro-update-review posted after it once the head has moved — the
+# decline-cutoff consumes only triggers at/before the decline. Expect an
+# incremental dispatch (force_whole=false) and no new decline.
+echo "  scenario 23: fresh /srosro-update-review after decline + push → incremental dispatch..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."},
+ {"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-update-review"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 23 (over-consumption regression): expected 1 dispatch on a fresh post-decline /srosro-update-review, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 23: expected force_whole=false (incremental trigger), got force_whole=true"
+    cat "$LOG_FILE"; exit 1
+fi
+d=$(count_decline_comments)
+if [ "$d" -ne 0 ]; then
+    echo "FAIL scenario 23: expected 0 new decline comments on a changed head, got $d"
+    cat "$PR_COMMENT_LOG"; exit 1
+fi
+
+# Scenario 24: a DECLINED trigger must not force a review after a later
+# push. Pre-fix, the stale-open trigger flipped FORCE_WHOLE_PR=true on the
+# first post-push tick — a stale whole-PR round bypassing the stability
+# gate. With the decline-cutoff, the post-push dispatch is the ordinary
+# SHA-delta path (force_whole=false; stability passes via the stub's
+# 2020-era commit date). A FRESH trigger posted after the decline works
+# normally (24b: bare is fine on a CHANGED head — force_whole=true).
+echo "  scenario 24: declined trigger + later push → SHA-delta dispatch only (no stale whole-PR force)..."
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 24: expected 1 dispatch (SHA changed since last review), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 24 (stale-trigger-consumption regression): declined trigger forced a whole-PR round after the push — expected force_whole=false"
+    cat "$LOG_FILE"; exit 1
+fi
+
+echo "  scenario 24b: FRESH trigger posted after the decline → forces whole-PR again..."
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nA review was already landed on this commit (`older_s`) — declining to review again. Push new commits to get a fresh review."},
+ {"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-review"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 24b: expected 1 dispatch on a fresh post-decline trigger, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 24b (over-consumption regression): a NEW trigger posted after the decline must select normally (force_whole=true on a changed head)"
+    cat "$LOG_FILE"; exit 1
+fi
+
+echo "  PASS (25 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, fresh-update-trigger-after-decline, declined-trigger-consumed-after-push)"

@@ -122,6 +122,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
+    local DECLINED_AT
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     while IFS= read -r PR_JSON; do
@@ -198,6 +199,21 @@ refresh_queue() {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
+            # Consume declined triggers: the decline comment posted below (on
+            # an unchanged-head trigger) advances the trigger cutoff past
+            # everything at/before it, so a declined trigger can't later flip
+            # FORCE_REVIEW — and worse, force a stale whole-PR round that
+            # bypasses the stability gate — after the next push. A NEW trigger
+            # posted after the decline selects normally. This is also the
+            # decline dedup: on the next tick the declined trigger no longer
+            # matches, so at most one decline is posted per trigger. ISO 8601
+            # compares lexically; no decline leaves the cutoff untouched.
+            DECLINED_AT=$(printf '%s' "$COMMENTS_JSON" |
+                jq -r --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" \
+                    '[.[] | select(.body | contains($dmark))] | sort_by(.created_at) | last | .created_at // empty')
+            if [ -n "$DECLINED_AT" ] && [ "$DECLINED_AT" \> "$REVIEWED_AT_ISO" ]; then
+                REVIEWED_AT_ISO="$DECLINED_AT"
+            fi
             # Exclude the bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
             # every review and itself contains the slash commands) by
@@ -271,30 +287,34 @@ refresh_queue() {
             fi
         fi
 
-        # Skip if SHA unchanged and not whole-PR-forced. /srosro-update-review
-        # on an unchanged SHA would otherwise spawn a worker that runs
+        # Unchanged-head gate: nothing dispatches on a head we already
+        # reviewed. /srosro-update-review would spawn a worker that runs
         # `git diff KNOWN_SHA..HEAD`, gets an empty diff (KNOWN_SHA == HEAD),
-        # and aborts in lib/review-one-pr.sh. /srosro-review
-        # (FORCE_WHOLE_PR=true) bypasses this because the worker uses
-        # `gh pr diff` for the full PR regardless of base SHA, so there's
-        # always something to review.
-        #
-        # Stale-trigger behavior (deliberate): a skipped /srosro-update-review
-        # is NOT consumed — the comment-selection query keys off
-        # `created_at > reviewed_at`, so the trigger stays "open" until the
-        # next actual review. If the author later pushes a commit before
-        # that review, the still-open trigger flips FORCE_REVIEW=true on
-        # the next tick and bypasses the 1h stability gate. We accept this
-        # as eager-review behavior: the user asked the bot to update, and
-        # we deliver it as soon as there is something meaningful to review
-        # (the new commits). Marking triggers consumed on skip would
-        # require a state schema change for a low-impact edge case at our
-        # scale.
-        if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
-            # Record the updatedAt we just evaluated so the next tick's idle-skip
-            # gate (above) can avoid re-fetching comments while nothing changes.
-            # Written only here, on the nothing-to-dispatch path — a dispatched
-            # (or never-reviewed) head is never watermarked, so it re-evaluates.
+        # and aborts in lib/review-one-pr.sh; /srosro-review would re-run the
+        # full whole-PR round (a ~40-min slot) on an already-reviewed head —
+        # pure duplication (the plow#1109 thrash).
+        if [ "$PR_SHA" = "$KNOWN_SHA" ]; then
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                # Decline visibly + consume: one auto-comment tells the
+                # requester why nothing ran. Its decline marker advances the
+                # trigger cutoff (computed above from COMMENTS_JSON), so the
+                # declined trigger never re-fires — not next tick (the ~60s
+                # cadence would otherwise spam declines) and not after the
+                # next push (where a stale trigger would force a review past
+                # the stability gate). On post failure the trigger stays open
+                # and the next tick retries the decline.
+                log "$PR_ID: trigger declined — review already landed on ${KNOWN_SHA:0:7} (head unchanged)"
+                gh pr comment "$PR_NUM" --repo "$REPO" --body "$BOT_AUTO_POST_MARKER
+$BOT_DECLINED_TRIGGER_MARKER
+A review was already landed on this commit (\`${KNOWN_SHA:0:7}\`) — declining to review again. Push new commits to get a fresh review." >/dev/null 2>&1 \
+                    || log "$PR_ID: failed to post decline comment — trigger stays open; retrying next tick"
+                continue
+            fi
+            # Nothing to dispatch: record the updatedAt we just evaluated so the
+            # next tick's idle-skip gate (above) can avoid re-fetching comments
+            # while nothing changes. Written only here, on the nothing-to-dispatch
+            # path — a dispatched, never-reviewed, or just-declined head is never
+            # watermarked, so it re-evaluates.
             if [ -n "$PR_UPDATED_AT" ]; then
                 mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
                 printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"

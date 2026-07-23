@@ -13,6 +13,12 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # any comment containing it so the bot never self-triggers. Must match the
 # literal in lib/review-one-pr.sh — a smoke scenario catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
+# Marker on the orchestrator's trigger-decline comment (posted when a
+# re-review trigger lands on an already-reviewed head). Carried IN ADDITION
+# to the auto-post marker (so declines never self-trigger); the orchestrator
+# also advances its trigger cutoff past the newest decline, consuming the
+# declined trigger so it can't force a stale review after the next push.
+BOT_DECLINED_TRIGGER_MARKER="${BOT_DECLINED_TRIGGER_MARKER:-<!-- knightwatch-reviewer:declined-trigger -->}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
