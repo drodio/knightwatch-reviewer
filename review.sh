@@ -121,36 +121,10 @@ refresh_queue() {
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
-    local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
+    local REVIEWED_AT_ISO COMMENTS_JSON
     local DECLINE_JSON DECLINED_AT SINCE_ID DECLINE_ERR LIVE_SHA
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
-    # One jq prelude shared by all four trigger queries below (two counts +
-    # their selection twins), so the cutoff and command predicates have a
-    # single definition — a drift between a count query and its selection
-    # twin would produce the confusing "FORCE_REVIEW=true but TRIGGER_JSON
-    # empty" state. Predicates:
-    #   since_ok    — strict `created_at > $since`, with a same-second id
-    #                 tie-break when the cutoff came from a decline comment
-    #                 ($since_id set; empty disables the tie-break).
-    #   candidate   — excludes the bot's own auto-posts (review ack, final
-    #                 review, learn-from-replies acks, and the usage footer
-    #                 that names the slash commands literally) by the hidden
-    #                 HTML-comment marker every auto-post template prepends.
-    #                 The earlier `.user.login != $user` filter (e1d91a0)
-    #                 over-excluded: in single-account deployments BOT_USER
-    #                 is the human's own GH identity, so user-based filtering
-    #                 also drops their legitimate slash commands.
-    #   whole/incremental — substring tests are sufficient because the two
-    #                 commands are disjoint; `whole` excludes the longer
-    #                 -update-review so it can't satisfy both paths.
-    local TRIGGER_DEFS='
-        def since_ok: (.created_at > $since)
-            or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber));
-        def candidate: (.body | contains($mark) | not) and since_ok;
-        def incremental: .body | test("/" + $cmd_prefix + "-update-review"; "i");
-        def whole: (.body | test("/" + $cmd_prefix + "-review"; "i")) and (incremental | not);
-    '
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -254,68 +228,67 @@ refresh_queue() {
                 # that started the current review would re-dispatch.
                 SINCE_ID=$(printf '%s' "$DECLINE_JSON" | jq -r '.id // empty')
             fi
-            # Trigger predicates live in the shared $TRIGGER_DEFS prelude
-            # (defined above the loop) — one definition for the cutoff,
-            # marker exclusion, and command matches across all four queries.
-            WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$TRIGGER_DEFS"'[.[] | select(candidate and whole)] | length')
-            INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$TRIGGER_DEFS"'[.[] | select(candidate and incremental)] | length')
-            if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
+            # ONE trigger query: select the comment (if any) that forces this
+            # re-review, annotated with a force_whole flag. A hit is a
+            # non-auto-post comment past the cutoff whose body carries either
+            # slash command; whole-PR triggers take precedence when both
+            # kinds are present, and "latest" within the chosen kind is
+            # (created_at, id) — the same ordering as the cutoff, so a
+            # same-second pick can't hinge on jq's stable sort preserving
+            # API input order. Predicate notes:
+            # - cutoff: strict `created_at > $since`, with a same-second id
+            #   tie-break when the cutoff came from a decline comment
+            #   ($since_id set above; empty disables the tie-break).
+            # - marker exclusion drops the bot's own auto-posts (review ack,
+            #   final review, learn acks, and the usage footer that names the
+            #   slash commands literally). The earlier `.user.login != $user`
+            #   filter (e1d91a0) over-excluded: in single-account deployments
+            #   BOT_USER is the human's own GH identity, so user-based
+            #   filtering also drops their legitimate slash commands.
+            # - the two commands are disjoint substrings; force_whole
+            #   requires -review AND NOT -update-review so the longer
+            #   command can't satisfy both.
+            TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
+                jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" '
+                    [.[]
+                     | select((.body | contains($mark) | not)
+                         and ((.created_at > $since)
+                              or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))))
+                     | . + {force_whole: ((.body | test("/" + $cmd_prefix + "-review"; "i"))
+                                          and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))}
+                     | select(.force_whole or (.body | test("/" + $cmd_prefix + "-update-review"; "i")))]
+                    | (map(select(.force_whole)) as $whole
+                       | if ($whole | length) > 0 then $whole else . end)
+                    | sort_by(.created_at, .id) | last // empty' 2>/dev/null)
+            if [ -n "$TRIGGER_JSON" ]; then
                 FORCE_REVIEW=true
-                FORCE_WHOLE_PR=true
-            elif [ "${INCREMENTAL_TRIGGER:-0}" -gt 0 ]; then
-                FORCE_REVIEW=true
-            fi
-            # If a comment triggered this re-review, capture the latest matching
-            # comment's author + body so the worker can stage it as
-            # `.codex-scratch/trigger-comment.md`. Lets the requester's own
-            # framing ("trying to DRY but ended up adding 2k LoC...") shape the
-            # inferred intent and the review's emphasis.
-            if [ "$FORCE_REVIEW" = "true" ]; then
-                # sort_by(.created_at, .id): "latest trigger" is defined by
-                # the same (created_at, id) ordering as the cutoff — with
-                # two candidates in the same second, the pick must not hinge
-                # on jq's stable sort preserving API input order.
-                if [ "$FORCE_WHOLE_PR" = "true" ]; then
-                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$TRIGGER_DEFS"'[.[] | select(candidate and whole)] | sort_by(.created_at, .id) | last // empty' 2>/dev/null)
-                else
-                    TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$TRIGGER_DEFS"'[.[] | select(candidate and incremental)] | sort_by(.created_at, .id) | last // empty' 2>/dev/null)
+                FORCE_WHOLE_PR=$(printf '%s' "$TRIGGER_JSON" | jq -r '.force_whole')
+                TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
+                # Trust gate: the slash-command trigger itself is
+                # honored regardless of who posted it (poll-pr-actions's
+                # re-request trigger and external requesters need to keep working), but the
+                # comment's prose only gets staged as
+                # `.codex-scratch/trigger-comment.md` when the commenter
+                # has push access — it shapes intent inference and the
+                # aggregator on the auto-approve path. Otherwise drive-by
+                # commenters could steer both.
+                is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
+                if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
+                    # Indeterminate → defer this PR: don't run without the
+                    # trusted trigger prose and advance the cutoff past it
+                    # (dropping it). Trigger stays unconsumed → retried next tick.
+                    log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
+                    continue
                 fi
-                if [ -n "$TRIGGER_JSON" ]; then
-                    TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
-                    # Trust gate: the slash-command trigger itself is
-                    # honored regardless of who posted it (poll-pr-actions's
-                    # re-request trigger and external requesters need to keep working), but the
-                    # comment's prose only gets staged as
-                    # `.codex-scratch/trigger-comment.md` when the commenter
-                    # has push access. Otherwise drive-by commenters could
-                    # shape intent inference + aggregator on the
-                    # auto-approve path.
-                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
-                    if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
-                        # Indeterminate → defer this PR: don't run without the
-                        # trusted trigger prose and advance the cutoff past it
-                        # (dropping it). Trigger stays unconsumed → retried next tick.
-                        log "$PR_ID: trigger from @$TRIGGER_USER — trust check deferred (API error); retrying next tick"
-                        continue
-                    fi
-                    if [ "$TRIGGER_TRUST_RC" -eq 0 ]; then
-                        # Capture body now; materialize the file post-skip
-                        # (below) so an unchanged-SHA /srosro-update-review
-                        # never allocates a tempfile only the worker would
-                        # have cleaned up. STATE_DIR/tmp is durable now
-                        # (no PrivateTmp tear-down to mask the leak).
-                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
-                    else
-                        log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
-                    fi
+                if [ "$TRIGGER_TRUST_RC" -eq 0 ]; then
+                    # Capture body now; materialize the file post-skip
+                    # (below) so an unchanged-SHA /srosro-update-review
+                    # never allocates a tempfile only the worker would
+                    # have cleaned up. STATE_DIR/tmp is durable now
+                    # (no PrivateTmp tear-down to mask the leak).
+                    TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                else
+                    log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                 fi
             fi
         fi
