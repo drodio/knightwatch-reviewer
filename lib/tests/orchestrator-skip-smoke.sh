@@ -109,7 +109,9 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         # are thus unaffected by the gate. The idle-skip scenarios override
         # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
         upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
-        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\"}]"
+        # headRefOid overridable so the TOCTOU scenario can advance the
+        # enumerated head on its second tick.
+        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"${MOCK_PR_HEAD_SHA:-abc123}\",\"updatedAt\":\"$upd\"}]"
     else
         echo '[]'
     fi
@@ -1107,6 +1109,17 @@ fi
 if ! grep -q "decline skipped; trigger stays open" "$LOG_FILE"; then
     echo "FAIL scenario 22c: expected a 'decline skipped; trigger stays open' log line"
     cat "$LOG_FILE"; exit 1
+fi
+# Tick 2: enumeration catches up (enumerated head = the moved sha). The
+# skipped trigger must have genuinely stayed open — it now dispatches a
+# whole-PR round. Fences a regression that skips the decline but still
+# consumes/watermarks the trigger.
+MOCK_PR_HEAD_SHA="moved_sha_777" MOCK_LIVE_HEAD_SHA="moved_sha_777" run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 22c (trigger-not-left-open regression): tick 2 (enumeration caught up) expected 1 force_whole=true dispatch from the still-open trigger, got $n dispatch(es)"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
 fi
 
 # Scenario 23: a decline sitting in the thread must not block a FRESH

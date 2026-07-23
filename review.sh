@@ -125,6 +125,32 @@ refresh_queue() {
     local DECLINE_JSON DECLINED_AT SINCE_ID DECLINE_ERR LIVE_SHA
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    # One jq prelude shared by all four trigger queries below (two counts +
+    # their selection twins), so the cutoff and command predicates have a
+    # single definition — a drift between a count query and its selection
+    # twin would produce the confusing "FORCE_REVIEW=true but TRIGGER_JSON
+    # empty" state. Predicates:
+    #   since_ok    — strict `created_at > $since`, with a same-second id
+    #                 tie-break when the cutoff came from a decline comment
+    #                 ($since_id set; empty disables the tie-break).
+    #   candidate   — excludes the bot's own auto-posts (review ack, final
+    #                 review, learn-from-replies acks, and the usage footer
+    #                 that names the slash commands literally) by the hidden
+    #                 HTML-comment marker every auto-post template prepends.
+    #                 The earlier `.user.login != $user` filter (e1d91a0)
+    #                 over-excluded: in single-account deployments BOT_USER
+    #                 is the human's own GH identity, so user-based filtering
+    #                 also drops their legitimate slash commands.
+    #   whole/incremental — substring tests are sufficient because the two
+    #                 commands are disjoint; `whole` excludes the longer
+    #                 -update-review so it can't satisfy both paths.
+    local TRIGGER_DEFS='
+        def since_ok: (.created_at > $since)
+            or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber));
+        def candidate: (.body | contains($mark) | not) and since_ok;
+        def incremental: .body | test("/" + $cmd_prefix + "-update-review"; "i");
+        def whole: (.body | test("/" + $cmd_prefix + "-review"; "i")) and (incremental | not);
+    '
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -228,30 +254,15 @@ refresh_queue() {
                 # that started the current review would re-dispatch.
                 SINCE_ID=$(printf '%s' "$DECLINE_JSON" | jq -r '.id // empty')
             fi
-            # Exclude the bot's own auto-posts (review ack, final review,
-            # learn-from-replies acks, and the usage footer that appears on
-            # every review and itself contains the slash commands) by
-            # matching the hidden HTML-comment marker every auto-post
-            # template prepends. The earlier `.user.login != $user` filter
-            # (e1d91a0) over-excluded: in single-account deployments
-            # BOT_USER is the human's own GH identity, so user-based
-            # filtering also drops legitimate slash-command comments the
-            # human posts.
-            #
-            # Two slash commands; substring tests are sufficient because
-            # the strings are disjoint (neither contains the other as a
-            # substring). Whole-PR check excludes /srosro-update-review so
-            # the longer command doesn't accidentally satisfy both paths.
-            #
-            # The since-cutoff is strict `created_at > $since`, with a
-            # same-second id tie-break when the cutoff came from a decline
-            # comment ($since_id set above; empty disables the tie-break).
+            # Trigger predicates live in the shared $TRIGGER_DEFS prelude
+            # (defined above the loop) — one definition for the cutoff,
+            # marker exclusion, and command matches across all four queries.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                    "$TRIGGER_DEFS"'[.[] | select(candidate and whole)] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                    "$TRIGGER_DEFS"'[.[] | select(candidate and incremental)] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -264,14 +275,18 @@ refresh_queue() {
             # framing ("trying to DRY but ended up adding 2k LoC...") shape the
             # inferred intent and the review's emphasis.
             if [ "$FORCE_REVIEW" = "true" ]; then
+                # sort_by(.created_at, .id): "latest trigger" is defined by
+                # the same (created_at, id) ordering as the cutoff — with
+                # two candidates in the same second, the pick must not hinge
+                # on jq's stable sort preserving API input order.
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$TRIGGER_DEFS"'[.[] | select(candidate and whole)] | sort_by(.created_at, .id) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg since_id "$SINCE_ID" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and ((.created_at > $since) or ($since_id != "" and .created_at == $since and .id > ($since_id | tonumber))) and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$TRIGGER_DEFS"'[.[] | select(candidate and incremental)] | sort_by(.created_at, .id) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
