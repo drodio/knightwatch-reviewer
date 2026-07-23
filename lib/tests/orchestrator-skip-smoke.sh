@@ -26,8 +26,7 @@
 #      table covers fresh post-decline triggers (incremental, whole-PR,
 #      and whole-PR in the decline's same second via the id tie-break).
 #  25. In-flight guard (#182): a PR whose review is running (held per-PR
-#      flock) is deferred at enumeration — 0 dispatch, and no false
-#      unchanged-head decline against not-yet-stamped state; released →
+#      flock) is deferred at enumeration — 0 dispatch; released →
 #      dispatches (deferred, not starved).
 #  13. /srosro-update-review on PAGE 2 of the issue-comments endpoint
 #      → 1 dispatch. Stub emits page 2 only when --paginate is in args,
@@ -438,13 +437,16 @@ if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
     exit 1
 fi
 
-# Scenario 5b: same SHA + BOT_USER /srosro-review carrying the auto-trigger
-# marker (the re-request poller's self-identifying trigger). srosro is trusted
-# (as in scenario 5), so the trust gate would stage framing — but review.sh's
-# marker-strip blanks the body first, so the dispatch still happens (whole-PR)
-# with NO trigger_file. This isolates the marker-strip from the trust gate: the
-# poller's "auto-posted" attribution must never reach trigger-comment.md.
-echo "  scenario 5b: same SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
+# Scenario 5b: changed SHA (scenario 5's seed) + BOT_USER /srosro-review
+# carrying the auto-trigger marker (the re-request poller's self-identifying
+# trigger). srosro is trusted (as in scenario 5), so the trust gate would
+# stage framing — but review.sh's marker-strip blanks the body first, so the
+# dispatch still happens (whole-PR) with NO trigger_file. This isolates the
+# marker-strip from the trust gate: the poller's "auto-posted" attribution
+# must never reach trigger-comment.md. (On an UNCHANGED head an auto-trigger
+# falls to the blanket decline gate like any other trigger — scenario 22;
+# no spam loop, since rerequest_check watermarks per re-request event.)
+echo "  scenario 5b: changed SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
 printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
@@ -1196,9 +1198,8 @@ done
 # separate holder needed). No seeded run + empty comments = the KNOWN_SHA-
 # empty first-review case that skips the cooldown; assert 0 dispatch + defer
 # log, then release the lock and assert it dispatches (deferred, not starved).
-# The in-flight defer sits ABOVE the unchanged-head decline gate, so a
-# trigger arriving mid-review is deferred — never falsely declined against
-# not-yet-stamped review state.
+# (The defer-over-decline ordering itself is documented at review.sh's
+# in-flight probe — this scenario asserts only defer + no-starvation.)
 echo "  scenario 25: PR with a review in flight (held per-PR flock) → not enumerated (defer), 0 dispatch..."
 clear_seeded_runs
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
