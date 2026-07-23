@@ -42,6 +42,16 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$HOME/.pr-reviewer/lib}"
 # smoke tests and the production symlink ($HOME/.pr-reviewer/lib).
 . "$REVIEWER_LIB_DIR/bootstrap.sh"
 require_tracked_targets
+# Two-line header every orchestrator decline comment LEADS with — the single
+# shared definition for both the decline poster (gh pr comment --body) and
+# the anchored recognizer (jq startswith) below, so template and recognizer
+# can't drift apart (a divergence would make the recognizer miss real
+# declines → decline spam every tick + a cutoff that never advances).
+# Constructed HERE, after bootstrap → tracked-repos.sh has sourced
+# config.env, so a configured BOT_AUTO_POST_MARKER is baked in — the same
+# post-config shape as review-one-pr.sh's PLACEHOLDER_HEADER.
+BOT_DECLINE_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_DECLINED_TRIGGER_MARKER"
 # Container entrypoint (review-loop.sh) pins one in-flight review per account.
 # Re-assert AFTER config.env is sourced (above, via bootstrap → tracked-repos.sh)
 # so a stray legacy MAX_CONCURRENT/WAIT_FOR_WORKERS in config.env can't silently
