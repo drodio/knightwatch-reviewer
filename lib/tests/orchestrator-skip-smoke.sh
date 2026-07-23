@@ -1002,21 +1002,14 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-# Scenario 22: in-flight guard — a PR whose review is already running is NOT
-# enumerated. This is the double-enumeration race behind plow-pbc/plow#1102:
-# with NO completed review yet (KNOWN_SHA empty, exactly the state DURING a
-# first review), the PR reads as an eligible first review — which skips the
-# stability cooldown — so refresh_queue would queue a duplicate spec. consume's
-# flock probe can't catch it because the in-flight review finishes (releasing
-# the flock) before that stale spec is consumed. To stand in for the in-flight
-# review we hold the PR's per-PR flock in THIS test process across the first
-# run_orchestrator — review.sh runs as a child, so its refresh_queue
-# acquire_pr_lock is denied by our lock (ordinary cross-process flock), no
-# separate holder process needed. Assert refresh skips it (defer log, 0
-# dispatch); releasing the lock + re-running must then dispatch (deferred, not
-# starved). (No seeded run + empty comments = the KNOWN_SHA-empty first-review
-# case; the comment body is irrelevant since trigger detection only runs once
-# KNOWN_SHA is set.)
+# Scenario 22: in-flight guard — a PR whose review is running is NOT enumerated
+# (the plow-pbc/plow#1102 double-enumeration race; see refresh_queue's in-flight
+# guard for the why). Stand in for the in-flight review by holding the PR's
+# per-PR flock in THIS test process across the first run_orchestrator: review.sh
+# runs as a child, so its acquire_pr_lock is denied by ordinary cross-process
+# flock (no separate holder needed). No seeded run + empty comments = the
+# KNOWN_SHA-empty first-review case that skips the cooldown; assert 0 dispatch +
+# defer log, then release the lock and assert it dispatches (deferred, not starved).
 echo "  scenario 22: PR with a review in flight (held per-PR flock) → not enumerated (defer), 0 dispatch..."
 clear_seeded_runs
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"

@@ -15,12 +15,10 @@
 # is real fs (declared in the unit's ReadWritePaths) and shared
 # across every tick.
 
-# pr_lock_slug REPO PR_NUM — the canonical per-PR lock identity. Every lifecycle
-# stage that flocks a PR (the enumerator's in-flight guard, the queue consumer's
-# probe, and the worker's lifetime lock) MUST derive the slug through here so
-# they all lock the SAME file. An inline copy that drifts would make two stages
-# lock different files and silently defeat the per-PR serialization — the exact
-# class the in-flight guard exists to prevent.
+# pr_lock_slug REPO PR_NUM — canonical per-PR lock identity. Every stage that
+# flocks a PR (enumerator in-flight guard, consumer probe, worker lifetime lock)
+# derives the slug here so they lock the SAME file; an inline copy that drifts
+# would silently make two stages lock different files and defeat the serialization.
 pr_lock_slug() {
     printf '%s__%s' "${1//\//_}" "$2"
 }
