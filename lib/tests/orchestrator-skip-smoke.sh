@@ -1002,4 +1002,44 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
+# Scenario 22: in-flight guard — a PR whose review is running is NOT enumerated
+# (the plow-pbc/plow#1102 double-enumeration race; see refresh_queue's in-flight
+# guard for the why). Stand in for the in-flight review by holding the PR's
+# per-PR flock in THIS test process across the first run_orchestrator: review.sh
+# runs as a child, so its acquire_pr_lock is denied by ordinary cross-process
+# flock (no separate holder needed). No seeded run + empty comments = the
+# KNOWN_SHA-empty first-review case that skips the cooldown; assert 0 dispatch +
+# defer log, then release the lock and assert it dispatches (deferred, not starved).
+echo "  scenario 22: PR with a review in flight (held per-PR flock) → not enumerated (defer), 0 dispatch..."
+clear_seeded_runs
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+. "$REVIEWER_LIB_DIR/locking.sh"
+acquire_pr_lock "$STATE_DIR" "cncorp_plow__1" || { echo "FAIL scenario 22: could not hold the in-flight lock"; exit 1; }
+
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    release_pr_lock
+    echo "FAIL scenario 22 (in-flight double-enumeration): expected 0 dispatches for a PR whose review is in flight, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q "review in flight — deferring enumeration" "$LOG_FILE"; then
+    release_pr_lock
+    echo "FAIL scenario 22: expected the in-flight defer log — a different skip fired, so this isn't fencing the in-flight guard"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Release the in-flight lock; the deferred PR must now enumerate + dispatch (not starved).
+release_pr_lock
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 22 (starvation regression): after the in-flight review finished, the deferred PR must enumerate + dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (23 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

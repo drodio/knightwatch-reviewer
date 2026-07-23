@@ -15,6 +15,14 @@
 # is real fs (declared in the unit's ReadWritePaths) and shared
 # across every tick.
 
+# pr_lock_slug REPO PR_NUM — canonical per-PR lock identity. Every stage that
+# flocks a PR (enumerator in-flight guard, consumer probe, worker lifetime lock)
+# derives the slug here so they lock the SAME file; an inline copy that drifts
+# would silently make two stages lock different files and defeat the serialization.
+pr_lock_slug() {
+    printf '%s__%s' "${1//\//_}" "$2"
+}
+
 # acquire_pr_lock STATE_DIR PR_LOCK_SLUG — exits 0 if the caller now
 # holds an exclusive flock on $STATE_DIR/locks/<PR_LOCK_SLUG>, or 1 if
 # another process already holds it. Exports PR_LOCK_DIR / PR_LOCK_FILE
