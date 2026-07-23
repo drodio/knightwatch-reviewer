@@ -79,8 +79,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
-PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
-if ! acquire_pr_lock "$STATE_DIR" "$PR_LOCK_SLUG"; then
+if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
     _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/orchestrator.log}"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: another review already in flight (lock held on $PR_LOCK_FILE) — skipping this invocation" \
         | tee -a "$_raw_log" 2>/dev/null || true

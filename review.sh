@@ -123,7 +123,7 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
-    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT pr_inflight_slug
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -147,8 +147,7 @@ refresh_queue() {
         # review completes re-evaluates the PR against real (now-stamped) state.
         # (Observed on plow-pbc/plow#1102: a refresh mid-first-review queued a
         # spec that later ran as a redundant re-review of a freshly-pushed head.)
-        pr_inflight_slug="${REPO//\//_}__${PR_NUM}"
-        if ! acquire_pr_lock "$STATE_DIR" "$pr_inflight_slug"; then
+        if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
             log "$PR_ID: review in flight — deferring enumeration to a later refresh"
             continue
         fi
@@ -393,7 +392,7 @@ refresh_queue() {
 # but not a serial re-consume, so add a KNOWN_SHA re-check here before doing so.
 consume_queue() {
     local specs spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE pr_lock_slug
+    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE
     local active=0 dispatched=0 worker_secs
     specs=$(read_queue_specs "$STATE_DIR")
     while IFS= read -r spec; do
@@ -428,8 +427,7 @@ consume_queue() {
         # all picking specs[0]. The worker re-acquires the lock for the
         # review's lifetime (lib/review-one-pr.sh) — that self-lock is the
         # correctness backstop for the tiny release->re-acquire race.
-        pr_lock_slug="${REPO//\//_}__${PR_NUM}"
-        if ! acquire_pr_lock "$STATE_DIR" "$pr_lock_slug"; then
+        if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
             continue   # in-flight elsewhere; try the next spec
         fi
         release_pr_lock
