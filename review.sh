@@ -228,16 +228,17 @@ refresh_queue() {
             # Only the bot's OWN declines count: the marker string is public,
             # so without the author check a drive-by commenter could paste it
             # and silently consume other users' pending triggers. And only an
-            # ANCHORED match counts — the body must START with the exact
-            # auto-post + decline marker lines the decline template leads
-            # with. A substring match would also hit bot-authored REVIEW
-            # comments whose model-generated body merely quotes the literal
-            # marker (a review discussing this very feature can), silently
+            # ANCHORED match counts — the body must START with the two-line
+            # decline header (BOT_DECLINE_HEADER, shared with the poster
+            # below so template and recognizer can't drift). A substring
+            # match would also hit bot-authored REVIEW comments whose
+            # model-generated body merely quotes the literal marker (a
+            # review discussing this very feature can), silently
             # impersonating decline state and consuming a collaborator's
             # trigger posted mid-review.
             DECLINE_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                jq -c --arg apost "$BOT_AUTO_POST_MARKER" --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
-                    '[.[] | select(.user.login == $bot_user and (.body | startswith($apost + "\n" + $dmark)))] | sort_by(.created_at, .id) | last // empty')
+                jq -c --arg dhead "$BOT_DECLINE_HEADER" --arg bot_user "$BOT_USER" \
+                    '[.[] | select(.user.login == $bot_user and (.body | startswith($dhead)))] | sort_by(.created_at, .id) | last // empty')
             DECLINED_AT=""; SINCE_ID=""
             [ -n "$DECLINE_JSON" ] && DECLINED_AT=$(printf '%s' "$DECLINE_JSON" | jq -r '.created_at // empty')
             if [ -n "$DECLINED_AT" ] && [ "$DECLINED_AT" \> "$REVIEWED_AT_ISO" ]; then
@@ -352,8 +353,7 @@ refresh_queue() {
                 # Capture stderr so a persistent post failure (auth lapse,
                 # rate limit) is diagnosable — while it fails, the trigger
                 # stays open and each tick retries the decline.
-                DECLINE_ERR=$(gh pr comment "$PR_NUM" --repo "$REPO" --body "$BOT_AUTO_POST_MARKER
-$BOT_DECLINED_TRIGGER_MARKER
+                DECLINE_ERR=$(gh pr comment "$PR_NUM" --repo "$REPO" --body "$BOT_DECLINE_HEADER
 A review was already landed on this commit (\`${KNOWN_SHA:0:7}\`) — declining to review again. Push new commits to get a fresh review." 2>&1 >/dev/null) \
                     || log "$PR_ID: failed to post decline comment — trigger stays open; retrying next tick: $(printf '%s' "$DECLINE_ERR" | tr '\n' ' ' | head -c 300)"
                 continue

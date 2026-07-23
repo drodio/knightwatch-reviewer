@@ -19,6 +19,14 @@ BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-pos
 # also advances its trigger cutoff past the newest decline, consuming the
 # declined trigger so it can't force a stale review after the next push.
 BOT_DECLINED_TRIGGER_MARKER="${BOT_DECLINED_TRIGGER_MARKER:-<!-- knightwatch-reviewer:declined-trigger -->}"
+# Two-line header every orchestrator decline comment LEADS with — the single
+# shared definition for both the decline poster (gh pr comment --body) and
+# the anchored recognizer (jq startswith) in review.sh. One constant, so the
+# template and the recognizer can't drift apart: a divergence would make the
+# recognizer miss real declines → decline spam every tick + a cutoff that
+# never advances.
+BOT_DECLINE_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_DECLINED_TRIGGER_MARKER"
 # Marker on the re-request poller's auto-posted /<prefix>-review trigger. Unlike
 # the auto-post marker above, a comment carrying THIS one still triggers a review
 # (it must — that's its whole job); it only tells the orchestrator to treat the
