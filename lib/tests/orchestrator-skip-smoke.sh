@@ -1002,4 +1002,63 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-echo "  PASS (22 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches)"
+# Scenario 22: in-flight guard — a PR whose review is already running is NOT
+# enumerated. This is the double-enumeration race behind plow-pbc/plow#1102:
+# with NO completed review yet (KNOWN_SHA empty, exactly the state DURING a
+# first review), the PR reads as an eligible first review — which skips the
+# stability cooldown — so refresh_queue would queue a duplicate spec. consume's
+# flock probe can't catch it because the in-flight review finishes (releasing
+# the flock) before that stale spec is consumed. We hold the PR's per-PR flock
+# in a background "holder" (mirrors scenario 10) to stand in for the in-flight
+# review, then assert refresh skips it with the defer log and 0 dispatch.
+# Releasing the holder + re-running must then dispatch (deferred, not starved).
+# (No seeded run + empty comments = the KNOWN_SHA-empty first-review case; the
+# comment body is irrelevant since trigger detection only runs once KNOWN_SHA
+# is set.)
+echo "  scenario 22: PR with a review in flight (held per-PR flock) → not enumerated (defer), 0 dispatch..."
+clear_seeded_runs
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+IF_HOLDER_MARKER="$TMPDIR/if-holder-acquired.flag"
+IF_HOLDER_RELEASE="$TMPDIR/if-holder-release.flag"
+rm -f "$IF_HOLDER_MARKER" "$IF_HOLDER_RELEASE"
+cat > "$TMPDIR/if-holder.sh" <<HOLDER
+#!/usr/bin/env bash
+. "$REVIEWER_LIB_DIR/locking.sh"
+if ! acquire_pr_lock "$STATE_DIR" "cncorp_plow__1"; then echo "IF_HOLDER_FAILED" >&2; exit 1; fi
+echo "got_lock" > "$IF_HOLDER_MARKER"
+for i in \$(seq 1 100); do [ -f "$IF_HOLDER_RELEASE" ] && exit 0; sleep 0.1; done
+exit 0
+HOLDER
+chmod +x "$TMPDIR/if-holder.sh"
+bash "$TMPDIR/if-holder.sh" >"$TMPDIR/if-holder.log" 2>&1 &
+IF_HOLDER_PID=$!
+for _ in $(seq 1 50); do [ -f "$IF_HOLDER_MARKER" ] && break; sleep 0.1; done
+[ -f "$IF_HOLDER_MARKER" ] || { kill "$IF_HOLDER_PID" 2>/dev/null; echo "FAIL scenario 22: holder never acquired the in-flight lock"; cat "$TMPDIR/if-holder.log"; exit 1; }
+
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    touch "$IF_HOLDER_RELEASE"; wait "$IF_HOLDER_PID" 2>/dev/null
+    echo "FAIL scenario 22 (in-flight double-enumeration): expected 0 dispatches for a PR whose review is in flight, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q "review in flight — deferring enumeration" "$LOG_FILE"; then
+    touch "$IF_HOLDER_RELEASE"; wait "$IF_HOLDER_PID" 2>/dev/null
+    echo "FAIL scenario 22: expected the in-flight defer log — a different skip fired, so this isn't fencing the in-flight guard"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Release the in-flight holder; the SAME trigger must now dispatch (deferred, not starved).
+touch "$IF_HOLDER_RELEASE"; wait "$IF_HOLDER_PID" 2>/dev/null
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 22 (starvation regression): after the in-flight review finished, the deferred PR must enumerate + dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (23 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

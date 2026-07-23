@@ -123,7 +123,7 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
-    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT pr_inflight_slug
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -132,6 +132,28 @@ refresh_queue() {
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
         PR_ID="${REPO}#${PR_NUM}"
+
+        # In-flight guard: skip a PR whose review is already running. Eligibility
+        # below is decided from COMPLETED-review state — KNOWN_SHA, read from
+        # runs/<id>/meta.json, which a still-running review has NOT stamped yet.
+        # So while a review is in flight the PR reads as eligible (often as a
+        # never-reviewed FIRST review, which bypasses the stability cooldown), and
+        # we queue a DUPLICATE spec. consume_queue's own flock probe can't catch
+        # it: by the time that spec is consumed the review has finished and
+        # released the flock, so the probe waves it through — the enumerator and
+        # the flock check look at two different moments. Probe the SAME per-PR
+        # flock HERE, at the eligibility decision, so an in-flight review is never
+        # double-enumerated. Deferred, not dropped: the next refresh after the
+        # review completes re-evaluates the PR against real (now-stamped) state.
+        # (Observed on plow-pbc/plow#1102: a refresh mid-first-review queued a
+        # spec that later ran as a redundant re-review of a freshly-pushed head.)
+        pr_inflight_slug="${REPO//\//_}__${PR_NUM}"
+        if ! acquire_pr_lock "$STATE_DIR" "$pr_inflight_slug"; then
+            log "$PR_ID: review in flight — deferring enumeration to a later refresh"
+            continue
+        fi
+        release_pr_lock
+
         # Capture per-PR cutoff at the dispatcher BEFORE fetch + dispatch
         # so the worker can stamp meta.json.started_at from this value
         # instead of its own process-entry time. Closes the race where a
