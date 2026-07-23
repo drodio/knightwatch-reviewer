@@ -1183,4 +1183,24 @@ JSON
     fi
 done
 
-echo "  PASS (25 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table)"
+# Scenario 24c: BOTH command kinds fresh in one tick → whole-PR wins, even
+# though the incremental trigger is the overall-latest comment. Fences the
+# whole-over-incremental precedence, which now lives inside the single
+# trigger query's $whole-subset clause (previously shell `if/elif` over two
+# counts) — a regression to plain "latest hit wins" would dispatch this as
+# an incremental round.
+echo "  scenario 24c: fresh /srosro-review + LATER fresh /srosro-update-review → whole-PR precedence..."
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"},
+ {"id":103,"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"id":104,"created_at":"2026-06-01T00:00:15Z","user":{"login":"someuser"},"body":"/srosro-update-review"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 24c (whole-over-incremental precedence regression): expected 1 force_whole=true dispatch when both command kinds are fresh, got $n dispatch(es)"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (26 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table, whole-over-incremental-precedence)"
