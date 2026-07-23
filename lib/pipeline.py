@@ -17,13 +17,13 @@ SPECIALISTS = (
     "contract-drift", "tests", "shape", "consumers",
 )
 
-# Reasoning effort scales with PR size. gpt-5.5 at high reasoning is the
-# dominant per-call quota cost; small PRs don't warrant it, so a diff under
-# SMALL_PR_LOC changed lines runs the whole review at medium. review-one-pr.sh
-# passes the changed-line count via PR_DIFF_LOC; absent → high (safe default).
-# The aggregator is the one exception — it runs at xhigh regardless of size
-# (the single synthesis step is where a premium budget pays off); see its
-# call site in run_pipeline.
+# Reasoning effort scales with PR size. The flagship model at high reasoning
+# is the dominant per-call quota cost; small PRs don't warrant it, so a diff
+# under SMALL_PR_LOC changed lines runs the whole review at medium.
+# review-one-pr.sh passes the changed-line count via PR_DIFF_LOC; absent →
+# high (safe default). The aggregator is the one exception — it runs at xhigh
+# regardless of size (the single synthesis step is where a premium budget
+# pays off); see its call site in run_pipeline.
 SMALL_PR_LOC = 500
 
 
@@ -33,15 +33,15 @@ def _reasoning_effort(diff_loc: int) -> str:
 
 # Per-kind codex model routing. The critic pass runs once per specialist
 # (doubling the Wave-B fan-out) and mostly resolves yes/no against evidence
-# the specialist already cited, so it runs on the cheaper gpt-5.4-mini
-# (~30% of gpt-5.4 quota); every other agent uses the flagship gpt-5.5.
-DEFAULT_MODEL = "gpt-5.5"
-CRITIC_MODEL = "gpt-5.4-mini"
+# the specialist already cited, so it runs on the cheap/fast gpt-5.6-luna
+# tier; every other agent uses the flagship gpt-5.6-sol.
+DEFAULT_MODEL = "gpt-5.6-sol"
+CRITIC_MODEL = "gpt-5.6-luna"
 
 
 def model_for(name: str) -> str:
-    """The codex model for an agent `name`: cheap gpt-5.4-mini for the critic
-    pass, flagship gpt-5.5 for specialists, standalones, and the aggregator."""
+    """The codex model for an agent `name`: cheap gpt-5.6-luna for the critic
+    pass, flagship gpt-5.6-sol for specialists, standalones, and the aggregator."""
     return CRITIC_MODEL if name.startswith("critic-") else DEFAULT_MODEL
 
 
@@ -66,6 +66,43 @@ WATCHDOG_KILL_HARDCAP_PREFIX = "hit hard cap"
 _PROBE_BLOCK_RE = re.compile(r"^### Probe |^No probes\.$", re.MULTILINE)
 _PROBE_HEADER_RE = re.compile(r"^### Probe (\d+)\b", re.MULTILINE)
 _CRITIC_H2_RE = re.compile(r"^## Critic counter-arguments\s*$", re.MULTILINE)
+
+# A Sketch: fence is the probe contract's only multi-line field. Control
+# markup inside it (`### Probe N`, re-eval markers) is data, not structure —
+# protect fences before any probe-header scan or block rewrite so fenced
+# content can't mint phantom probes or split real blocks.
+_FENCE_RE = re.compile(r"^```[^\n]*\n.*?^```[ \t]*$", re.MULTILINE | re.DOTALL)
+
+
+def _protect_fences(text: str) -> tuple[str, list[str]]:
+    """Replace fenced code blocks with \x00FENCE<i>\x00 placeholders.
+    Returns (protected_text, fences). An unclosed fence is left as-is
+    (fail-open to the pre-Sketch behavior: loud validator abort)."""
+    fences: list[str] = []
+
+    def repl(m: re.Match) -> str:
+        fences.append(m.group(0))
+        return f"\x00FENCE{len(fences) - 1}\x00"
+
+    return _FENCE_RE.sub(repl, text), fences
+
+
+def _restore_fences(text: str, fences: list[str]) -> str:
+    for i, fence in enumerate(fences):
+        text = text.replace(f"\x00FENCE{i}\x00", fence)
+    return text
+
+
+def _probe_ids(text: str) -> list[str]:
+    """Probe IDs in `text`, fence-protected: headers inside Sketch fences are
+    data, not structure."""
+    return _PROBE_HEADER_RE.findall(_protect_fences(text)[0])
+
+
+def _has_probe_contract(text: str) -> bool:
+    """True when `text` carries a probe block or the 'No probes.' sentinel
+    outside any fence."""
+    return bool(_PROBE_BLOCK_RE.search(_protect_fences(text)[0]))
 # Codex prints this when the user's ChatGPT/Codex usage limit is hit. The
 # capture group is pinned to Codex's two observed reset formats — short
 # rolling-window ("6:26 PM") or weekly cap ("May 26th, 2026 11:33 AM") —
@@ -408,7 +445,7 @@ def run_codex(name: str, repo_dir: str, prompt: str, agent_dir: str,
         return 3
 
     if name in SPECIALISTS:
-        if not _PROBE_BLOCK_RE.search(out_file.read_text()):
+        if not _has_probe_contract(out_file.read_text()):
             with log_file.open("a") as lf:
                 lf.write(
                     f"[{_ts()}] agent={name} produced output that doesn't follow "
@@ -511,6 +548,15 @@ def _validate_critic_output(spec_text: str, crit_text: str) -> str | None:
     (the `### Probe N` token namespace is shared across the staged files) and
     are stripped before layering by run_specialist, not aborted on. Returns
     None on success, an error message on failure."""
+    # A Sketch: fence in either text can carry a `### Probe N` line or other
+    # control-shaped text as PR-steered data; protect both before any scan so
+    # a phantom header can't be counted as real. Validation only reads, so the
+    # returned fences lists are discarded.
+    spec_text, _ = _protect_fences(spec_text)
+    crit_text, _ = _protect_fences(crit_text)
+
+    # Both texts are protected above (load-bearing for every regex below), so
+    # scan them directly rather than through _probe_ids, which re-protects.
     spec_probe_id_list = _PROBE_HEADER_RE.findall(spec_text)
     spec_dupes = _duplicate_ids(spec_probe_id_list)
     if spec_dupes:
@@ -608,7 +654,7 @@ def run_specialist(
     # a bare 'No probes.' in that case, so the critic codex call is
     # deterministic waste. Synthesize the identical layered output and skip it
     # — the single biggest Wave-B quota saving on clean PRs.
-    if not _PROBE_HEADER_RE.findall(spec_out):
+    if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
         scratch_path.write_text(layered)
@@ -650,16 +696,22 @@ def run_specialist(
     # none) so the layered file stays a clean bijection the aggregator can
     # trust, rather than aborting all 7 angles. Mirrors the rc=124 soft-degrade
     # below; logged so the drop isn't silent.
-    spec_probe_ids = set(_PROBE_HEADER_RE.findall(spec_out))
+    spec_probe_ids = set(_probe_ids(spec_out))
+    # Fence-protect crit_out too: a phantom `### Probe N` inside a Sketch: fence
+    # would otherwise become a block *boundary* for this re.sub, splitting the
+    # fence out of its real block and deleting the legitimate content after it
+    # as an "orphan". Restore fences only if the rewrite actually changed
+    # something — an unchanged crit_out keeps its original (unprotected) text.
+    protected_crit_out, crit_fences = _protect_fences(crit_out)
     deorphaned = re.sub(
         r"^### Probe (\d+)\b.*?(?=^### Probe |\Z)",
         lambda m: m.group(0) if m.group(1) in spec_probe_ids else "",
-        crit_out, flags=re.MULTILINE | re.DOTALL,
+        protected_crit_out, flags=re.MULTILINE | re.DOTALL,
     )
-    if deorphaned != crit_out:
-        dropped = sorted(set(_PROBE_HEADER_RE.findall(crit_out)) - spec_probe_ids, key=int)
+    if deorphaned != protected_crit_out:
+        dropped = sorted(set(_PROBE_HEADER_RE.findall(protected_crit_out)) - spec_probe_ids, key=int)
         log(f"{pr_id}: critic-{specialist} stripped surplus probe(s) {dropped} not in specialist")
-        crit_out = deorphaned
+        crit_out = _restore_fences(deorphaned, crit_fences)
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
@@ -737,7 +789,13 @@ def run_pipeline(
     log(f"{pr_id}: Wave A — intent + dead-code-search")
     with ThreadPoolExecutor(max_workers=2) as ex:
         intent_fut = ex.submit(_run_standalone, "intent", **common_kwargs)
-        dc_fut = ex.submit(_run_standalone, "dead-code-search", **common_kwargs)
+        # dead-code-search is search-shaped (grep breadth, not reasoning
+        # depth) and anything load-bearing it finds is re-verified by the
+        # consumers specialist + critic, so it runs at medium regardless of
+        # PR size. Intent stays size-scaled: it is the anchor every
+        # specialist grades against.
+        dc_fut = ex.submit(_run_standalone, "dead-code-search",
+                           **dict(common_kwargs, effort="medium"))
         intent_rc = intent_fut.result()
         dc_rc = dc_fut.result()
     if intent_rc != 0:

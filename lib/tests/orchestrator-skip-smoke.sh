@@ -25,6 +25,10 @@
 #      push (SHA-delta dispatch runs force_whole=false); 24b's three-row
 #      table covers fresh post-decline triggers (incremental, whole-PR,
 #      and whole-PR in the decline's same second via the id tie-break).
+#  25. In-flight guard (#182): a PR whose review is running (held per-PR
+#      flock) is deferred at enumeration — 0 dispatch, and no false
+#      unchanged-head decline against not-yet-stamped state; released →
+#      dispatches (deferred, not starved).
 #  13. /srosro-update-review on PAGE 2 of the issue-comments endpoint
 #      → 1 dispatch. Stub emits page 2 only when --paginate is in args,
 #      so a regression that drops --paginate from lib/gh-comments.sh
@@ -430,6 +434,32 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
 fi
 if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
     echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Scenario 5b: same SHA + BOT_USER /srosro-review carrying the auto-trigger
+# marker (the re-request poller's self-identifying trigger). srosro is trusted
+# (as in scenario 5), so the trust gate would stage framing — but review.sh's
+# marker-strip blanks the body first, so the dispatch still happens (whole-PR)
+# with NO trigger_file. This isolates the marker-strip from the trust gate: the
+# poller's "auto-posted" attribution must never reach trigger-comment.md.
+echo "  scenario 5b: same SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
+printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 5b: expected 1 dispatch (the auto-trigger marker must NOT suppress dispatch), got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 5b: expected force_whole=true in dispatch"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
+    echo "FAIL scenario 5b: the auto-trigger note was staged as trigger-comment.md framing (review.sh marker-strip regressed)"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -1157,4 +1187,48 @@ JSON
 done
 
 
-echo "  PASS (25 scenarios: no-comments, bare-mention, unchanged-head-decline-table-deduped, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table)"
+# Scenario 25 (upstream #182's in-flight guard, renumbered post-merge): a PR
+# whose review is running is NOT enumerated (the plow-pbc/plow#1102
+# double-enumeration race; see refresh_queue's in-flight guard for the why).
+# Stand in for the in-flight review by holding the PR's per-PR flock in THIS
+# test process across the first run_orchestrator: review.sh runs as a child,
+# so its acquire_pr_lock is denied by ordinary cross-process flock (no
+# separate holder needed). No seeded run + empty comments = the KNOWN_SHA-
+# empty first-review case that skips the cooldown; assert 0 dispatch + defer
+# log, then release the lock and assert it dispatches (deferred, not starved).
+# The in-flight defer sits ABOVE the unchanged-head decline gate, so a
+# trigger arriving mid-review is deferred — never falsely declined against
+# not-yet-stamped review state.
+echo "  scenario 25: PR with a review in flight (held per-PR flock) → not enumerated (defer), 0 dispatch..."
+clear_seeded_runs
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+. "$REVIEWER_LIB_DIR/locking.sh"
+acquire_pr_lock "$STATE_DIR" "cncorp_plow__1" || { echo "FAIL scenario 25: could not hold the in-flight lock"; exit 1; }
+
+echo "[]" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    release_pr_lock
+    echo "FAIL scenario 25 (in-flight double-enumeration): expected 0 dispatches for a PR whose review is in flight, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if ! grep -q "review in flight — deferring enumeration" "$LOG_FILE"; then
+    release_pr_lock
+    echo "FAIL scenario 25: expected the in-flight defer log — a different skip fired, so this isn't fencing the in-flight guard"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Release the in-flight lock; the deferred PR must now enumerate + dispatch (not starved).
+release_pr_lock
+run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 25 (starvation regression): after the in-flight review finished, the deferred PR must enumerate + dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+echo "  PASS (26 scenarios: no-comments, bare-mention, unchanged-head-decline-table-deduped, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table, inflight-not-double-enumerated)"

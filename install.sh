@@ -43,10 +43,10 @@ ok()   { echo "✓ $1"; }
 # Refuse to run as root. The systemd unit ExecStart= paths bake in
 # /home/odio/.pr-reviewer/ — under sudo, $HOME becomes /root and
 # INSTALL_DIR resolves to /root/.pr-reviewer/, so the install would
-# write to a path systemd never reads. The internal `sudo cp` /
+# write to a path systemd never reads. The internal `sudo install` /
 # `sudo systemctl` calls below escalate privilege only where needed.
 if [ "${EUID:-$(id -u)}" -eq 0 ]; then
-    fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo cp / sudo systemctl handle the privileged bits."
+    fail "run install.sh as the bot user, NOT root. Resolved INSTALL_DIR=$INSTALL_DIR — systemd units are pinned to /home/odio/.pr-reviewer/, so a sudo invocation would write to the wrong tree. The script's internal sudo install / sudo systemctl handle the privileged bits."
 fi
 
 # pipeline.py runs under python3; fail loud here if unavailable rather
@@ -249,12 +249,21 @@ for unit in "${units[@]}"; do
         -e "s|@KWR_CONFIG_DIR@|$KWR_CONFIG_DIR|g" \
         "$unit" > "$rendered"
   fi
-  if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst"; then
+  # In-sync = content match AND mode 0644. The mode clause makes the
+  # 0600 self-heal deterministic: a root-0600 unit already fails cmp
+  # (EACCES), but a unit that's merely mode-drifted while readable
+  # would otherwise never converge.
+  if [[ -f "$dst" ]] && cmp -s "$rendered" "$dst" && [[ "$(stat -c %a "$dst")" = "644" ]]; then
     [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
     continue   # already in sync, no sudo needed
   fi
-  info "installing $name (sudo cp)"
-  sudo cp "$rendered" "$dst" || fail "cp failed for $name"
+  info "installing $name (sudo install)"
+  # install -m 0644, not cp: templated units render into mktemp files
+  # (mode 0600), and cp propagates that mode onto a NEW dst — leaving a
+  # root-only unit that the next user-run cmp can't read, so every
+  # install wants to "reinstall" it forever (observed on
+  # pr-reviewer-org-sync.service, 2026-07-20).
+  sudo install -m 0644 "$rendered" "$dst" || fail "install failed for $name"
   [[ "$rendered" != "$unit" ]] && rm -f "$rendered"
   CHANGED=$((CHANGED + 1))
 done
@@ -311,6 +320,27 @@ for timer in "${timers[@]}"; do
   fi
 done
 ok "timers: ${#timers[@]} present, $ENABLED newly enabled+started, $RESTARTED restarted"
+
+# --- 4b. enable the boot-managed reviewer fleet -----------------------------
+# The containerized review WORKERS (docker-compose.yml) are a standalone boot
+# service, not timer-triggered like the *.service units above — so the timer
+# loop doesn't reach it. `enable` (NOT `enable --now`): boot-persistence wiring
+# ONLY. install.sh must not bring containers up — a fresh host runs install.sh
+# before the image is built / secrets + kwr_claims exist (see README), so a
+# `--now` here would `docker compose up -d` against a not-yet-ready stack. The
+# ownership handoff is `systemctl start knightwatch-reviewer.service` (README) —
+# only that holds the oneshot unit active (RemainAfterExit), which is what makes
+# graceful `stop` on shutdown + PartOf restart-in-tandem actually apply. The
+# deploy does its STAGGERED `up -d` (zero-downtime, one account at a time) and
+# then `systemctl start` to hand the running stack to systemd. A bare `up -d`
+# alone leaves this unit inactive (no graceful stop / PartOf) until the next
+# boot. install.sh never restarts a running fleet — the staggered restart owns that.
+FLEET_UNIT=knightwatch-reviewer.service
+if ! systemctl is-enabled "$FLEET_UNIT" --quiet 2>/dev/null; then
+  info "enable $FLEET_UNIT (sudo)"
+  sudo systemctl enable "$FLEET_UNIT"
+fi
+ok "fleet: $FLEET_UNIT enabled for boot"
 
 echo
 ok "install complete"

@@ -265,13 +265,13 @@ class TestRunCodex(unittest.TestCase):
     @patch("pipeline.subprocess.Popen")
     def test_codex_argv_pins_model_per_kind(self, mock_popen):
         """Per-kind model routing must reach codex (regression fence): the
-        critic pass runs on the cheap gpt-5.4-mini; specialists, standalones,
-        and the aggregator all run on the flagship gpt-5.5."""
+        critic pass runs on the cheap/fast gpt-5.6-luna tier; specialists,
+        standalones, and the aggregator all run on the flagship gpt-5.6-sol."""
         cases = {
-            "intent": "model=gpt-5.5",
-            "security": "model=gpt-5.5",
-            "aggregator": "model=gpt-5.5",
-            "critic-security": "model=gpt-5.4-mini",
+            "intent": "model=gpt-5.6-sol",
+            "security": "model=gpt-5.6-sol",
+            "aggregator": "model=gpt-5.6-sol",
+            "critic-security": "model=gpt-5.6-luna",
         }
         for name, model_pin in cases.items():
             with self.subTest(name=name):
@@ -283,7 +283,7 @@ class TestRunCodex(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_codex_reasoning_effort_defaults_high(self, mock_popen):
-        """Unspecified effort keeps the pre-existing gpt-5.5 high-reasoning
+        """Unspecified effort keeps the pre-existing flagship high-reasoning
         behavior — the safe default when no PR-size signal is threaded in."""
         mock_popen.side_effect = _make_codex_stub(plan={"intent": (0, "### Probe 1\nstub\n")})
         pipeline.run_codex("intent", str(self.repo_dir), "PROMPT", str(self._agent_dir("intent")))
@@ -310,7 +310,7 @@ class TestRunCodex(unittest.TestCase):
         self.assertEqual(rc, 7)
         # Only watchdog kills (rc=124) retry; a normal codex failure (e.g. exit 7)
         # propagates immediately — those failures are not transient and a retry
-        # just wastes a gpt-5.5 budget.
+        # just wastes a flagship budget.
         self.assertEqual(mock_popen.call_count, 1)
 
     @patch("pipeline.os.killpg")
@@ -774,6 +774,20 @@ class TestValidateCriticOutput(unittest.TestCase):
         self.assertIn("critic emitted duplicate", err)
         self.assertIn("'1'", err)
 
+    def test_sketch_fence_phantom_probe_header_is_ignored(self):
+        """A `Sketch:` field's fenced code block is the probe contract's only
+        multi-line field, and PR-steered content can put a `### Probe N`-shaped
+        line inside it. That must be treated as data, not a real probe header
+        — otherwise a specialist that raised exactly one real probe (Probe 1,
+        fully resolved by the critic) spuriously fails validation because the
+        phantom `### Probe 2` inside the fence looks unresolved."""
+        spec = (
+            "### Probe 1\n- **From:** security\n- **Q:** Is X broken?\n"
+            "- **Sketch:**\n```python\n### Probe 2\nsome fake header inside a fence\n```\n"
+        )
+        crit = "## Critic counter-arguments\n\n### Probe 1\n- **Answer:** yes\n- **Evidence:** x\n"
+        self.assertIsNone(pipeline._validate_critic_output(spec, crit))
+
     def test_critic_h2_must_be_anchored_to_start_of_line(self):
         """A mid-prose quote of '## Critic counter-arguments' must not pass —
         a paragraph mentioning the section name doesn't satisfy the layered
@@ -1044,6 +1058,38 @@ class TestRunSpecialist(unittest.TestCase):
         self.assertNotIn("orphan-drop-me", layered)
 
     @patch("pipeline.subprocess.Popen")
+    def test_deorphan_retains_sketch_fence_containing_fake_header(self, mock_popen):
+        """A critic resolution's `Sketch:` fence can contain a `### Probe N`-
+        shaped line as PR-steered data. Unprotected, the de-orphan re.sub
+        treats that fake header as a block *boundary*: it splits Probe 1's
+        real resolution at the fence, and — since the fake id isn't a real
+        specialist probe — deletes everything from the fence through the end
+        of the critic output as a bogus 'orphan', including legitimate content
+        after the fence. The layered output must retain the fence (and
+        whatever follows it) verbatim instead."""
+        mock_popen.side_effect = _make_codex_stub({
+            "security": (0, "### Probe 1\nbody\n"),
+            "critic-security": (0,
+                "## Critic counter-arguments\n\n"
+                "### Probe 1\n- **Answer:** yes\n- **Evidence:**\n"
+                "```python\n### Probe 9\nfake_header_in_fence\n```\n"
+                "extra prose after fence\n"),
+        })
+        rc = pipeline.run_specialist(
+            specialist="security",
+            repo_dir=str(self.repo_dir), run_dir=str(self.run_dir),
+            prompts_dir=str(self.prompts),
+            pr_id="r#1", pr_title="t", pr_url="u", pr_author="a",
+        )
+        self.assertEqual(rc, 0)
+        layered = (self.run_dir / "agents" / "security" / "layered.md").read_text()
+        scratch = (self.repo_dir / ".codex-scratch" / "specialists" / "security.md").read_text()
+        self.assertEqual(layered, scratch)
+        self.assertIn("fake_header_in_fence", layered)   # fence content survives verbatim
+        self.assertIn("extra prose after fence", layered)  # content AFTER the fence survives
+        self.assertIn("```python\n### Probe 9\nfake_header_in_fence\n```", layered)
+
+    @patch("pipeline.subprocess.Popen")
     def test_scratch_staged_before_critic_runs(self, mock_popen):
         """The per-angle critic prompt cites .codex-scratch/specialists/<angle>.md
         as input. Verify the file exists with raw spec output at the moment the
@@ -1246,11 +1292,12 @@ class TestRunPipeline(unittest.TestCase):
 
     @patch("pipeline.subprocess.Popen")
     def test_reasoning_effort_scales_with_pr_diff_loc(self, mock_popen):
-        """Every codex call except the aggregator scales its reasoning effort
-        to PR size via the PR_DIFF_LOC env var: small PRs (< threshold) at
-        medium, larger PRs at high, absent signal defaults to high. The
-        aggregator is the one exception — it always runs at xhigh (the single
-        premium synthesis step), independent of PR size."""
+        """Every codex call except the aggregator and dead-code-search scales
+        its reasoning effort to PR size via the PR_DIFF_LOC env var: small PRs
+        (< threshold) at medium, larger PRs at high, absent signal defaults to
+        high. Two exceptions, independent of PR size: the aggregator always
+        runs at xhigh (the single premium synthesis step), and dead-code-search
+        always runs at medium (search-shaped work re-verified downstream)."""
         for loc_val, expected in [("100", "medium"), ("600", "high"), (None, "high")]:
             with self.subTest(loc=loc_val):
                 mock_popen.reset_mock()
@@ -1265,14 +1312,20 @@ class TestRunPipeline(unittest.TestCase):
                         os.environ.pop("PR_DIFF_LOC", None)
                     rc = self._run()
                 self.assertEqual(rc, 0)
-                agg_efforts, scaled_efforts = set(), set()
+                agg_efforts, dc_efforts, scaled_efforts = set(), set(), set()
                 for c in mock_popen.call_args_list:
                     argv = c.args[0]
                     out_path = argv[argv.index("-o") + 1]
-                    bucket = agg_efforts if "/aggregator/" in out_path else scaled_efforts
+                    if "/aggregator/" in out_path:
+                        bucket = agg_efforts
+                    elif "/dead-code-search/" in out_path:
+                        bucket = dc_efforts
+                    else:
+                        bucket = scaled_efforts
                     bucket.add(_effort_of(argv))
                 self.assertEqual(scaled_efforts, {expected})
                 self.assertEqual(agg_efforts, {"xhigh"})
+                self.assertEqual(dc_efforts, {"medium"})
 
     @patch("pipeline.subprocess.Popen")
     def test_intent_failure_aborts(self, mock_popen):
@@ -1828,7 +1881,7 @@ class TestPipelineCLI(unittest.TestCase):
 
         # Fake codex on PATH. Mirrors the real argv shape:
         #   codex exec -C <repo> --dangerously-bypass-approvals-and-sandbox \
-        #     -c model=gpt-5.5 -c model_reasoning_effort=high -o <out> <prompt>
+        #     -c model=gpt-5.6-sol -c model_reasoning_effort=high -o <out> <prompt>
         # Picks output by agent dir name (the parent of the -o target).
         self.fake_bin = root / "fakebin"
         self.fake_bin.mkdir()

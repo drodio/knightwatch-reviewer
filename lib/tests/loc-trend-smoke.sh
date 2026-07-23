@@ -280,19 +280,29 @@ grep -qE '\| \(sha not in local history\) \| n/a \|$' "$OUT" || {
     exit 1
 }
 
-# Test 10: T1 LOC-growth trigger FIRES when current Adds balloons past
-# round1 * 1.33 + 100. round1 (SHA1) = 10 adds vs base; a ballooned
-# current commit adds 300 lines → threshold = 10*133/100+100 = 113;
-# 310 > 113 → fired.
+# Test 10: T1 fires off the first-commit baseline — AND fences the fix against
+# the old round-1 baseline. The branch's first commit is SHA1 (10 adds); the
+# PR then balloons to 310 adds (SHA_BALLOON). Critically, the prior *visible
+# round* is seeded at SHA_BALLOON, so round_adds[0] = 310. With the correct
+# first-commit baseline: open=10 → threshold 10*133/100+100 = 113, current
+# 310 > 113 → fired. A regression to the old `round_adds[0]` baseline would
+# see 310 → threshold 310*133/100+100 = 512, current 310 < 512 → NOT fired,
+# failing this test. Asserting `open=10` pins the baseline to the first commit.
 git -C "$REPO" checkout -q -b balloon-branch "$SHA1"
 seq 1 300 > "$REPO/balloon.txt"
 git -C "$REPO" add balloon.txt && git -C "$REPO" commit -qm "balloon"
 SHA_BALLOON=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" checkout -q main
-reset_runs; seed_round1
+reset_runs
+# Prior visible round at SHA_BALLOON (NOT SHA1): makes round_adds[0]=310 so
+# only the first-commit baseline can fire — this is the regression fence.
+RUN_BIG="$STATE_DIR/runs/cncorp_plow__999__20260501T000000000Z__${SHA_BALLOON:0:7}"
+mkdir -p "$RUN_BIG"
+jq -n --arg sha "$SHA_BALLOON" --arg ts "2026-05-01T00:00:00Z" \
+    '{status:"completed", sha:$sha, started_at:$ts}' > "$RUN_BIG/meta.json"
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_BALLOON" > "$OUT"
-grep -qE '^REEVAL-LOC-TRIGGER: fired ' "$OUT" || {
-    echo "FAIL: expected T1 LOC-growth trigger to fire (round1=10, ballooned current)"
+grep -qE '^REEVAL-LOC-TRIGGER: fired \(open=10 ' "$OUT" || {
+    echo "FAIL: expected T1 fired with first-commit baseline open=10 (regression fence: old round-1 baseline would see 310 and NOT fire)"
     cat "$OUT"
     exit 1
 }
@@ -306,12 +316,13 @@ grep -qE '^REEVAL-LOC-TRIGGER: not-fired \(single round' "$OUT" || {
     exit 1
 }
 
-# Test 12: T1 does NOT fire below threshold. round1 (SHA1)=10 adds,
-# current (SHA2)=60 adds vs base; threshold=113; 60 < 113 → not-fired.
+# Test 12: T1 does NOT fire below threshold. The opening size (first commit
+# after BASE_SHA = SHA1) = 10 adds; current (SHA2) = 60 adds vs base;
+# threshold = 10*133/100+100 = 113; 60 < 113 → not-fired.
 reset_runs; seed_round1
 compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
-grep -qE '^REEVAL-LOC-TRIGGER: not-fired \(round1=' "$OUT" || {
-    echo "FAIL: expected T1 not-fired (below threshold) for round1=10 current=60"
+grep -qE '^REEVAL-LOC-TRIGGER: not-fired \(open=' "$OUT" || {
+    echo "FAIL: expected T1 not-fired (below threshold) for open=10 current=60"
     cat "$OUT"
     exit 1
 }
@@ -326,5 +337,43 @@ grep -qE '^REEVAL-LOC-TRIGGER: insufficient-data' "$OUT" || {
     cat "$OUT"
     exit 1
 }
+
+# Test 14: T-SIZE fires on a large first review (born-large). A first-review
+# diff that crosses the altitude bar (>=20 files OR >=600 adds) trips the
+# absolute-altitude trigger independent of trajectory. Build a branch off
+# BASE_SHA adding a 700-line file → 700 adds >= 600 → fired.
+git -C "$REPO" checkout -q -b bigsize-branch "$BASE_SHA"
+seq 1 700 > "$REPO/bigsize.txt"
+git -C "$REPO" add bigsize.txt && git -C "$REPO" commit -qm "bigsize"
+SHA_BIG=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+reset_runs   # no prior rounds -> first review (n_rounds=1)
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_BIG" > "$OUT"
+grep -qE '^REEVAL-SIZE-TRIGGER: fired ' "$OUT" || { echo "FAIL: expected SIZE trigger fired on large first review (700 adds >= 600)"; cat "$OUT"; exit 1; }
+
+# Test 14b: T-SIZE also fires off the FILES side of the OR (the 700-line case
+# only exercises the adds side). 20 one-line files = 20 adds (well under 600)
+# but 20 files >= the 20-file bar → fired. Asserting `files=20` pins the files
+# branch specifically.
+git -C "$REPO" checkout -q -b manyfiles-branch "$BASE_SHA"
+for n in $(seq 1 20); do echo x > "$REPO/f$n.txt"; done
+git -C "$REPO" add -A && git -C "$REPO" commit -qm "manyfiles"
+SHA_MANY=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" checkout -q main
+reset_runs   # first review (n_rounds=1)
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_MANY" > "$OUT"
+grep -qE '^REEVAL-SIZE-TRIGGER: fired \(files=20 ' "$OUT" || { echo "FAIL: expected SIZE fired off the files bar (20 files, adds=20 < 600)"; cat "$OUT"; exit 1; }
+
+# Test 15: T-SIZE does NOT fire on a small first review (below both bars).
+# SHA2 = 60 adds across 2 files vs base → 2 < 20 files AND 60 < 600 adds.
+reset_runs
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA2" > "$OUT"
+grep -qE '^REEVAL-SIZE-TRIGGER: not-fired ' "$OUT" || { echo "FAIL: expected SIZE not-fired on small first review (60 adds, 2 files)"; cat "$OUT"; exit 1; }
+
+# Test 16: T-SIZE is not-applicable on a re-review — the size redirect is
+# first-review only; the trajectory triggers (T1/T2) own re-reviews.
+reset_runs; seed_round1
+compute_loc_trend "cncorp/plow" "999" "$REPO" "$BASE_SHA" "$STATE_DIR" "$CURRENT_RUN" "$SHA_BIG" > "$OUT"
+grep -qE '^REEVAL-SIZE-TRIGGER: not-applicable ' "$OUT" || { echo "FAIL: expected SIZE not-applicable on re-review"; cat "$OUT"; exit 1; }
 
 echo "  PASS"

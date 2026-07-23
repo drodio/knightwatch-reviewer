@@ -206,6 +206,10 @@ for unit in "${PROD_UNITS[@]}"; do
         cmp -s "$rendered_expected" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name rendered content differs from installed"; diff "$rendered_expected" "$SYSTEMD_DIR/$name"; exit 1; }
         # Verbose check: no placeholder leaks into the installed unit.
         grep -qE '@(KID_RW_PATHS|KWR_CLONE_ROOT|KWR_CONFIG_DIR)@' "$SYSTEMD_DIR/$name" && { echo "FAIL scenario 1: installed $name still contains a @...@ placeholder (substitution broke)"; exit 1; }
+        # Mode fence: templated renders come from mktemp (0600); a cp-style
+        # install propagates that onto new files, leaving a root-only unit
+        # the next user-run cmp can't read → perpetual reinstall.
+        [ "$(stat -c %a "$SYSTEMD_DIR/$name")" = "644" ] || { echo "FAIL scenario 1: installed $name mode $(stat -c %a "$SYSTEMD_DIR/$name") != 644 (mktemp 0600 leaked through)"; exit 1; }
     else
         cmp -s "$unit" "$SYSTEMD_DIR/$name" || { echo "FAIL scenario 1: $name content differs from source"; exit 1; }
     fi
@@ -249,17 +253,34 @@ done
 # daemon-reload was called once (units actually changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 1: expected exactly 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 
-# enable --now called for every timer
+# enable --now called for every timer (start+enable). The boot-managed fleet
+# service is enabled WITHOUT --now (boot-persistence wiring only — install.sh
+# must not bring the container stack up; the ownership handoff is `systemctl
+# start knightwatch-reviewer.service`), so it is NOT in the --now count.
 n_enable="$(count_stub 'SYSTEMCTL enable --now')"
-[ "$n_enable" = "${#PROD_TIMERS[@]}" ] || { echo "FAIL scenario 1: expected ${#PROD_TIMERS[@]} enable --now calls, got $n_enable"; cat "$STUB_LOG"; exit 1; }
+[ "$n_enable" = "${#PROD_TIMERS[@]}" ] || { echo "FAIL scenario 1: expected ${#PROD_TIMERS[@]} enable --now calls (timers only), got $n_enable"; cat "$STUB_LOG"; exit 1; }
+grep -q 'SYSTEMCTL enable knightwatch-reviewer.service' "$STUB_LOG" || { echo "FAIL scenario 1: boot-managed fleet unit was not enabled (plain enable, no --now)"; cat "$STUB_LOG"; exit 1; }
+grep -q 'SYSTEMCTL enable --now knightwatch-reviewer.service' "$STUB_LOG" && { echo "FAIL scenario 1: fleet unit was enabled with --now (must be boot-wiring only — install.sh must not start the container stack)"; cat "$STUB_LOG"; exit 1; } || true
+
+# --- Scenario 1b: 0600 self-heal --------------------------------------------
+# The production symptom (pre-fix): a templated unit installed at mktemp's
+# 0600. Re-running install must detect the mode drift, reinstall exactly
+# that unit at 0644, and (scenario 2) go quiet again afterwards.
+echo "  scenario 1b: chmod 600 an installed unit — re-run heals it to 644..."
+HEAL_UNIT="$SYSTEMD_DIR/pr-reviewer-kid-refresh.service"
+chmod 600 "$HEAL_UNIT"
+: > "$STUB_LOG"
+MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 1b: install.sh exited non-zero on heal run"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SUDO install')" = "1" ] || { echo "FAIL scenario 1b: expected exactly 1 sudo install (the 0600 unit), got $(count_stub 'SUDO install')"; cat "$STUB_LOG"; exit 1; }
+[ "$(stat -c %a "$HEAL_UNIT")" = "644" ] || { echo "FAIL scenario 1b: unit still mode $(stat -c %a "$HEAL_UNIT") after heal run"; exit 1; }
 
 # --- Scenario 2: idempotent re-run -----------------------------------------
 echo "  scenario 2: re-run with everything already installed — no copy, no reload, no enable..."
 : > "$STUB_LOG"
 MOCK_TIMERS_ENABLED=1 run_install "$SHARED_OVERLAY/install.sh" || { echo "FAIL scenario 2: install.sh exited non-zero on rerun"; cat "$STUB_LOG"; exit 1; }
 
-# No sudo cp (units in sync)
-[ "$(count_stub 'SUDO cp')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo cp on rerun, got $(count_stub 'SUDO cp')"; cat "$STUB_LOG"; exit 1; }
+# No sudo install (units in sync)
+[ "$(count_stub 'SUDO install')" = "0" ] || { echo "FAIL scenario 2: expected 0 sudo install on rerun, got $(count_stub 'SUDO install')"; cat "$STUB_LOG"; exit 1; }
 # No daemon-reload (nothing changed)
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "0" ] || { echo "FAIL scenario 2: expected 0 daemon-reloads on rerun"; cat "$STUB_LOG"; exit 1; }
 # No enable --now (timers already enabled+active per stub)
@@ -332,8 +353,8 @@ MOCK_NEWLY_ADDED_TIMERS="pr-reviewer-fakenew.timer" \
 # argv-fakenew .service) — every existing unit is in sync because
 # scenario 1 already copied them and SYSTEMD_DIR is preserved across
 # scenarios.
-n_cp="$(count_stub 'SUDO cp')"
-[ "$n_cp" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo cp (new .service + new .timer + argv .service), got $n_cp"; cat "$STUB_LOG"; exit 1; }
+n_install="$(count_stub 'SUDO install')"
+[ "$n_install" = "3" ] || { echo "FAIL scenario 3: expected 3 sudo install (new .service + new .timer + argv .service), got $n_install"; cat "$STUB_LOG"; exit 1; }
 # daemon-reload called exactly once because something changed
 [ "$(count_stub 'SYSTEMCTL daemon-reload')" = "1" ] || { echo "FAIL scenario 3: expected 1 daemon-reload"; cat "$STUB_LOG"; exit 1; }
 # All three new files exist in the sandboxed SYSTEMD_DIR
@@ -353,11 +374,15 @@ n_cp="$(count_stub 'SUDO cp')"
 # enabled+active per MOCK_TIMERS_ENABLED).
 [ "$(count_stub 'SYSTEMCTL enable --now pr-reviewer-bakeoff.timer')" = "0" ] || { echo "FAIL scenario 3: existing pr-reviewer-bakeoff.timer was re-enabled despite already being active"; cat "$STUB_LOG"; exit 1; }
 # All already-active production timers (PROD_TIMERS) must have been restarted
-# because CHANGED > 0 (3 new unit files were copied). The new fakenew.timer
-# took the enable --now path (not yet active per MOCK_NEWLY_ADDED_TIMERS), so
-# it does NOT contribute a restart — only the existing active timers do.
+# because CHANGED > 0 (3 new unit files were copied). The new fakenew.timer took
+# the enable --now path (not yet active per MOCK_NEWLY_ADDED_TIMERS), so it does
+# NOT contribute a restart — only the existing active timers do.
 EXPECTED_RESTARTS="${#PROD_TIMERS[@]}"
-[ "$(count_stub 'SYSTEMCTL restart')" = "$EXPECTED_RESTARTS" ] || { echo "FAIL scenario 3: expected $EXPECTED_RESTARTS restarts (all existing active timers), got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
+[ "$(count_stub 'SYSTEMCTL restart')" = "$EXPECTED_RESTARTS" ] || { echo "FAIL scenario 3: expected $EXPECTED_RESTARTS restarts (existing active timers), got $(count_stub 'SYSTEMCTL restart')"; cat "$STUB_LOG"; exit 1; }
+# The boot-managed fleet unit is NEVER restarted by install.sh — the deploy's
+# staggered `up -d` owns fleet restarts, so a blanket bounce here can't tear down
+# in-flight reviews on an unrelated unit change.
+[ "$(count_stub 'SYSTEMCTL restart knightwatch-reviewer.service')" = "0" ] || { echo "FAIL scenario 3: fleet unit was restarted by install.sh (should be left to the deploy's staggered restart)"; cat "$STUB_LOG"; exit 1; }
 
 # --- Scenario 4: retired legacy units are disabled + removed ------------------
 # install.sh's removal branch (disable --now, then rm) is the cutover safety: a

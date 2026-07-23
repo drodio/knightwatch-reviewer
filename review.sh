@@ -133,6 +133,23 @@ refresh_queue() {
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
         PR_ID="${REPO}#${PR_NUM}"
+
+        # In-flight guard: skip a PR whose review is already running. Eligibility
+        # below reads COMPLETED-review state (KNOWN_SHA from runs/ meta.json),
+        # which an in-flight review hasn't stamped yet — so the PR looks eligible
+        # (often as a cooldown-exempt FIRST review) and we'd queue a duplicate
+        # spec. consume_queue's flock probe can't catch it: the review finishes
+        # and releases the flock before that spec is consumed. Probe the same
+        # per-PR flock HERE so an in-flight review is never double-enumerated;
+        # deferred, not dropped (the next refresh re-evaluates against real state).
+        # (plow-pbc/plow#1102: a refresh mid-first-review queued a spec that later
+        # ran as a redundant re-review of a freshly-pushed head.)
+        if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
+            log "$PR_ID: review in flight — deferring enumeration to a later refresh"
+            continue
+        fi
+        release_pr_lock
+
         # Capture per-PR cutoff at the dispatcher BEFORE fetch + dispatch
         # so the worker can stamp meta.json.started_at from this value
         # instead of its own process-entry time. Closes the race where a
@@ -287,6 +304,10 @@ refresh_queue() {
                     # have cleaned up. STATE_DIR/tmp is durable now
                     # (no PrivateTmp tear-down to mask the leak).
                     TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                    # The re-request poller's auto-trigger carries a human-facing
+                    # attribution note; its marker means "treat as bare command",
+                    # so drop the body — the note must not become requester framing.
+                    case "$TRIGGER_BODY" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
                 else
                     log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                 fi
@@ -407,7 +428,7 @@ A review was already landed on this commit (\`${KNOWN_SHA:0:7}\`) — declining 
 # but not a serial re-consume, so add a KNOWN_SHA re-check here before doing so.
 consume_queue() {
     local specs spec REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE pr_lock_slug
+    local TRIGGER_USER TRIGGER_BODY TICK_FETCHED_AT_ISO TRIGGER_FILE
     local active=0 dispatched=0 worker_secs
     specs=$(read_queue_specs "$STATE_DIR")
     while IFS= read -r spec; do
@@ -442,8 +463,7 @@ consume_queue() {
         # all picking specs[0]. The worker re-acquires the lock for the
         # review's lifetime (lib/review-one-pr.sh) — that self-lock is the
         # correctness backstop for the tiny release->re-acquire race.
-        pr_lock_slug="${REPO//\//_}__${PR_NUM}"
-        if ! acquire_pr_lock "$STATE_DIR" "$pr_lock_slug"; then
+        if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
             continue   # in-flight elsewhere; try the next spec
         fi
         release_pr_lock

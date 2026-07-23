@@ -161,7 +161,7 @@ format_review_scope() {
         first)
             printf '📋 First review of this PR' ;;
         whole)
-            printf '📋 Whole-PR re-review (`/%s-review`) — evaluated from scratch, no prior review consulted' "${BOT_CMD_PREFIX:-srosro}" ;;
+            printf '📋 Whole-PR re-review (`/%s-review`) — evaluated the full PR diff' "${BOT_CMD_PREFIX:-srosro}" ;;
         incremental:*)
             sha="${scope#incremental:}"
             if [ -z "$head_sha" ]; then
@@ -207,10 +207,52 @@ run_just_test() {
     # REVIEWER_TEST_USER unset and runs as the operator, unchanged.
     if [ -n "${REVIEWER_TEST_USER:-}" ]; then
         chown -R "$REVIEWER_TEST_USER" "$repo_dir"
+        # Nested-dind shared dir. A reviewed repo's test stack (e.g. plow's
+        # test-scenarios) may write a file the test runner shares with a stack
+        # container via a host bind mount — but that mount is resolved by the
+        # dind daemon's filesystem, not this reviewer's, so the path must live
+        # on a volume mounted into BOTH at the same location (docker-compose.yml:
+        # scenario-shared* → /scenario-shared). XDG_CACHE_HOME steers the recipe's
+        # shared dir here (plow keys ONLY its bridge dir off it —
+        # ${XDG_CACHE_HOME:-$HOME/.cache}/plow-scenario-shared, justfile:243); 1777
+        # lets the unprivileged test user create its per-run subdir.
+        # (SCENARIO_SHARED_DIR is a test seam; prod always uses the default.)
+        local scenario_shared="${SCENARIO_SHARED_DIR:-/scenario-shared}"
+        # Reset the bridge before EVERY run: the named volume persists
+        # PR-written state, and a stale root-owned nested dir turns later runs'
+        # mktemp into EACCES rendered as a generic test failure (issue #172 —
+        # 66/66 false failures on one worker). Reap dind leftovers first (a
+        # timed-out/died review leaves its stack running; dind serves only
+        # this reviewer, so anything alive is an orphan that could race the
+        # delete), then discard contents outright — a chown -R repair could be
+        # steered via persisted hard links. Root keeps the 1777 volume root;
+        # consumers recreate their dirs. The endpoint pin makes a misrouted
+        # run (this code executed with a host daemon reachable, e.g. an
+        # unstubbed test harness) refuse instead of rm -f'ing the wrong
+        # daemon. Fail LOUD: the caller runs without `set -e`/`pipefail`.
+        case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
+            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint (docker-compose.yml)"; exit 1;;
+        esac
+        local orphans
+        # shellcheck disable=SC2086 — one container id per line, word-split intended
+        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
+            && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
+            || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
         local rc=0
+        # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
+        # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
+        # XDG_CACHE_HOME, which must stay /scenario-shared for plow's bridge above).
+        # Without this the caches default to $XDG_CACHE_HOME/{uv,pip} on the persistent,
+        # PR-influenceable shared volume — the source of both the stale-root-ownership
+        # EACCES that spuriously failed tests AND the symlink/ownership races a
+        # dind-side process could run against an in-place root repair. On HOME they're
+        # created fresh, test-user-owned, on a path dind can't touch — no repair needed.
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
+                XDG_CACHE_HOME="$scenario_shared" \
+                UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
+                PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \
                 just --justfile "$just_file" --working-directory "$repo_dir" test \
             > "$test_log" 2>&1 || rc=$?
         # The test ran as reviewer-test on a reviewer-test-owned tree; everything
@@ -559,6 +601,26 @@ stage_prior_reviews() {
         result+=$'\n'
     done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
     printf '%s' "$result"
+}
+
+# reeval_marker_fired <marker> <state_dir> <repo_slug> <pr_num> <current_run_dir>
+#   Returns 0 if <marker> has already fired in a prior author-visible round.
+#
+# Re-eval fire-once markers are standalone lines the aggregator emits at the
+# top of a review body. Read each prior run's aggregator output directly and
+# inspect only its first 8 lines — no in-band separator parsing, so nothing a
+# rendered Sketch fence can contain (fake separators, quoted markers) is ever
+# window-eligible.
+reeval_marker_fired() {
+    local marker="$1" state_dir="$2" repo_slug="$3" pr_num="$4" current_run_dir="$5"
+    local prior_run
+    while IFS= read -r prior_run; do
+        [ -f "$prior_run/agents/aggregator/output.md" ] || continue
+        if head -8 "$prior_run/agents/aggregator/output.md" | grep -qxF "$marker"; then
+            return 0
+        fi
+    done < <(author_visible_runs_iter "$state_dir" "$repo_slug" "$pr_num" "$current_run_dir")
+    return 1
 }
 
 # latest_author_visible_review <state_dir> <repo_slug> <pr_num> <current_run_dir>

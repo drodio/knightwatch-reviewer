@@ -276,7 +276,7 @@ echo "  format_review_scope: whole → fragment with /srosro-review citation..."
 result=$(format_review_scope whole)
 assert_contains "$result" "Whole-PR re-review" "whole keyword"
 assert_contains "$result" '`/srosro-review`' "whole cites trigger"
-assert_contains "$result" "from scratch" "whole discloses no-prior-review"
+assert_contains "$result" "full PR diff" "whole discloses full-diff scope"
 
 echo "  format_review_scope: incremental:<from> <to> → cites both SHAs and the git diff command..."
 result=$(format_review_scope "incremental:$SHA_OLD" "$SHA_NEW")

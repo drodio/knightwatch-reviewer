@@ -70,11 +70,11 @@ cd knightwatch-reviewer
 ./install.sh
 ```
 
-`install.sh` symlinks scripts into `~/.pr-reviewer/`, copies the `systemd/*.{service,timer}` files into `/etc/systemd/system/`, daemon-reloads, and enables the timers. Idempotent — re-run after pulling changes.
+`install.sh` symlinks scripts into `~/.pr-reviewer/`, copies the `systemd/*.{service,timer}` files into `/etc/systemd/system/`, daemon-reloads, enables the timers, and `enable`s the boot-managed reviewer-fleet unit (`knightwatch-reviewer.service`) so the containers come back after a reboot. It does **not** start the fleet — that's the `systemctl start` in the containerized deployment below, after the image + secrets exist — so `install.sh` is safe to run before the container stack is built. Idempotent — re-run after pulling changes.
 
 Single-tenant by design: one Linux host with `gh` authenticated as the bot's signing user. The systemd units currently bake in `User=odio` and `/home/odio/.pr-reviewer/`; edit them for a different user or path.
 
-> **The review loop is containerized.** `install.sh` sets up only the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `poll` (the merged /srosro-approve + re-request-review poller), `kid-refresh`, and the specialist `bake-off`. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. No cutover drain is needed before `docker compose up -d`: the host reviewer was disabled ahead of this change, its detached workers are bounded to ~90m (`WORKER_TIMEOUT`), and nothing here re-creates a host reviewer — `review.sh` now runs only as the container loop's entrypoint — so no detached `review-one-pr.sh` from `~/.pr-reviewer` can still be posting by the time the containers start.
+> **The review loop is containerized.** `install.sh` sets up the **auxiliary host timers** — auto-discovery (`org-sync`), auto-calibration (`learn`), `poll` (the merged /srosro-approve + re-request-review poller), `kid-refresh`, and the specialist `bake-off` — plus the boot-persistence unit for the fleet. The reviewer itself runs in the **containerized multi-account deployment below** — it spreads reviews across N accounts and confines each review (PR code + codex agents) to a container. The legacy single-account host reviewer (`pr-reviewer.timer`/`.service`) has been retired in its favor; `install.sh` removes the stale units if a prior install left them. No cutover drain is needed before `docker compose up -d`: the host reviewer was disabled ahead of this change, its detached workers are bounded to ~90m (`WORKER_TIMEOUT`), and nothing here re-creates a host reviewer — `review.sh` now runs only as the container loop's entrypoint — so no detached `review-one-pr.sh` from `~/.pr-reviewer` can still be posting by the time the containers start.
 
 ### Containerized (multi-account) deployment
 
@@ -96,12 +96,20 @@ docker volume create kwr_claims
 # `docker volume ls | grep claims`):
 #   docker run --rm -v <OLD>:/old -v kwr_claims:/new alpine \
 #     sh -c 'cp -a /old/. /new/'
-docker compose up -d
+# First bring-up via systemd (after `./install.sh` has enabled the unit) so the
+# fleet's lifecycle is systemd-owned from the start — graceful `stop` on
+# shutdown + restart-in-tandem on a docker daemon restart (PartOf). ExecStart is
+# `docker compose up -d`, so this both starts the stack AND hands it to systemd.
+# Always finish a bring-up this way: a bare `docker compose up -d` starts the
+# containers but leaves this unit inactive, so graceful stop + PartOf don't apply
+# until the next boot. (A redeploy does its staggered `up -d` for zero downtime,
+# then `systemctl start` here to re-establish systemd ownership.)
+sudo systemctl start knightwatch-reviewer.service
 docker compose logs -f reviewer-1
 ```
 
 The auxiliary host timers (`-poll` — the merged /srosro-approve + re-request-review poller — `-kid-refresh`, `-org-sync`, `-learn`, `-bakeoff`) run host-side, independent of the containerized review loop. The containers read only `/shared/repos.conf` and the secrets mounts — never host *state* — with two read-only exceptions: (1) if the operator activates the operator-managed review config (set `KWR_CONFIG_REPO` in `~/.pr-reviewer/config.env` **and** `docker/secrets/config.env`), the host-pulled `${HOME}/services/kwr-config` cache is bind-mounted **read-only** at `/root/.kwr-config` into every reviewer (`install.sh` does the first pull, the `-org-sync` timer keeps it fresh); and (2) if the operator wires kid prior-art (see [kid prior-art](#kid-prior-art) below), the host-built `.keepitdry` indices are bind-mounted **read-only** into each reviewer. Two notes follow:
-- **Review coverage comes from `ORGS`, not `repos.conf.auto`.** Set `ORGS=(plow-pbc srosro)` in `docker/secrets/repos.conf` for whole-org review (every non-archived open PR, new repos included, via one batched search per org per tick); keep only partial orgs in `REPOS` (e.g. `cncorp/plow`). The containers never read `pr-reviewer-org-sync`'s `~/.pr-reviewer/repos.conf.auto` — and with `ORGS` they don't need to; org-sync's role is now just cloning org repos host-side for kid-prior-art.
+- **Review coverage comes from `ORGS`, not `repos.conf.auto`.** Set `ORGS=(plow-pbc srosro)` in `docker/secrets/repos.conf` for whole-org review (every non-archived open PR, new repos included, via one batched search per org per tick); keep only partial orgs in `REPOS` (owners NOT in `ORGS`, e.g. `some-org/one-repo`). The containers never read `pr-reviewer-org-sync`'s `~/.pr-reviewer/repos.conf.auto` — and with `ORGS` they don't need to; org-sync's role is now just cloning org repos host-side for kid-prior-art.
 - **Calibration is host-only in v1.** `pr-reviewer-learn` updates `~/.claude/COMMENT_REVIEW_MISTAKES.md`, but the containers read the static `docker/secrets/claude-standards/` copy → re-copy that file (or mount the live one read-only) to pick up new calibrations.
 
 Fully reconciling these into one shared host/container seam is the tracked follow-up in `.knightwatch/product-context.md`.
@@ -144,7 +152,7 @@ Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stab
 | Command | What |
 |---|---|
 | `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
-| `/srosro-review` | Whole-PR re-review from scratch |
+| `/srosro-review` | Whole-PR re-review (full diff; keeps prior-review + decline memory) |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
 | `/srosro-props [from: <specialist>]` | Give props to a specialist's contribution |
 | `/srosro-critique [from: <specialist>]` | Flag a specialist's contribution as a misread |

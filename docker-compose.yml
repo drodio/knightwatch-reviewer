@@ -17,7 +17,9 @@
 #
 # Scale-out (add account N): add a dind-N + reviewer-N pair. Each reviewer is
 # the `<<: *reviewer` + `<<: *reviewer-env` contract plus only its per-account
-# overrides — network_mode, WORKER_ID, local volume, codex-account mount.
+# overrides — network_mode, WORKER_ID, local volume, codex-account mount, and
+# the `scenario-sharedN:/scenario-shared` bridge on BOTH dind-N and reviewer-N
+# (+ a `scenario-sharedN` volume declaration).
 # Memory: reviewer (codex agents) + dind (just-test compose stack) per unit is
 # capped near the legacy single-unit budget so prod Plow keeps headroom on the
 # 128G host. Tune after observing real peaks.
@@ -56,12 +58,22 @@ x-reviewer-env: &reviewer-env
   DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
+  REPO_ENV_DIR: /root/.kwr/repo-env       # root-only mount of operator per-repo secret env files (e.g. plow-pbc_plow/api/.env.test-live — live test-scenario creds CI has but a fresh container lacks). review-one-pr.sh seeds them into the canonical clone so the trusted-author .env mirror copies them into the per-PR test dir. Empty/absent = no-op.
 
 services:
   dind-1:
     <<: *dind
     volumes:
       - dind1-lib:/var/lib/docker   # persist build cache across reviews
+      # Shared with reviewer-1 at the SAME path. A reviewed repo's `just test`
+      # (e.g. plow's test-scenarios) can bind-mount a host path the test runner
+      # wrote into a stack container — but that mount is resolved by THIS dind
+      # daemon's filesystem, not the reviewer's. Without a path shared between
+      # the two, the daemon mounts an empty auto-created dir and the container's
+      # token wait blocks → "Unable to reach your agent". XDG_CACHE_HOME points
+      # the recipe's shared dir here (lib/run-dir.sh). Per-pair to match the
+      # dindN-lib/reviewerN-local isolation model.
+      - scenario-shared1:/scenario-shared
 
   reviewer-1:
     <<: *reviewer
@@ -73,6 +85,7 @@ services:
     volumes:
       - claims:/shared
       - reviewer1-local:/local
+      - scenario-shared1:/scenario-shared   # token-passing bridge to dind-1 (see dind-1)
       # Writable (NOT :ro): codex loads/migrates config and refreshes its OAuth
       # token inside its home — a read-only mount makes every codex call die with
       # "Error loading configuration: Read-only file system". The creds stay
@@ -81,6 +94,11 @@ services:
       - ./docker/secrets/codex-account-a:/root/.codex          # OpenAI account A
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro      # tracked-repo manifest
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro      # ops knobs + `export GH_TOKEN=…` (the one config seam; review.sh sources it)
+      # Operator per-repo secret env files (gitignored host dir, never committed):
+      # <slug>/<relpath> mirrors a reviewed repo's `.env*` (e.g. plow-pbc_plow/api/
+      # .env.test-live). Under /root (0700) so the test user can't read it; review-
+      # one-pr.sh seeds it into the canonical clone for the trust-gated .env mirror.
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro
       - ./docker/secrets/claude-standards:/root/.claude:ro     # review standards (worker reads as root; the test user is isolated from /root)
       - ${HOME}/services/kwr-config:/root/.kwr-config:ro       # operator kwr-config cache, host path (sibling of kwr-repos; host org-sync keeps it fresh, containers never pull → read-only). KWR_CONFIG_REPO in config.env activates it. ${HOME} resolves at `compose up` time → one source of truth with the rendered systemd path.
 
@@ -88,6 +106,7 @@ services:
     <<: *dind
     volumes:
       - dind2-lib:/var/lib/docker
+      - scenario-shared2:/scenario-shared   # see dind-1
 
   reviewer-2:
     <<: *reviewer
@@ -99,9 +118,11 @@ services:
     volumes:
       - claims:/shared
       - reviewer2-local:/local
+      - scenario-shared2:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-b:/root/.codex          # OpenAI account B (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro       # see reviewer-1
       - ./docker/secrets/claude-standards:/root/.claude:ro
       - ${HOME}/services/kwr-config:/root/.kwr-config:ro
 
@@ -109,6 +130,7 @@ services:
     <<: *dind
     volumes:
       - dind3-lib:/var/lib/docker
+      - scenario-shared3:/scenario-shared   # see dind-1
 
   reviewer-3:
     <<: *reviewer
@@ -120,9 +142,11 @@ services:
     volumes:
       - claims:/shared
       - reviewer3-local:/local
+      - scenario-shared3:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-c:/root/.codex          # OpenAI account C (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro       # see reviewer-1
       - ./docker/secrets/claude-standards:/root/.claude:ro
       - ${HOME}/services/kwr-config:/root/.kwr-config:ro
 
@@ -130,6 +154,7 @@ services:
     <<: *dind
     volumes:
       - dind4-lib:/var/lib/docker
+      - scenario-shared4:/scenario-shared   # see dind-1
 
   reviewer-4:
     <<: *reviewer
@@ -141,9 +166,11 @@ services:
     volumes:
       - claims:/shared
       - reviewer4-local:/local
+      - scenario-shared4:/scenario-shared   # see dind-1
       - ./docker/secrets/codex-account-d:/root/.codex          # OpenAI account D (writable — see account A note)
       - ./docker/secrets/repos.conf:/shared/repos.conf:ro
       - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro       # see reviewer-1
       - ./docker/secrets/claude-standards:/root/.claude:ro
       - ${HOME}/services/kwr-config:/root/.kwr-config:ro
 
@@ -163,3 +190,8 @@ volumes:
   dind2-lib:
   dind3-lib:
   dind4-lib:
+  # Per-pair token-passing bridge for nested-dind scenario stacks (see dind-1).
+  scenario-shared1:
+  scenario-shared2:
+  scenario-shared3:
+  scenario-shared4:

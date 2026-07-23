@@ -79,8 +79,7 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-$STATE_DIR}"
 _LIB_DIR_EARLY="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 . "$_LIB_DIR_EARLY/locking.sh"
-PR_LOCK_SLUG="${REPO//\//_}__${PR_NUM}"
-if ! acquire_pr_lock "$STATE_DIR" "$PR_LOCK_SLUG"; then
+if ! acquire_pr_lock "$STATE_DIR" "$(pr_lock_slug "$REPO" "$PR_NUM")"; then
     _raw_log="${LOG_FILE:-${STATE_DIR:-$HOME/.pr-reviewer}/orchestrator.log}"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $PR_ID: another review already in flight (lock held on $PR_LOCK_FILE) — skipping this invocation" \
         | tee -a "$_raw_log" 2>/dev/null || true
@@ -373,8 +372,20 @@ flock "$CANONICAL_LOCK_FD" || { log "$PR_ID: canonical flock failed — aborting
 
 if [ ! -d "$CANONICAL_DIR/.git" ]; then
     log "Cloning canonical $REPO..."
-    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --depth=500 --no-single-branch; then
+    if ! gh repo clone "$REPO" "$CANONICAL_DIR" -- --no-single-branch; then
         log "$PR_ID: canonical clone failed — aborting"
+        exit 1
+    fi
+fi
+
+# One-time self-heal: canonicals cloned --depth=500 (before issue #170's
+# fix) are still shallow, and a plain fetch never deepens them — so any
+# PR whose merge base predates the shallow window keeps failing with
+# "no merge base". Convert in place; a no-op forever after.
+if [ "$(git -C "$CANONICAL_DIR" rev-parse --is-shallow-repository)" = "true" ]; then
+    log "$PR_ID: canonical is shallow — fetching full history (one-time --unshallow)"
+    if ! git -C "$CANONICAL_DIR" fetch --unshallow --quiet; then
+        log "$PR_ID: canonical --unshallow fetch failed — aborting"
         exit 1
     fi
 fi
@@ -394,10 +405,10 @@ fi
 # messages) can use the human-readable branch name.
 #
 # The base branch is fetched as `origin/$BASE_REF` so the per-PR clone
-# can diff against it locally. --depth=500 covers ~all PRs (deepening
-# logic could be added if a deep PR's merge-base falls outside that
-# window).
-if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --depth=500 --quiet; then
+# can diff against it locally. Fetches are full-history: a shallow
+# window (--depth=500 until issue #170) silently dropped any PR whose
+# merge base fell outside it.
+if ! git -C "$CANONICAL_DIR" fetch origin "$BASE_REF" --quiet; then
     log "$PR_ID: canonical fetch of $BASE_REF failed — aborting"
     exit 1
 fi
@@ -410,7 +421,7 @@ if [ "$PR_BRANCH" = "$BASE_REF" ]; then
     log "$PR_ID: PR head branch '$PR_BRANCH' collides with base '$BASE_REF' — refusing to fetch into refs/heads/$BASE_REF (would corrupt canonical's base ref)"
     exit 1
 fi
-if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --depth=500 --quiet 2>&1); then
+if ! fetch_err=$(git -C "$CANONICAL_DIR" fetch origin "+refs/pull/$PR_NUM/head:$PR_BRANCH" --quiet 2>&1); then
     log "$PR_ID: refs/pull/$PR_NUM/head fetch failed (${fetch_err:0:200}) — skipping"
     exit 0
 fi
@@ -433,6 +444,35 @@ if [ "$FORCE_WHOLE_PR" != "true" ]; then
         log "$PR_ID: fetched head $FETCHED_HEAD_SHA already reviewed by concurrent worker — skipping cleanly"
         exit 0
     fi
+fi
+
+# Seed operator-provided per-repo secret env files into the canonical clone so
+# the trusted-author .env mirror (further below) copies them into the per-PR test
+# dir. Source is a read-only, /root-only (0700) mount of host secrets — e.g.
+# plow's api/.env.test-live (live test-scenario creds CI has but a fresh container
+# lacks; without them test-scenarios fails the ANTHROPIC_API_KEY gate). NEVER
+# committed (docker/secrets/ is gitignored). Seed the CANONICAL clone, not
+# REPO_DIR directly: `git clone --shared` carries only tracked content, and the
+# mirror that copies these untracked files into a workdir is push-access-gated —
+# so untrusted authors never receive them. Absent dir = clean no-op (most repos
+# need no live creds). Runs after the KNOWN_SHA skip so a deduped review doesn't
+# seed pointlessly.
+repo_env_src="${REPO_ENV_DIR:-/root/.kwr/repo-env}/$REPO_SLUG"
+if [ -d "$repo_env_src" ]; then
+    repo_env_seeded=0
+    while IFS= read -r -d '' env_file; do
+        env_rel="${env_file#"$repo_env_src"/}"
+        # Fail loud: review-one-pr.sh runs without `set -e`, so an unchecked
+        # mkdir/cp failure would count as seeded and let the test run with missing
+        # or stale live creds (an opaque downstream ${VAR:?} / scenario failure).
+        if ! mkdir -p "$CANONICAL_DIR/$(dirname "$env_rel")" \
+           || ! cp "$env_file" "$CANONICAL_DIR/$env_rel"; then
+            log "$PR_ID: FATAL — repo-env seed of '$env_rel' failed; aborting before the test runs with missing/stale creds"
+            exit 1
+        fi
+        repo_env_seeded=$((repo_env_seeded + 1))
+    done < <(find "$repo_env_src" -type f -print0)
+    [ "$repo_env_seeded" -gt 0 ] && log "$PR_ID: seeded $repo_env_seeded operator repo-env file(s) into canonical"
 fi
 
 # Post the "reviewing" placeholder NOW that the canonical fetch confirmed
@@ -504,44 +544,13 @@ else
     log "$PR_ID: could not fetch comments to check for a prior placeholder — skipping placeholder this tick (continuing)"
 fi
 
-# Align canonical's `refs/heads/$BASE_REF` with the just-fetched
-# `refs/remotes/origin/$BASE_REF` BEFORE the `git clone --shared`.
-# This is load-bearing for two coupled reasons:
-#
-# 1. The clone's `refs/remotes/origin/*` mirrors canonical's
-#    `refs/heads/*`, NOT canonical's `refs/remotes/origin/*`. So if
-#    canonical's `refs/heads/$BASE_REF` is stale (the typical state —
-#    `git fetch origin BASE_REF` only updates the remote-tracking
-#    ref, never the local head), the workdir's `origin/$BASE_REF`
-#    points at a stale SHA that doesn't include the latest base
-#    commits.
-#
-# 2. For SHALLOW canonical clones (cncorp/plow uses --depth=500),
-#    `git clone --shared` from a shallow source does NOT set up
-#    `objects/info/alternates` in the new clone. So the workdir has
-#    ONLY the objects reachable from refs propagated by the clone
-#    (canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`).
-#    If BASE_REF_SHA is canonical's `refs/remotes/origin/$BASE_REF`
-#    but `refs/heads/$BASE_REF` is stale, that SHA is not in the
-#    workdir's reachable object set — and `git diff $BASE_REF_SHA...
-#    $REVIEWED_SHA` errors with "Invalid symmetric difference" but
-#    bash captures the empty stdout and the bot reads it as an
-#    empty diff, then aborts with `local git diff origin/<base>...
-#    <reviewed-sha> returned empty — aborting`.
-#
-# Both fail-modes were observed on cncorp/plow#568 after PR #36
-# deployed: every cncorp/plow review aborted at the diff stage
-# because the shallow canonical's `refs/heads/main` was at an old
-# SHA while `refs/remotes/origin/main` had been advanced by recent
-# fetches. The `update-ref` here makes both refs point at the same
-# SHA so the workdir gets a usable base via either path.
-#
-# Safe to run unconditionally: canonical's HEAD is on a per-PR
-# `pr-N` branch from a previous review, not on `$BASE_REF`, so
-# updating `refs/heads/$BASE_REF` doesn't move HEAD or touch the
-# working tree. The .env-mirror step that reads `$CANONICAL_DIR`'s
-# working tree is unaffected (working tree files persist across
-# ref updates).
+# Align canonical's local base ref BEFORE the `git clone --shared`.
+# The clone maps the source's refs/heads/* into its origin/* refs; it
+# does not copy the source's refs/remotes/origin/*. Fetch advances
+# only the latter, so update the local head first or the workdir
+# diffs against a stale base (observed on cncorp/plow#568). Safe to
+# run unconditionally: canonical's HEAD stays on a per-PR branch, so
+# this moves neither HEAD nor the working tree.
 if ! git -C "$CANONICAL_DIR" update-ref "refs/heads/$BASE_REF" "refs/remotes/origin/$BASE_REF"; then
     log "$PR_ID: failed to align refs/heads/$BASE_REF with refs/remotes/origin/$BASE_REF in canonical — aborting"
     exit 1
@@ -680,7 +689,17 @@ fi
 # class flagged across PR #31 and PR #35 reviews — single source of
 # truth: the worktree). Also collapses the prior cap-exceeded fallback
 # into the primary path, since `git diff` has no server-side file cap.
-FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA")
+# Check the exit code, not just stdout: a git failure (e.g. "no merge
+# base") writes to stderr and leaves stdout empty, which the -z branch
+# below would misread as "PR has no changes" — the silent-drop bug of
+# issue #170. Failure path re-runs the diff to capture stderr; cheap,
+# since a failing diff fails fast.
+if ! FULL_PR_DIFF=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>/dev/null); then
+    diff_err=$(git -C "$REPO_DIR" diff "$BASE_REF_SHA...$REVIEWED_SHA" 2>&1 >/dev/null | head -c 300)
+    log "$PR_ID: FATAL — git diff ${BASE_REF_SHA:0:7}...${REVIEWED_SHA:0:7} failed: ${diff_err}"
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 if [ -z "$FULL_PR_DIFF" ]; then
     log "$PR_ID: local git diff origin/${BASE_REF}...${REVIEWED_SHA:0:7} returned empty — aborting"
     rm -rf "$REPO_DIR"
@@ -705,20 +724,12 @@ KID_INPUT_DIFF="$FULL_PR_DIFF"
 # author_visible_runs_iter selection, so body/sha/approved/started_at
 # can't pick different rounds.
 #
-# state.json (state_get / state_set) was retired entirely with this
-# refactor — every runtime-decision seam now reads runs/, and the worker
-# no longer writes state.json. meta.json is stamped at run init and again
-# at finalize_run, both BEFORE the worker can crash mid-write, so the
-# "gh post succeeded but state_set failed" race that drove rounds 7-12
-# can no longer happen: there is no state_set to fail.
-#
 # Returns empty on first review (no prior author-visible run); empty
 # PREV_BODY then drives previous-review.md to be empty, which the
 # momentum gate uses as its "first review, skip momentum" signal.
 PREV_BODY=$(latest_author_visible_review "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 KNOWN_SHA=$(latest_author_visible_review_sha "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
 PREV_APPROVED=$(latest_author_visible_review_approved "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-[ "$FORCE_WHOLE_PR" = "true" ] && PREV_BODY=""
 
 # Optimization: use a local incremental diff for KID_INPUT_DIFF ONLY
 # when (a) the prior reviewed SHA is still on the branch's history AND
@@ -753,7 +764,7 @@ REVIEW_SCOPE=$(compute_review_scope "$FORCE_WHOLE_PR" "$KNOWN_SHA" "$USED_FALLBA
 # fallback path, diff.patch is the full PR, not an incremental subset).
 case "$REVIEW_SCOPE" in
     whole)
-        REVIEW_TASK="Whole-PR re-review (requested via /${BOT_CMD_PREFIX}-review). Review the full PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md. Any prior review is intentionally NOT provided — evaluate this PR from scratch."
+        REVIEW_TASK="Whole-PR re-review (requested via /${BOT_CMD_PREFIX}-review). Review the FULL PR diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md — evaluate the entire diff afresh, not just whether prior findings were addressed. Your prior review is in .codex-scratch/previous-review.md, older rounds in .codex-scratch/prior-reviews.md, and the operator thread in .codex-scratch/pr-comments.md — use them for carry-forward, argue-once, and operator-decline arbitration."
         ;;
     first)
         REVIEW_TASK="Review the diff at .codex-scratch/diff.patch against the standards in .codex-scratch/standards.md."
@@ -1253,35 +1264,20 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
     write_scratch "$REPO_DIR" "full-diff.patch" "$FULL_PR_DIFF"
 [ -n "$TRIGGER_COMMENT_BODY" ] && \
     write_scratch "$REPO_DIR" "trigger-comment.md" "$TRIGGER_COMMENT_BODY"
+# review-task.md is the authoritative per-run task/scope statement
+# common-header.md points agents at — without it the static
+# "re-review diffs are normally incremental" default misreads
+# whole-PR and fallback runs (their diff.patch is the FULL PR diff).
+write_scratch "$REPO_DIR" "review-task.md" "$REVIEW_TASK"
 
 # Stage prior aggregator outputs for this PR (every preserved run dir
 # except the current one) so the aggregator's carry-forward rule (step 38)
-# can check whether prior probes' cited shapes still exist at HEAD. Uses
-# the per-run layout from PR #11; before that layout only the most recent
-# scratch was kept. Empty / absent on the first review of a PR. Logic lives in
+# can check whether prior probes' cited shapes still exist at HEAD. Empty /
+# absent on the first review of a PR. Logic lives in
 # lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
 # function the worker calls.
-#
-# Skipped when FORCE_WHOLE_PR=true (i.e. the user explicitly invoked
-# /srosro-review): the trigger text on that path commits to "Any prior
-# review is intentionally NOT provided — evaluate this PR from scratch."
-# Staging prior-reviews.md anyway would silently break that contract,
-# letting the bot consult prior reviews while telling the reader it
-# didn't. loc-trend.md (LOC trajectory) is independent of prior review
-# content and stays staged — it's derived from runs/ metadata, not from
-# what previous reviewers said.
-# Read prior reviews UNCONDITIONALLY (cheap local read of runs/ dirs, no
-# scratch side-effect — the write below is the staging step). The
-# re-eval fire-once markers are grepped out of $PRIOR_REVIEWS, and they
-# must be detectable even on the /srosro-review (FORCE_WHOLE_PR) path —
-# otherwise a whole-PR re-review reads an empty prior set and re-fires a
-# banner already shown. So the *read* is unconditional; only the *write*
-# of prior-reviews.md stays gated (that path commits to evaluating the
-# PR from scratch, and staging prior reviews would break that contract).
 PRIOR_REVIEWS=$(stage_prior_reviews "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR")
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — skipping prior-reviews.md (whole-PR re-review evaluates from scratch; prior reviews still consulted for re-eval fire-once markers)"
-elif [ -n "$PRIOR_REVIEWS" ]; then
+if [ -n "$PRIOR_REVIEWS" ]; then
     PRIOR_COUNT=$(printf '%s' "$PRIOR_REVIEWS" | grep -c '^--- review at ')
     log "$PR_ID: staging $PRIOR_COUNT prior review(s) for carry-forward"
     write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
@@ -1357,21 +1353,21 @@ write_scratch "$REPO_DIR" "loc-trend.md" "$LOC_TREND"
 #     here; the aggregator owns deciding whether T2 fires this round.
 REEVAL_LOC_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-LOC-TRIGGER:' | head -n1)
 [ -z "$REEVAL_LOC_LINE" ] && REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
-# Suppress T1 on the whole-PR (/srosro-review) path. That path evaluates
-# from scratch with an empty previous-review.md, so pipeline.py does not
-# run the momentum standalone — and the aggregator's re-eval banner
-# requires momentum prose. The trajectory banner is inherently a
-# re-review concept (it compares round-1 size to now); firing it on a
-# from-scratch review would demand prose that was never generated.
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    REEVAL_LOC_LINE="REEVAL-LOC-TRIGGER: not-fired (whole-PR re-review evaluates from scratch — no trajectory banner)"
-fi
+REEVAL_SIZE_LINE=$(printf '%s\n' "$LOC_TREND" | grep -E '^REEVAL-SIZE-TRIGGER:' | head -n1)
+[ -z "$REEVAL_SIZE_LINE" ] && REEVAL_SIZE_LINE="REEVAL-SIZE-TRIGGER: unknown (no flag emitted)"
+# Re-eval markers are standalone lines the aggregator emits at the top of a
+# review body (right after the italicized intent line). reeval_marker_fired
+# (lib/run-dir.sh) reads each prior author-visible run's aggregator output
+# directly and inspects only its leading 8 lines — no in-band separator
+# parsing over $PRIOR_REVIEWS, so a marker string (or a fake separator)
+# rendered inside a Sketch fence deep in the body can never spoof the fired
+# flag.
 REEVAL_LOC_FIRED=no
 REEVAL_STALL_FIRED=no
-if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-loc -->'; then
+if reeval_marker_fired '<!-- knightwatch-reviewer:reeval-loc -->' "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR"; then
     REEVAL_LOC_FIRED=yes
 fi
-if printf '%s' "${PRIOR_REVIEWS:-}" | grep -qF '<!-- knightwatch-reviewer:reeval-stall -->'; then
+if reeval_marker_fired '<!-- knightwatch-reviewer:reeval-stall -->' "$STATE_DIR" "$REPO_SLUG_FOR_RUN" "$PR_NUM" "$RUN_DIR"; then
     REEVAL_STALL_FIRED=yes
 fi
 write_scratch "$REPO_DIR" "reeval-status.md" "$(cat <<REEVAL_EOF
@@ -1383,6 +1379,7 @@ deterministic triggers; each fires its banner at most once per PR.
 
 ## This round
 $REEVAL_LOC_LINE
+$REEVAL_SIZE_LINE
 
 ## Already fired in a prior round (durable — do NOT re-fire these)
 REEVAL-LOC-FIRED: $REEVAL_LOC_FIRED
@@ -1390,31 +1387,14 @@ REEVAL-STALL-FIRED: $REEVAL_STALL_FIRED
 REEVAL_EOF
 )"
 
-# pr-comments.md — the PR's human comment thread, so every specialist
-# sees replies to its own prior probes (and the aggregator can arbitrate
-# operator declines against the assembled probe set). Empty/absent on
-# first reviews and on PRs with no human comments. Fail-soft on
-# gh-failure (helper emits a sentinel; consumers fall back to existing
-# behavior).
-#
-# Skipped on:
-#   - FORCE_WHOLE_PR=true (i.e. /srosro-review) — the trigger text on that
-#     path commits to "Any prior review is intentionally NOT provided —
-#     evaluate this PR from scratch." Staging the thread (which carries the
-#     operator decline memory) anyway would silently break that contract.
-#   - First reviews (no PRIOR_REVIEWS) — there are no prior bot probes for
-#     a reply to address yet, and no operator declines for the aggregator
-#     to arbitrate. Staging pre-review human chatter would let a finding
-#     class be suppressed before the bot has ever raised it.
-# Mirrors the existing prior-reviews.md skip semantics above.
-if [ "$FORCE_WHOLE_PR" = "true" ]; then
-    log "$PR_ID: FORCE_WHOLE_PR=true — staging pr-comments.md sentinel (whole-PR re-review evaluates from scratch)"
-    # Sentinel keeps the prompt-input contract intact for the specialists /
-    # critic / aggregator, which list .codex-scratch/pr-comments.md as a
-    # required input. Empty/absent file would tempt those agents to explore
-    # the filesystem; the sentinel makes the "from scratch" decision explicit.
-    write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged on /${BOT_CMD_PREFIX}-review path — this is a from-scratch whole-PR re-review)"
-elif [ -z "${PRIOR_REVIEWS:-}" ]; then
+# pr-comments.md — the PR's human comment thread, so every specialist sees
+# replies to its own prior probes and the aggregator can arbitrate operator
+# declines. Fail-soft on gh-failure. Skipped on first reviews (no
+# PRIOR_REVIEWS): no prior bot probes exist for a reply to address, and
+# staging pre-review chatter would let a finding class be suppressed before
+# the bot has ever raised it. The sentinel (vs an empty/absent file) keeps
+# the prompt-input contract intact for consumers that require pr-comments.md.
+if [ -z "${PRIOR_REVIEWS:-}" ]; then
     log "$PR_ID: first review (no prior bot reviews) — staging pr-comments.md sentinel"
     write_scratch "$REPO_DIR" "pr-comments.md" "(PR comments intentionally not staged — first review on this PR; no prior bot probes exist for a reply to address)"
 else
@@ -1485,6 +1465,26 @@ if [ -z "$COMMITS" ]; then
     exit 1
 fi
 write_scratch "$REPO_DIR" "commits.md" "$COMMITS"
+
+# Pre-spend stale-head gate: the last cheap moment to cancel before the
+# LLM fan-out. A push that landed during setup (checkout → just test →
+# kid → scratch staging — routinely 20-40 min) means this run's snapshot
+# is already superseded; posting it anyway is what stacked 61 stale
+# reviews across the last 60 plow PRs. Movement DURING the specialists is
+# still disclosed post-hoc via the existing ⚠️ Stale header — completed
+# reviews are paid for, so they post. Best-effort fetch, fail-open on gh
+# failure (empty PRE_SPEND_HEAD → proceed), same shape as the post-run
+# CURRENT_HEAD check below. exit 1 rides the normal abort convention:
+# the EXIT trap PATCHes the placeholder with EYES_ABORT_BODY and stamps
+# meta.json aborted, which keeps this run OUT of the KNOWN_SHA dedup —
+# the next orchestrator tick sees the new head as unreviewed and runs it.
+PRE_SPEND_HEAD=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+if [ -n "$PRE_SPEND_HEAD" ] && [ "$PRE_SPEND_HEAD" != "$REVIEWED_SHA" ]; then
+    log "$PR_ID: head moved before specialist kickoff (reviewed=${REVIEWED_SHA:0:7}, now=${PRE_SPEND_HEAD:0:7}) — aborting pre-spend"
+    EYES_ABORT_BODY="⏭ review superseded — head moved from \`${REVIEWED_SHA:0:7}\` to \`${PRE_SPEND_HEAD:0:7}\` before the LLM specialists started; aborted pre-spend. The next tick reviews the new head."
+    rm -rf "$REPO_DIR"
+    exit 1
+fi
 
 # Run the LLM review pipeline (intent → dead-code → 8 angles parallel →
 # momentum (re-reviews only) → aggregator). Implementation in lib/pipeline.py.

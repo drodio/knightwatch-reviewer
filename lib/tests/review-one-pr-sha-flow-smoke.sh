@@ -45,6 +45,29 @@ seed_state_dir() {
     echo "{}" > "$1/state.json"
 }
 
+# run_worker_in_state <state_dir> <worker arg>... — one worker run against a
+# state dir's standard layout (the six env exports + repos.conf that every
+# scenario repeats). Per-scenario extras (PATH shims, REVIEWER_CONTAINER_MODE,
+# KWR_CONFIG_*, ...) ride as env-prefixes on the call — bash's temporary
+# environment is inherited by the worker. The worker's exit code propagates;
+# append `|| true` at call sites that don't assert on it.
+run_worker_in_state() {
+    local state="$1"
+    shift
+    (
+        export STATE_DIR="$state"
+        export STATE_FILE="$state/state.json"
+        export REPOS_DIR="$state/repos"
+        export WORKDIRS_DIR="$state/workdirs"
+        export CANONICAL_LOCKS_DIR="$state/canonical-locks"
+        export PR_REVIEW_LOCK_DIR="$state/locks"
+        write_probe_repos_conf "$state/repos.conf"
+        TRIGGER_COMMENT_FILE="" \
+            bash "$PROJECT_ROOT/lib/review-one-pr.sh" "$@" \
+            >/dev/null 2>&1
+    )
+}
+
 # write_gh_stub <stub_path> <base_ref> <head_oid>
 #   gh pr view <N> --json baseRefName,... → returns the supplied base_ref.
 #   gh pr view <N> --json headRefOid       → returns head_oid.
@@ -66,6 +89,19 @@ if [ -n "\${GH_STUB_PERMISSION_RC:-}" ]; then
         esac
     done
 fi
+# Clean 200 with an explicit push role → trusted author (is_trusted_repo_author
+# reads --jq '.permission'; the stub already strips --jq so it prints the role).
+if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then
+    for arg in "\$@"; do
+        case "\$arg" in
+            */collaborators/*/permission) printf '%s\n' "\$GH_STUB_PERMISSION_ROLE"; exit 0 ;;
+        esac
+    done
+fi
+# Issue-comments endpoint: opt-in JSON fixture (scenario 12's operator thread).
+if [ -n "\${GH_STUB_ISSUE_COMMENTS_FILE:-}" ]; then
+    for arg in "\$@"; do case "\$arg" in repos/*/issues/*/comments) cat "\$GH_STUB_ISSUE_COMMENTS_FILE"; exit 0 ;; esac; done
+fi
 fields=""
 for ((i=1; i<=\$#; i++)); do
     if [ "\${!i}" = "--json" ]; then
@@ -82,7 +118,11 @@ case "\$fields" in
         printf 'PUBLIC\n'
         ;;
     *headRefOid*)
-        printf '{"headRefOid":"$head_oid"}\n'
+        # Real gh: --json headRefOid --jq '.headRefOid' (both call sites in
+        # review-one-pr.sh use --jq). The stub doesn't run real jq, so — same
+        # convention as the visibility/permission cases above — it prints the
+        # already-extracted bare SHA, not the wrapped JSON.
+        printf '%s\n' "$head_oid"
         ;;
     *)
         :
@@ -144,7 +184,6 @@ git -C "$WORKING" push -q origin feat/test:refs/pull/1/head
 # Canonical: clone of the bare repo. Worker will fetch into here.
 # Path matches the worker's REPO_SLUG (review-one-pr.sh:249: tr '/' '_').
 CANONICAL="$REPOS_DIR/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL")"
 git clone -q "$GITHUB_BARE" "$CANONICAL"
 
 # ---- gh stub via PATH ----
@@ -166,9 +205,6 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 mkdir -p "$HOME/.pr-reviewer/prompts"
 cp "$PROJECT_ROOT/prompts/probe-schema.md" "$HOME/.pr-reviewer/prompts/probe-schema.md"
 
-# ---- repos.conf with this repo declared (worker reads it) ----
-write_probe_repos_conf "$STATE_DIR/repos.conf"
-
 # ---- run the worker ----
 # Pass OLD_PR_SHA as PR_SHA — simulating "this is what the orchestrator
 # enumerated." The worker's fetch will receive NEW_PR_SHA, checkout
@@ -188,11 +224,8 @@ EXPECTED_TICK_AT="2026-04-30T16:14:23Z"
 # `Bad\nTitle\177X` would land in meta.json.title and the prompt
 # {{PR_TITLE}} header, injecting prompt content past the read-only fence.
 DIRTY_TITLE=$'Bad\nTitle\177X'
-TRIGGER_COMMENT_FILE="" \
-DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" \
-    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" \
-    >/dev/null 2>&1 || true
+DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" run_worker_in_state "$STATE_DIR" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" || true
 
 # ---- assertions ----
 # Find the run dir produced by this invocation.
@@ -335,25 +368,13 @@ STATE2="$TMPDIR/state-2"
 seed_state_dir "$STATE2"
 
 CANONICAL2="$STATE2/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL2")"
 git clone -q "$GITHUB_BARE2" "$CANONICAL2"
 
 # Stub gh — same shape, but baseRefName is "release-1.0" not "main".
 write_gh_stub "$HOME/.local/bin/gh" "release-1.0" "$PR_SHA2"
 
-(
-    export STATE_DIR="$STATE2"
-    export STATE_FILE="$STATE2/state.json"
-    export REPOS_DIR="$STATE2/repos"
-    export WORKDIRS_DIR="$STATE2/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE2/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE2/locks"
-    write_probe_repos_conf "$STATE2/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE2" \
+    "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" || true
 
 RUN_DIR2=$(find "$STATE2/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR2" ]; then
@@ -436,39 +457,16 @@ if grep -q "release-1.0: base" "$COMMITS_MD"; then
 fi
 
 # ===== Scenario 3: align canonical refs/heads/$BASE_REF with refs/remotes =====
-# Reproduces the production bug from cncorp/plow#568 (post-PR #36 deploy).
+# Fences the update-ref alignment (from cncorp/plow#568) and the
+# --unshallow self-heal (issue #170).
 #
-# The bug: PR #36 captures BASE_REF_SHA from canonical's
-# `refs/remotes/origin/$BASE_REF` (advanced by the just-completed
-# `git fetch origin $BASE_REF`). For SHALLOW canonical clones (cncorp/plow
-# uses --depth=500), `git clone --shared` does NOT set up
-# `objects/info/alternates` in the workdir — git silently falls back to a
-# non-local clone path with `warning: source repository is shallow,
-# ignoring --local`. The workdir can only reach objects via refs propagated
-# from canonical's `refs/heads/*` → workdir's `refs/remotes/origin/*`.
-# Anything reachable only from canonical's `refs/remotes/origin/*` is NOT
-# in the workdir's object set. So `git diff $BASE_REF_SHA...$REVIEWED_SHA`
-# errors with "Invalid symmetric difference expression" but bash captures
-# the empty stdout and the bot reads "empty diff" → aborts. Every
-# cncorp/plow PR review aborted at the diff stage post-deploy.
-#
-# Fix: align canonical's `refs/heads/$BASE_REF` with `refs/remotes/origin/
-# $BASE_REF` via `update-ref` BEFORE the clone. Then the workdir's
-# `refs/remotes/origin/$BASE_REF` (mirrored from canonical's heads)
-# holds the fresh SHA — and its objects are now reachable in the workdir.
-#
-# Assertion strategy: a smoke fixture can't faithfully reproduce the
-# empty-diff abort (the worker's --depth=500 fetch deepens the test's
-# tiny canonical past its shallow boundary, undoing shallow-ness — which
-# doesn't happen in production where the real history is much deeper than
-# 500). What we CAN reliably assert is the invariant the fix establishes:
-# after the worker runs, canonical's refs/heads/$BASE_REF MUST equal
-# refs/remotes/origin/$BASE_REF. Without the fix, a default `git fetch`
-# only updates the remote-tracking ref; refs/heads/main would stay at
-# whatever it was when canonical was first cloned. With the fix, the
-# update-ref propagates the fresh SHA so clone --shared (which mirrors
-# canonical's heads to workdir's remotes) gives the workdir a usable
-# base ref regardless of shallow state.
+# The live invariant: `git fetch origin $BASE_REF` advances only the
+# remote-tracking ref, and `git clone --shared` maps the source's
+# refs/heads/* into the workdir's origin/*. Without the worker's
+# update-ref, the workdir silently diffs against a stale base. So after
+# the worker runs, canonical's refs/heads/$BASE_REF MUST equal
+# refs/remotes/origin/$BASE_REF — asserted below, alongside the
+# self-heal check that a deliberately-shallow canonical ends complete.
 
 echo "  scenario: canonical refs/heads/main aligned with refs/remotes/origin/main..."
 
@@ -482,8 +480,14 @@ git clone -q "$GITHUB_BARE3" "$WORKING3"
     git config user.email t@t
     git config user.name t
     git config commit.gpgsign false
-    # M1: initial main (what canonical's refs/heads/main lands at on
-    # first clone). The PR forks from here.
+    # M0: pre-history so the --depth=1 canonical clone below actually
+    # truncates (a root commit at the depth cutoff wouldn't be marked
+    # shallow — nothing got cut off).
+    echo "main v0" > main-content.txt
+    git add main-content.txt
+    git commit -qm "main v0"
+    # M1: main at canonical-clone time (what canonical's refs/heads/main
+    # lands at on first clone). The PR forks from here.
     echo "main v1" > main-content.txt
     git add main-content.txt
     git commit -qm "main v1"
@@ -502,8 +506,15 @@ STATE3="$TMPDIR/state-3"
 seed_state_dir "$STATE3"
 
 CANONICAL3="$STATE3/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL3")"
-git clone -q "$GITHUB_BARE3" "$CANONICAL3"
+# Deliberately SHALLOW, mirroring a canonical cloned in the --depth=500
+# era (pre-issue-#170 fix) — exercises the worker's one-time
+# `fetch --unshallow` self-heal. file:// is load-bearing: --depth is
+# silently ignored on plain local-path clones.
+git clone -q --depth=1 --no-single-branch "file://$GITHUB_BARE3" "$CANONICAL3"
+if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "true" ]; then
+    echo "FAIL: scenario 3 fixture — canonical3 was expected to start shallow"
+    exit 1
+fi
 # Move HEAD off main onto a synthetic pr-2 branch so the worker's
 # update-ref of refs/heads/main has the same shape as production
 # (where canonical's HEAD is on a leftover pr-N branch from a prior
@@ -525,19 +536,8 @@ git -C "$CANONICAL3" checkout -qb pr-leftover
 # Stub gh — base is "main", PR head is the feat/test SHA.
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA3"
 
-(
-    export STATE_DIR="$STATE3"
-    export STATE_FILE="$STATE3/state.json"
-    export REPOS_DIR="$STATE3/repos"
-    export WORKDIRS_DIR="$STATE3/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE3/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE3/locks"
-    write_probe_repos_conf "$STATE3/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE3" \
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" || true
 
 RUN_DIR3=$(find "$STATE3/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR3" ]; then
@@ -546,56 +546,92 @@ if [ -z "$RUN_DIR3" ]; then
 fi
 LOG3="$RUN_DIR3/run.log"
 
-# Worker MUST NOT abort with the empty-diff message — that's the
-# production failure mode (cncorp/plow#568). Belt-and-suspenders check;
-# unlikely to trip in a non-shallow fixture but loud-fail if it does.
-if grep -qE "local git diff origin/main\.{3}.* returned empty" "$LOG3"; then
-    echo "FAIL: scenario 3 — worker hit empty-diff abort (the cncorp/plow#568 bug not fixed)"
+# --unshallow self-heal (issue #170): the fixture canonical started
+# shallow (--depth=1 above); the worker must leave it complete.
+if [ "$(git -C "$CANONICAL3" rev-parse --is-shallow-repository)" != "false" ]; then
+    echo "FAIL: scenario 3 — canonical3 still shallow after the worker ran (--unshallow self-heal ineffective)"
     cat "$LOG3"
     exit 1
 fi
 
-# Decisive assertion: after the worker runs, canonical's
-# refs/heads/$BASE_REF MUST equal refs/remotes/origin/$BASE_REF.
-# That's the invariant the fix establishes via update-ref. Without the
-# fix, `git fetch origin main` only updates the remote-tracking ref;
-# refs/heads/main stays at whatever it was when canonical was first
-# cloned. With the fix, update-ref propagates the fresh SHA.
+# Decisive assertion: refs/heads/main == refs/remotes/origin/main
+# (the update-ref alignment ran — see the scenario header).
 HEADS_MAIN=$(git -C "$CANONICAL3" rev-parse refs/heads/main 2>/dev/null)
 ORIGIN_MAIN=$(git -C "$CANONICAL3" rev-parse refs/remotes/origin/main 2>/dev/null)
 if [ "$HEADS_MAIN" != "$ORIGIN_MAIN" ]; then
     echo "FAIL: scenario 3 — canonical refs/heads/main ($HEADS_MAIN) != refs/remotes/origin/main ($ORIGIN_MAIN)"
-    echo "  the update-ref alignment didn't run; clone --shared from this canonical would"
-    echo "  serve a stale base SHA to the workdir, breaking the diff for shallow canonicals"
-    exit 1
-fi
-
-# Note: the "update-ref BEFORE clone --shared" ordering can't be
-# directly fenced here. A smoke fixture's canonical gets deepened by
-# the worker's --depth=500 fetch and ends up non-shallow, so
-# clone --shared sets up alternates and the workdir reaches the
-# post-update-ref SHA via alternates regardless of timing. The
-# production-relevant failure mode requires a deeper-than-500-commit
-# shallow canonical. The canonical-state assertion above + the
-# full-diff.patch content check below cover the production-relevant
-# failure modes — an unreachable BASE_REF_SHA produces an empty diff,
-# tripping the content check.
-
-# Positive consumer: the worker should have produced a non-empty
-# full-diff.patch whose contents include the PR feature.
-FULL_DIFF3="$RUN_DIR3/inputs/full-diff.patch"
-if [ ! -f "$FULL_DIFF3" ]; then
-    echo "FAIL: scenario 3 — worker did not write $FULL_DIFF3 (likely aborted before diff stage)"
+    echo "  the update-ref alignment didn't run; clone --shared would serve a stale base"
+    echo "  SHA to the workdir, so the review would silently diff against an old base"
     cat "$LOG3"
     exit 1
 fi
-if ! grep -q "PR feature content" "$FULL_DIFF3"; then
-    echo "FAIL: scenario 3 — full-diff.patch missing PR-feature content"
-    cat "$FULL_DIFF3"
+
+# Liveness anchor: the diff stage was actually reached — only a
+# successful, non-empty diff writes the artifact (an empty-diff abort
+# or any earlier failure leaves it absent). Content is scenario 2's
+# contract — existence only here.
+if [ ! -f "$RUN_DIR3/inputs/full-diff.patch" ]; then
+    echo "FAIL: scenario 3 — worker never staged full-diff.patch (aborted at or before scratch staging)"
+    cat "$LOG3"
     exit 1
 fi
 
-echo "  PASS (3 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned with origin/main; both diff and commits consumers fenced)"
+# --- Scenario 3b: a FAILED git diff is FATAL, never "empty diff" ------
+# Fences issue #170's second flaw: the worker must distinguish a
+# non-zero `git diff` exit (FATAL, error logged) from empty stdout
+# (the genuine no-changes abort). PATH-shims git (the loc-trend-smoke
+# pattern): any three-dot `diff` exits non-zero with empty stdout,
+# everything else passes through. Fresh state dir so the dedup gate
+# can't skip the run; gh stub from scenario 3 still applies.
+STUB_DIR3B="$TMPDIR/stub-bin-3b"
+mkdir -p "$STUB_DIR3B"
+REAL_GIT=$(command -v git)
+cat > "$STUB_DIR3B/git" <<STUB_EOF
+#!/bin/bash
+REAL_GIT='$REAL_GIT'
+STUB_EOF
+cat >> "$STUB_DIR3B/git" <<'STUB_EOF'
+is_diff=0; three_dot=0
+for arg in "$@"; do
+    [ "$arg" = "diff" ] && is_diff=1
+    case "$arg" in *...*) three_dot=1 ;; esac
+done
+if [ "$is_diff" = 1 ] && [ "$three_dot" = 1 ]; then
+    echo "fatal: simulated three-dot diff failure" >&2
+    exit 128
+fi
+exec "$REAL_GIT" "$@"
+STUB_EOF
+chmod +x "$STUB_DIR3B/git"
+
+STATE3B="$TMPDIR/state-3b"
+seed_state_dir "$STATE3B"
+CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
+git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
+
+PATH="$STUB_DIR3B:$PATH" run_worker_in_state "$STATE3B" \
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" || true
+
+RUN_DIR3B=$(find "$STATE3B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR3B" ]; then
+    echo "FAIL: scenario 3b — worker produced no run dir under $STATE3B/runs"
+    exit 1
+fi
+LOG3B="$RUN_DIR3B/run.log"
+if ! grep -q "FATAL — git diff" "$LOG3B"; then
+    echo "FAIL: scenario 3b — failed git diff did not produce the FATAL diagnostic"
+    cat "$LOG3B"
+    exit 1
+fi
+# State fence the log wording can't drift out from under: only a
+# successful diff writes the artifact; a FATAL run must not.
+if [ -f "$RUN_DIR3B/inputs/full-diff.patch" ]; then
+    echo "FAIL: scenario 3b — full-diff.patch written despite the failed diff"
+    cat "$LOG3B"
+    exit 1
+fi
+
+echo "  PASS (4 scenarios: orchestrator/worker SHA race + non-default-base canonical→workdir ref propagation + canonical heads/main aligned + --unshallow self-heal + failed-diff FATAL fence)"
 
 # ===== Scenario 4: worker dedup gate fires on fetched head =====
 # Fences the gate at lib/review-one-pr.sh (post canonical fetch, pre
@@ -624,10 +660,8 @@ cat > "$GATE_RUN_DIR/meta.json" <<EOF
 }
 EOF
 
-TRIGGER_COMMENT_FILE="" \
-    bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" \
-    >/dev/null 2>&1
+run_worker_in_state "$STATE_DIR" \
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false"
 GATE_EC=$?
 
 # The worker DOES allocate a run-dir before the gate fires; find the new
@@ -676,16 +710,8 @@ echo "  scenario: container-mode gate skips untrusted-author PR before placehold
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
-(
-    export STATE_DIR="$STATE5" STATE_FILE="$STATE5/state.json" REPOS_DIR="$STATE5/repos" \
-           WORKDIRS_DIR="$STATE5/workdirs" CANONICAL_LOCKS_DIR="$STATE5/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE5/locks" REVIEWER_CONTAINER_MODE=1
-    write_probe_repos_conf "$STATE5/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" \
-        >/dev/null 2>&1
-)
+REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
 GATE5_EC=$?
 RUN5=$(find "$STATE5/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
 if [ -z "$RUN5" ]; then
@@ -720,16 +746,8 @@ echo "  scenario: container-mode gate DEFERS (exit 1) on an indeterminate trust 
 STATE_IND="$TMPDIR/state-ind"   # distinct dir — must not collide with later scenarios' STATE6
 seed_state_dir "$STATE_IND"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
-(
-    export STATE_DIR="$STATE_IND" STATE_FILE="$STATE_IND/state.json" REPOS_DIR="$STATE_IND/repos" \
-           WORKDIRS_DIR="$STATE_IND/workdirs" CANONICAL_LOCKS_DIR="$STATE_IND/canonical-locks" \
-           PR_REVIEW_LOCK_DIR="$STATE_IND/locks" REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1
-    write_probe_repos_conf "$STATE_IND/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false" \
-        >/dev/null 2>&1
-)
+REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1 run_worker_in_state "$STATE_IND" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false"
 GATE_IND_EC=$?
 RUN_IND=$(find "$STATE_IND/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' | head -1)
 [ -n "$RUN_IND" ] || { echo "FAIL: indeterminate-defer — worker allocated no run-dir"; exit 1; }
@@ -792,7 +810,7 @@ if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
         *visibility*)  printf 'PUBLIC\n' ;;
-        *headRefOid*)  printf '{"headRefOid":"$head_oid"}\n' ;;
+        *headRefOid*)  printf '%s\n' "$head_oid" ;;  # bare SHA — both call sites use --jq '.headRefOid'
     esac
     exit 0
 fi
@@ -852,23 +870,11 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$COMMENT_STORE" "main" "$NEW_PR_SH
 STATE6="$TMPDIR/state-6"
 seed_state_dir "$STATE6"
 CANONICAL6="$STATE6/repos/test-org_probe-repo"
-mkdir -p "$(dirname "$CANONICAL6")"
 git clone -q "$GITHUB_BARE" "$CANONICAL6"
 
 run_tick_6() {
-    (
-        export STATE_DIR="$STATE6"
-        export STATE_FILE="$STATE6/state.json"
-        export REPOS_DIR="$STATE6/repos"
-        export WORKDIRS_DIR="$STATE6/workdirs"
-        export CANONICAL_LOCKS_DIR="$STATE6/canonical-locks"
-        export PR_REVIEW_LOCK_DIR="$STATE6/locks"
-        write_probe_repos_conf "$STATE6/repos.conf"
-        TRIGGER_COMMENT_FILE="" \
-            bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-            "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-            >/dev/null 2>&1 || true
-    )
+    run_worker_in_state "$STATE6" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 }
 
 run_tick_6   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
@@ -921,19 +927,8 @@ STATE7="$TMPDIR/state-7"
 seed_state_dir "$STATE7"
 git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
 
-(
-    export STATE_DIR="$STATE7"
-    export STATE_FILE="$STATE7/state.json"
-    export REPOS_DIR="$STATE7/repos"
-    export WORKDIRS_DIR="$STATE7/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE7/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE7/locks"
-    write_probe_repos_conf "$STATE7/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE7" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1006,19 +1001,8 @@ STATE8="$TMPDIR/state-8"
 seed_state_dir "$STATE8"
 git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
 
-(
-    export STATE_DIR="$STATE8"
-    export STATE_FILE="$STATE8/state.json"
-    export REPOS_DIR="$STATE8/repos"
-    export WORKDIRS_DIR="$STATE8/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE8/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE8/locks"
-    write_probe_repos_conf "$STATE8/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" \
-        >/dev/null 2>&1 || true
-)
+run_worker_in_state "$STATE8" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1124,24 +1108,13 @@ exit 1
 STUB
 chmod +x "$CODEX_STUB_DIR/codex"
 
-(
-    export PATH="$CODEX_STUB_DIR:$PATH"
-    export STATE_DIR="$STATE9"
-    export STATE_FILE="$STATE9/state.json"
-    export REPOS_DIR="$STATE9/repos"
-    export WORKDIRS_DIR="$STATE9/workdirs"
-    export CANONICAL_LOCKS_DIR="$STATE9/canonical-locks"
-    export PR_REVIEW_LOCK_DIR="$STATE9/locks"
-    # Wire the operator kwr-config: non-empty REPO marks it active; DIR points at
-    # the local fixture cache (no pull — that's org-sync's job).
-    export KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git"
-    export KWR_CONFIG_DIR="$KWRCFG9"
-    write_probe_repos_conf "$STATE9/repos.conf"
-    TRIGGER_COMMENT_FILE="" \
-        bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
-        "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" \
-        >/dev/null 2>&1 || true
-)
+# Wire the operator kwr-config: non-empty REPO marks it active; DIR points at
+# the local fixture cache (no pull — that's org-sync's job).
+PATH="$CODEX_STUB_DIR:$PATH" \
+KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git" \
+KWR_CONFIG_DIR="$KWRCFG9" \
+    run_worker_in_state "$STATE9" \
+    "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" || true
 
 RUN_DIR9=$(find "$STATE9/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR9" ]; then
@@ -1194,4 +1167,231 @@ if ! grep -qx "convention.md" "$SCRATCH_SNAPSHOT9"; then
     exit 1
 fi
 
-echo "  PASS (10 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging)"
+# ===== Scenario 10: repo-env seed → trusted-author .env mirror (durable creds) =====
+# Fences the fresh-container live-cred recovery path end-to-end through the real
+# worker: an operator file at REPO_ENV_DIR/<slug>/<relpath> must (1) be seeded
+# into the canonical clone, then (2) be delivered into the per-PR workdir by the
+# existing trust-gated .env mirror (because the repo ships the matching
+# .env*.example AND the author is trusted). The compose-mount smoke only proves
+# the mount exists; this proves the mount→canonical→trusted-workdir flow.
+echo "  scenario: repo-env seed → trusted-author .env mirror (live-cred recovery path)..."
+
+GITHUB_BARE10="$TMPDIR/github-side-10.git"
+git init -q --bare -b main "$GITHUB_BARE10"
+WORKING10="$TMPDIR/working-10"
+git clone -q "$GITHUB_BARE10" "$WORKING10"
+(
+    cd "$WORKING10"
+    git config user.email t@t; git config user.name t; git config commit.gpgsign false
+    # The repo SHIPS the example (tracked) — the mirror keys off it; the real
+    # .env.test-live is untracked and arrives via the seed → mirror, not the clone.
+    echo "ANTHROPIC_API_KEY=" > .env.test-live.example
+    echo "readme" > README.md
+    git add .env.test-live.example README.md
+    git commit -qm "init: ships .env.test-live.example"
+    git push -q origin main
+    git checkout -qb feat/test
+    echo "feature" > feature.txt
+    git add feature.txt
+    git commit -qm "PR feature"
+)
+PR_SHA10=$(git -C "$WORKING10" rev-parse HEAD)
+git -C "$WORKING10" push -q origin feat/test:refs/pull/10/head
+
+STATE10="$TMPDIR/state-10"
+seed_state_dir "$STATE10"
+git clone -q "$GITHUB_BARE10" "$STATE10/repos/test-org_probe-repo"
+
+# Operator secret store (the read-only /root/.kwr/repo-env mount in prod): one
+# real env file under the repo slug, the seed source.
+REPO_ENV10="$TMPDIR/repo-env-10"
+mkdir -p "$REPO_ENV10/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo/.env.test-live"
+
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+
+REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
+
+RUN_DIR10=$(find "$STATE10/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10" ] || { echo "FAIL: scenario 10 — worker produced no run dir"; exit 1; }
+LOG10="$RUN_DIR10/run.log"
+
+# Decisive: the seed wrote the real file into canonical, AND the trust-gated
+# mirror then copied it into the workdir — both observable in run.log.
+if ! grep -q "seeded 1 operator repo-env file(s) into canonical" "$LOG10"; then
+    echo "FAIL: scenario 10 — run.log missing the repo-env seed line (seed step didn't fire)"
+    [ -f "$LOG10" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10"; }
+    exit 1
+fi
+if ! grep -qE "mirrored 1 env file\(s\) from canonical .*trusted" "$LOG10"; then
+    echo "FAIL: scenario 10 — run.log missing the trusted-author .env mirror line (seeded file didn't reach the workdir)"
+    [ -f "$LOG10" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10"; }
+    exit 1
+fi
+# Belt-and-suspenders: the seeded file really landed in canonical (not just logged).
+if [ ! -s "$STATE10/repos/test-org_probe-repo/.env.test-live" ]; then
+    echo "FAIL: scenario 10 — .env.test-live not present in canonical clone after seed"
+    exit 1
+fi
+
+# Negative case: a seed that can't be written must FAIL LOUD (the probe-3 fix) —
+# abort before the mirror, never run the test with missing/stale creds. Induce a
+# deterministic failure with `mkdir` over a pre-created FILE at the target's
+# parent (fails even as root, so it holds in the container self-review too).
+echo "  scenario: repo-env seed failure aborts loud (no silent continue to the test)..."
+STATE10B="$TMPDIR/state-10b"
+seed_state_dir "$STATE10B"
+git clone -q "$GITHUB_BARE10" "$STATE10B/repos/test-org_probe-repo"
+# Block the seed: source uses an api/ subdir, but canonical's `api` is a FILE.
+touch "$STATE10B/repos/test-org_probe-repo/api"
+REPO_ENV10B="$TMPDIR/repo-env-10b"
+mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10B" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
+RUN_DIR10B=$(find "$STATE10B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10B" ] || { echo "FAIL: scenario 10b — worker produced no run dir"; exit 1; }
+LOG10B="$RUN_DIR10B/run.log"
+if ! grep -q "FATAL — repo-env seed of 'api/.env.test-live' failed" "$LOG10B"; then
+    echo "FAIL: scenario 10b — run.log missing the fail-loud seed abort (silent-continue regressed)"
+    [ -f "$LOG10B" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10B"; }
+    exit 1
+fi
+if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
+    echo "FAIL: scenario 10b — worker reached the .env mirror despite a failed seed (didn't abort at the seam)"
+    exit 1
+fi
+
+# ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
+# The ONLY coverage of the pre-spend gate (the decision is inline in the
+# worker): when gh reports a headRefOid that differs from the
+# checked-out HEAD at the pre-spend gate (review-one-pr.sh, right before
+# pipeline.py — the token boundary), the run must abort BEFORE any LLM
+# specialist runs, PATCH the placeholder to the superseded body (naming both
+# short SHAs), and stamp meta.json status=aborted — which keeps the run out of
+# KNOWN_SHA dedup so the next tick reviews the new head.
+#
+# Fixture note: the stateful gh stub serves ONE fixed headRefOid for the whole
+# scenario. That's fine — the checkout comes from git (refs/pull/1/head →
+# NEW_PR_SHA → REVIEWED_SHA), so pinning the stub to OLD_PR_SHA makes the
+# gate-time gh answer ≠ REVIEWED_SHA without time-varying stub state. Only the
+# pre-spend abort contract is asserted.
+echo "  scenario: pre-spend stale-head gate — gh head ≠ REVIEWED_SHA → abort before specialists..."
+
+STORE11="$TMPDIR/comment-store-11.json"
+echo "[]" > "$STORE11"
+write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE11" "main" "$OLD_PR_SHA"
+
+STATE11="$TMPDIR/state-11"
+seed_state_dir "$STATE11"
+git clone -q "$GITHUB_BARE" "$STATE11/repos/test-org_probe-repo"
+
+# Codex stub drops a marker if it EVER runs (inverse of scenario 9's snapshot):
+# the gate must fire before the pipeline, so the marker must stay absent. Full
+# prompts are still staged from scenario 7 ($HOME/.pr-reviewer/prompts), so a
+# regressed gate WOULD reach run_codex and write the marker — an honest fence,
+# not a vacuous pass on an early build_prompt abort.
+CODEX_RAN11="$STATE11/codex-ran.marker"
+cat > "$HOME/.local/bin/codex" <<STUB
+#!/usr/bin/env bash
+touch "$CODEX_RAN11"
+exit 1
+STUB
+chmod +x "$HOME/.local/bin/codex"
+
+run_worker_in_state "$STATE11" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+
+rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+
+RUN_DIR11=$(find "$STATE11/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+if [ -z "$RUN_DIR11" ]; then
+    echo "FAIL: scenario 11 — worker produced no run dir under $STATE11/runs"
+    exit 1
+fi
+LOG11="$RUN_DIR11/run.log"
+
+# (a) Aborted BEFORE the specialists: the codex stub never ran, so no tokens
+# would have been spent. This is the whole point of the pre-spend gate.
+if [ -f "$CODEX_RAN11" ]; then
+    echo "FAIL: scenario 11 — codex ran despite the stale head (pre-spend gate did not abort before the specialists)"
+    [ -f "$LOG11" ] && { echo "--- run.log ---"; tail -n 30 "$LOG11"; }
+    exit 1
+fi
+
+# (b) Placeholder PATCHed to the superseded body via the EXIT trap, naming both
+# short SHAs (reviewed → current) so the human sees why this run cancelled.
+if ! jq -e --arg new "${NEW_PR_SHA:0:7}" --arg old "${OLD_PR_SHA:0:7}" \
+        '[.[] | select((.body | contains("review superseded")) and (.body | contains($new)) and (.body | contains($old)))] | length == 1' \
+        "$STORE11" >/dev/null; then
+    echo "FAIL: scenario 11 — placeholder not PATCHed to the superseded body naming ${NEW_PR_SHA:0:7} → ${OLD_PR_SHA:0:7}"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE11"
+    [ -f "$LOG11" ] && { echo "--- run.log ---"; tail -n 30 "$LOG11"; }
+    exit 1
+fi
+
+# (c) meta.json stamped aborted — the run stays OUT of KNOWN_SHA dedup
+# (stage_prior_reviews includes only posted_at/completed runs), so the next
+# orchestrator tick sees the new head as unreviewed and re-runs it.
+META11="$RUN_DIR11/meta.json"
+if [ ! -f "$META11" ]; then
+    echo "FAIL: scenario 11 — $META11 not written"
+    exit 1
+fi
+meta_status11=$(jq -r '.status' "$META11")
+if [ "$meta_status11" != "aborted" ]; then
+    echo "FAIL: scenario 11 — meta.json.status = $meta_status11 (expected 'aborted' — a superseded run must not enter KNOWN_SHA dedup)"
+    exit 1
+fi
+
+# ===== Scenario 12: whole-PR re-review (FORCE_WHOLE_PR=true) keeps memory =====
+# Fences the plow#1032 fix: /srosro-review used to blank PREV_BODY, skip
+# prior-reviews.md, stage a pr-comments.md sentinel, and suppress REEVAL-LOC-
+# TRIGGER; whole-PR mode must now differ from incremental ONLY in diff scope.
+echo "  scenario: whole-PR re-review keeps memory (previous/prior reviews, pr-comments, REEVAL-LOC-TRIGGER)..."
+
+STATE12="$TMPDIR/state-12"
+seed_state_dir "$STATE12"
+git clone -q "$GITHUB_BARE" "$STATE12/repos/test-org_probe-repo"
+
+# Seed a prior posted round + an operator decline (the dropped memory).
+SEED12_ID="test-org_probe-repo__1__20260101T000000000Z__oldpr12"
+mkdir -p "$STATE12/runs/$SEED12_ID/agents/aggregator"
+printf 'Prior round probe: seed-marker-unbounded-retry\n\nVERDICT: COMMENT\n' > "$STATE12/runs/$SEED12_ID/agents/aggregator/output.md"
+printf '{"pr_id":"test-org/probe-repo#1","reviewed_sha":"%s","status":"completed","posted_at":"2026-01-01T00:00:00Z"}' \
+    "$OLD_PR_SHA" > "$STATE12/runs/$SEED12_ID/meta.json"
+COMMENTS12="$TMPDIR/issue-comments-12.json"
+printf '[{"user":{"login":"test-user"},"body":"Declining seed-marker-unbounded-retry: the retry bound is intentional.","created_at":"2026-01-02T00:00:00Z"}]' > "$COMMENTS12"
+
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
+GH_STUB_ISSUE_COMMENTS_FILE="$COMMENTS12" run_worker_in_state "$STATE12" \
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Whole-PR memory" "true" || true
+
+RUN12=$(find "$STATE12/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' ! -name "$SEED12_ID" | head -1)
+[ -n "$RUN12" ] || { echo "FAIL: scenario 12 — worker produced no run dir"; exit 1; }
+IN12="$RUN12/inputs"
+
+# Memory surfaces staged with real content ("file:required text").
+for want in \
+    "previous-review.md:seed-marker-unbounded-retry" \
+    "prior-reviews.md:seed-marker-unbounded-retry" \
+    "pr-comments.md:the retry bound is intentional" \
+    "review-task.md:FULL PR diff"; do
+    if ! grep -q "${want#*:}" "$IN12/${want%%:*}" 2>/dev/null; then
+        echo "FAIL: scenario 12 — ${want%%:*} missing '${want#*:}' (whole-PR path dropped this memory surface)"
+        [ -f "$RUN12/run.log" ] && { echo "--- run.log ---"; tail -n 30 "$RUN12/run.log"; }
+        exit 1
+    fi
+done
+# reeval-status.md must carry loc-trend.md's computed REEVAL-LOC-TRIGGER line
+# verbatim — any worker-side override (incl. the retired one) breaks equality.
+LOC_LINE12=$(grep -m1 '^REEVAL-LOC-TRIGGER:' "$IN12/loc-trend.md")
+[ -z "$LOC_LINE12" ] && LOC_LINE12="REEVAL-LOC-TRIGGER: unknown (no flag emitted)"
+if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
+    echo "FAIL: scenario 12 — reeval-status.md lost loc-trend's computed '$LOC_LINE12' (whole-PR override regressed)"
+    exit 1
+fi
+
+echo "  PASS (14 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"

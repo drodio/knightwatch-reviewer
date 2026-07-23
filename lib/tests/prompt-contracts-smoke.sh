@@ -370,7 +370,17 @@ done
 # exempt from the bin-ordering check (still subject to the other two).
 echo "  asserting systemd units: ReadWritePaths + Environment=PATH ordering + nvm-bin precedence..."
 for unit in systemd/*.service; do
-    rw_line=$(grep -E '^ReadWritePaths=' "$unit")
+    # Missing ReadWritePaths= stays FAIL-LOUD for host units: they run under
+    # ProtectHome=read-only and need an explicit write grant, so a dropped
+    # ReadWritePaths is a real regression (grep fails → set -e aborts). The lone
+    # exception is the boot-managed fleet unit (knightwatch-reviewer.service),
+    # which drives the docker socket and isn't ProtectHome-sandboxed, so it
+    # legitimately carries no RW grant — exempt ONLY that one from the check.
+    if [[ "$(basename "$unit")" == knightwatch-reviewer.service ]]; then
+        rw_line=""
+    else
+        rw_line=$(grep -E '^ReadWritePaths=' "$unit")
+    fi
     path_line=$(grep -E '^Environment=PATH=' "$unit")
 
     rhs="${rw_line#ReadWritePaths=}"
@@ -406,6 +416,27 @@ for unit in systemd/*.service; do
         esac
     fi
 done
+
+# The fleet unit's lifecycle contract is load-bearing and fails silently if
+# broken: RemainAfterExit=yes keeps the Type=oneshot unit "active" so ExecStop
+# fires on shutdown/restart — drop it and `docker compose stop` never runs, so
+# the fleet takes a SIGKILL (exit 137) on every reboot, the exact failure this
+# unit was added to fix. Pin all four lines so a regression goes red instead of
+# silently shipping a fleet that doesn't stop gracefully.
+echo "  asserting knightwatch-reviewer.service lifecycle contract (oneshot + RemainAfterExit + up/stop Execs)..."
+assert_grep 'fleet unit must be Type=oneshot' \
+    'Type=oneshot' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must set RemainAfterExit=yes so ExecStop fires on shutdown/restart' \
+    'RemainAfterExit=yes' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must bring the stack up via compose up -d' \
+    'ExecStart=/usr/bin/docker compose up -d' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must gracefully stop via compose stop (not SIGKILL)' \
+    'ExecStop=/usr/bin/docker compose stop' systemd/knightwatch-reviewer.service
+# PartOf was the property misunderstood in review round 1 — `Requires=` alone does
+# NOT re-run the unit on a `systemctl restart docker`, so without PartOf the fleet
+# strands on a daemon restart. Pin it so a drop goes red, not silently broken.
+assert_grep 'fleet unit must set PartOf=docker.service so a docker daemon restart re-runs its lifecycle' \
+    'PartOf=docker.service' systemd/knightwatch-reviewer.service
 
 # The learn-service guidance auto-commit is a two-file path contract: the
 # script's commit target and the unit's ReadWritePaths grant must name the same
@@ -580,6 +611,14 @@ assert_grep "aggregator.md should read the REEVAL-LOC-TRIGGER flag for T1" \
     "REEVAL-LOC-TRIGGER" prompts/aggregator.md
 assert_grep "review-one-pr.sh should fold the LOC trigger into reeval-status.md" \
     "REEVAL-LOC-TRIGGER" lib/review-one-pr.sh
+
+echo "  asserting T-SIZE born-large trigger is wired producer -> consumer..."
+assert_grep "loc-trend.sh should emit the deterministic REEVAL-SIZE-TRIGGER flag" \
+    "REEVAL-SIZE-TRIGGER" lib/loc-trend.sh
+assert_grep "aggregator.md should read the REEVAL-SIZE-TRIGGER flag for the Path 1 size redirect" \
+    "REEVAL-SIZE-TRIGGER" prompts/aggregator.md
+assert_grep "review-one-pr.sh should fold REEVAL-SIZE-TRIGGER into reeval-status.md" \
+    "REEVAL-SIZE-TRIGGER" lib/review-one-pr.sh
 
 # Fire-once markers MUST be byte-identical between the emitter (aggregator.md
 # stamps them into the posted body) and the detector (review-one-pr.sh greps
