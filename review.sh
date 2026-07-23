@@ -227,10 +227,17 @@ refresh_queue() {
             # compares lexically; no decline leaves the cutoff untouched.
             # Only the bot's OWN declines count: the marker string is public,
             # so without the author check a drive-by commenter could paste it
-            # and silently consume other users' pending triggers.
+            # and silently consume other users' pending triggers. And only an
+            # ANCHORED match counts — the body must START with the exact
+            # auto-post + decline marker lines the decline template leads
+            # with. A substring match would also hit bot-authored REVIEW
+            # comments whose model-generated body merely quotes the literal
+            # marker (a review discussing this very feature can), silently
+            # impersonating decline state and consuming a collaborator's
+            # trigger posted mid-review.
             DECLINE_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                jq -c --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
-                    '[.[] | select(.user.login == $bot_user and (.body | contains($dmark)))] | sort_by(.created_at, .id) | last // empty')
+                jq -c --arg apost "$BOT_AUTO_POST_MARKER" --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
+                    '[.[] | select(.user.login == $bot_user and (.body | startswith($apost + "\n" + $dmark)))] | sort_by(.created_at, .id) | last // empty')
             DECLINED_AT=""; SINCE_ID=""
             [ -n "$DECLINE_JSON" ] && DECLINED_AT=$(printf '%s' "$DECLINE_JSON" | jq -r '.created_at // empty')
             if [ -n "$DECLINED_AT" ] && [ "$DECLINED_AT" \> "$REVIEWED_AT_ISO" ]; then
