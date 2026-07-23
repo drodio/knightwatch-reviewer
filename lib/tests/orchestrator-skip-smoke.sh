@@ -1116,9 +1116,10 @@ fi
 # consumes/watermarks the trigger.
 MOCK_PR_HEAD_SHA="moved_sha_777" MOCK_LIVE_HEAD_SHA="moved_sha_777" run_orchestrator
 n=$(count_dispatches)
-if [ "$n" -ne 1 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
-    echo "FAIL scenario 22c (trigger-not-left-open regression): tick 2 (enumeration caught up) expected 1 force_whole=true dispatch from the still-open trigger, got $n dispatch(es)"
-    echo "--- log ---"; cat "$LOG_FILE"
+d=$(count_decline_comments)
+if [ "$n" -ne 1 ] || [ "$d" -ne 0 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 22c (trigger-not-left-open regression): tick 2 (enumeration caught up) expected 1 force_whole=true dispatch + 0 declines from the still-open trigger, got $n dispatch(es) + $d decline(s)"
+    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
     exit 1
 fi
 
