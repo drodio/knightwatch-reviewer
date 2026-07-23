@@ -16,11 +16,11 @@
 #      (the trigger itself is honored), but no trigger-comment.md is
 #      staged for the worker (trust gate keeps drive-by prose off the
 #      auto-approve path).
-#   7. /srosro-update-review on an unchanged SHA → no dispatch; a marked
-#      decline comment is posted (visible skip) and the trigger is
-#      consumed via the decline-cutoff, so it can't re-fire later.
-#  22. Bare /srosro-review on an unchanged SHA → declined (no dispatch,
-#      one decline comment, no duplicate decline on the next tick).
+#   7. (folded into scenario 22's table.)
+#  22. Three-row unchanged-SHA decline table (/srosro-update-review, bare
+#      /srosro-review, prose-bearing /srosro-review) → declined: no
+#      dispatch, one marked decline comment, no tempfile leak, and no
+#      duplicate decline on the next tick (dedup via the decline-cutoff).
 #  24. A declined trigger does NOT force a whole-PR round after a later
 #      push (SHA-delta dispatch runs force_whole=false); 24b's three-row
 #      table covers fresh post-decline triggers (incremental, whole-PR,
@@ -499,50 +499,7 @@ if [ "$d" -ne 0 ]; then
     cat "$PR_COMMENT_LOG"; exit 1
 fi
 
-# Scenario 7: same SHA, /srosro-update-review → no dispatch. Incremental
-# triggers on an unchanged SHA hit the empty-diff abort path, so we
-# decline at the orchestrator instead of burning a worker: a marked
-# decline comment makes the skip visible and consumes the trigger. The
-# longer command must NOT also satisfy the /srosro-review (whole-PR)
-# substring check.
-#
-# Plus: after the skip, no trigger-comment tempfile may remain in
-# $STATE_DIR/tmp. someuser is in MOCK_TRUSTED_USERS, so a regression that
-# materializes the file BEFORE the skip check would leak a stale tempfile
-# the worker never cleans up (no worker runs). PrivateTmp's tear-down
-# used to mask this leak in production; with tempfiles routed to the
-# durable $STATE_DIR/tmp, the leak is real and must be fenced.
-echo "  scenario 7: same SHA + /srosro-update-review (skipped on unchanged SHA)..."
-rm -f "$STATE_DIR/tmp/pr-review-trigger".*  # clear residue from earlier scenarios
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-n=$(count_dispatches)
-if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 7 (incremental same-SHA skip regression): expected 0 dispatches, got $n"
-    echo "--- log ---"; cat "$LOG_FILE"
-    exit 1
-fi
-leaked=$(find "$STATE_DIR/tmp" -maxdepth 1 -name 'pr-review-trigger.*' -type f 2>/dev/null)
-if [ -n "$leaked" ]; then
-    echo "FAIL scenario 7 (skip-path tempfile leak): pre-skip mktemp leaked a trigger file under \$STATE_DIR/tmp:"
-    echo "$leaked"
-    exit 1
-fi
-# The skip must be VISIBLE: one decline comment carrying both markers.
-d=$(count_decline_comments)
-if [ "$d" -ne 1 ]; then
-    echo "FAIL scenario 7 (silent-skip regression): expected 1 decline comment on unchanged-SHA /srosro-update-review, got $d"
-    echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
-    exit 1
-fi
-if ! grep -qF 'knightwatch-reviewer:auto-post' "$PR_COMMENT_LOG"; then
-    echo "FAIL scenario 7: decline comment must carry the auto-post marker (or it would match as a trigger itself)"
-    cat "$PR_COMMENT_LOG"; exit 1
-fi
-if ! grep -q "trigger declined — review already landed on" "$LOG_FILE"; then
-    echo "FAIL scenario 7: expected a 'trigger declined — review already landed on' log line for the visible skip"
-    cat "$LOG_FILE"; exit 1
-fi
+# (Scenario 7 folded into scenario 22's three-row unchanged-head decline table.)
 
 # Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
 # are handled out-of-band by poll-pr-actions.sh, not by the review
@@ -1024,29 +981,45 @@ if [ "$fetches" -lt 1 ]; then
     exit 1
 fi
 
-# Scenario 22: /srosro-review on an unchanged SHA → declined, not
-# dispatched — BLANKET, bare and prose-bearing alike (a whole-PR round on
-# an already-reviewed head is duplicative either way; the pre-fix behavior
-# burned a full ~40-min worker slot — the plow#1109 thrash). The decline
-# must be VISIBLE (one marked comment naming the reviewed short SHA + a
-# log line). After the bare row, a second tick with the decline comment
-# present asserts DEDUP: the trigger is consumed by the decline-cutoff —
-# no second decline, still no dispatch.
-echo "  scenario 22: /srosro-review on unchanged SHA (bare + prose rows) → declined; deduped next tick..."
+# Scenario 22 (three-row table): ANY re-review trigger on an unchanged SHA
+# → declined, not dispatched — /srosro-update-review (would hit the
+# worker's empty-diff abort; the longer command must not also satisfy the
+# whole-PR substring check), bare /srosro-review, and prose-bearing
+# /srosro-review alike (a whole-PR round on an already-reviewed head is
+# duplicative either way; the pre-fix behavior burned a full ~40-min
+# worker slot — the plow#1109 thrash). Shared assertions, once: the
+# decline is VISIBLE (marked comment naming the reviewed short SHA + a
+# log line), no trigger-comment tempfile leaks under $STATE_DIR/tmp
+# (someuser is trusted, so a regression materializing the file BEFORE the
+# decline would leak one no worker ever cleans up), and a second tick
+# with the decline present asserts DEDUP: the trigger is consumed by the
+# decline-cutoff — no second decline, still no dispatch.
+echo "  scenario 22: triggers on unchanged SHA (update-review / bare / prose rows) → declined; deduped next tick..."
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "abc123" "COMMENT" >/dev/null
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
-for body in "/srosro-review" "is the retry loop sound? /srosro-review"; do
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*  # clear residue from earlier scenarios
+for body in "/srosro-update-review" "/srosro-review" "is the retry loop sound? /srosro-review"; do
     printf '[{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"%s"}]\n' "$body" > "$MOCK_COMMENTS_FILE"
     run_orchestrator
     n=$(count_dispatches)
     d=$(count_decline_comments)
     if [ "$n" -ne 0 ] || [ "$d" -ne 1 ]; then
-        echo "FAIL scenario 22 (duplicate-whole-PR regression, body='$body'): expected 0 dispatches + 1 decline, got $n dispatch(es) + $d decline(s)"
+        echo "FAIL scenario 22 (unchanged-head decline regression, body='$body'): expected 0 dispatches + 1 decline, got $n dispatch(es) + $d decline(s)"
         echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
         exit 1
     fi
 done
+leaked=$(find "$STATE_DIR/tmp" -maxdepth 1 -name 'pr-review-trigger.*' -type f 2>/dev/null)
+if [ -n "$leaked" ]; then
+    echo "FAIL scenario 22 (decline-path tempfile leak): pre-decline mktemp leaked a trigger file under \$STATE_DIR/tmp:"
+    echo "$leaked"
+    exit 1
+fi
+if ! grep -qF 'knightwatch-reviewer:auto-post' "$PR_COMMENT_LOG"; then
+    echo "FAIL scenario 22: decline comment must carry the auto-post marker (or it would match as a trigger itself)"
+    cat "$PR_COMMENT_LOG"; exit 1
+fi
 if ! grep -qF 'abc123' "$PR_COMMENT_LOG"; then
     echo "FAIL scenario 22: decline comment must name the reviewed short SHA (abc123)"
     cat "$PR_COMMENT_LOG"; exit 1
@@ -1055,8 +1028,8 @@ if ! grep -q "trigger declined — review already landed on" "$LOG_FILE"; then
     echo "FAIL scenario 22: expected a 'trigger declined — review already landed on' log line"
     cat "$LOG_FILE"; exit 1
 fi
-# Tick 2 (after the bare row): GitHub now returns the posted decline
-# alongside the trigger — no dispatch AND no second decline.
+# Tick 2 (dedup, on the bare fixture): GitHub now returns the posted
+# decline alongside the trigger — no dispatch AND no second decline.
 cat > "$MOCK_COMMENTS_FILE" <<'JSON'
 [{"id":101,"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
  {"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"}]
@@ -1183,25 +1156,5 @@ JSON
     fi
 done
 
-# Scenario 24c: BOTH command kinds fresh in one tick → whole-PR wins, even
-# though the incremental trigger is the overall-latest comment. Fences the
-# whole-over-incremental precedence, which now lives inside the single
-# trigger query's $whole-subset clause (previously shell `if/elif` over two
-# counts) — a regression to plain "latest hit wins" would dispatch this as
-# an incremental round.
-echo "  scenario 24c: fresh /srosro-review + LATER fresh /srosro-update-review → whole-PR precedence..."
-cat > "$MOCK_COMMENTS_FILE" <<'JSON'
-[{"id":102,"created_at":"2026-06-01T00:00:05Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->"},
- {"id":103,"created_at":"2026-06-01T00:00:10Z","user":{"login":"someuser"},"body":"/srosro-review"},
- {"id":104,"created_at":"2026-06-01T00:00:15Z","user":{"login":"someuser"},"body":"/srosro-update-review"}]
-JSON
-run_orchestrator
-n=$(count_dispatches)
-d=$(count_decline_comments)
-if [ "$n" -ne 1 ] || [ "$d" -ne 0 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
-    echo "FAIL scenario 24c (whole-over-incremental precedence regression): expected 1 force_whole=true dispatch + 0 declines when both command kinds are fresh, got $n dispatch(es) + $d decline(s)"
-    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
-    exit 1
-fi
 
-echo "  PASS (26 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table, whole-over-incremental-precedence)"
+echo "  PASS (25 scenarios: no-comments, bare-mention, unchanged-head-decline-table-deduped, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-spoof-ignored, toctou-mid-tick-push-skips-decline, declined-trigger-consumed-after-push, fresh-post-decline-trigger-table)"
