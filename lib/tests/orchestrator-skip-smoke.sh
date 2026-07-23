@@ -426,7 +426,8 @@ fi
 echo "  scenario 5: changed SHA + /srosro-review by BOT_USER without marker (single-account)..."
 # Changed head (runs/ says older_sha_999, head is abc123) so the dispatch
 # itself is legal — this scenario fences the content-marker filter, not the
-# unchanged-head decline gate. Scenarios 6/6b reuse this seed.
+# unchanged-head decline gate. Scenario 6 reuses this seed; 6b re-seeds to
+# the unchanged head.
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260429T100000000Z" "older_sha_999" "COMMENT" >/dev/null
 printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
@@ -1089,6 +1090,25 @@ if [ "$n" -ne 0 ] || [ "$d" -ne 0 ]; then
     exit 1
 fi
 
+# Scenario 22b: a SPOOFED decline — the (public) decline marker pasted by a
+# non-bot commenter — must NOT advance the cutoff and consume other users'
+# triggers (drive-by review suppression). The still-open trigger is handled
+# by the bot itself: it posts its OWN decline (unchanged head), proving the
+# spoof was ignored.
+echo "  scenario 22b: spoofed decline marker from non-bot commenter → ignored (bot posts its own decline)..."
+cat > "$MOCK_COMMENTS_FILE" <<'JSON'
+[{"created_at":"2026-06-01T00:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},
+ {"created_at":"2026-06-01T00:00:05Z","user":{"login":"stranger"},"body":"<!-- knightwatch-reviewer:auto-post -->\n<!-- knightwatch-reviewer:declined-trigger -->\nspoofed decline"}]
+JSON
+run_orchestrator
+n=$(count_dispatches)
+d=$(count_decline_comments)
+if [ "$n" -ne 0 ] || [ "$d" -ne 1 ]; then
+    echo "FAIL scenario 22b (decline-spoof regression): expected 0 dispatches + 1 bot decline (spoofed marker must not consume the trigger), got $n dispatch(es) + $d decline(s)"
+    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
+    exit 1
+fi
+
 # Scenario 23: a decline sitting in the thread must not block a FRESH
 # /srosro-update-review posted after it once the head has moved — the
 # decline-cutoff consumes only triggers at/before the decline. Expect an
@@ -1163,4 +1183,4 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     cat "$LOG_FILE"; exit 1
 fi
 
-echo "  PASS (25 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, fresh-update-trigger-after-decline, declined-trigger-consumed-after-push)"
+echo "  PASS (26 scenarios: no-comments, bare-mention, unchanged-head-review-declined, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha-declined, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, decline-deduped-next-tick, decline-spoof-ignored, fresh-update-trigger-after-decline, declined-trigger-consumed-after-push)"

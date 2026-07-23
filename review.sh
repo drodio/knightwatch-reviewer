@@ -122,7 +122,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
-    local DECLINED_AT
+    local DECLINED_AT DECLINE_ERR
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     while IFS= read -r PR_JSON; do
@@ -208,9 +208,12 @@ refresh_queue() {
             # decline dedup: on the next tick the declined trigger no longer
             # matches, so at most one decline is posted per trigger. ISO 8601
             # compares lexically; no decline leaves the cutoff untouched.
+            # Only the bot's OWN declines count: the marker string is public,
+            # so without the author check a drive-by commenter could paste it
+            # and silently consume other users' pending triggers.
             DECLINED_AT=$(printf '%s' "$COMMENTS_JSON" |
-                jq -r --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" \
-                    '[.[] | select(.body | contains($dmark))] | sort_by(.created_at) | last | .created_at // empty')
+                jq -r --arg dmark "$BOT_DECLINED_TRIGGER_MARKER" --arg bot_user "$BOT_USER" \
+                    '[.[] | select(.user.login == $bot_user and (.body | contains($dmark)))] | sort_by(.created_at) | last | .created_at // empty')
             if [ -n "$DECLINED_AT" ] && [ "$DECLINED_AT" \> "$REVIEWED_AT_ISO" ]; then
                 REVIEWED_AT_ISO="$DECLINED_AT"
             fi
@@ -304,10 +307,13 @@ refresh_queue() {
                 # the stability gate). On post failure the trigger stays open
                 # and the next tick retries the decline.
                 log "$PR_ID: trigger declined — review already landed on ${KNOWN_SHA:0:7} (head unchanged)"
-                gh pr comment "$PR_NUM" --repo "$REPO" --body "$BOT_AUTO_POST_MARKER
+                # Capture stderr so a persistent post failure (auth lapse,
+                # rate limit) is diagnosable — while it fails, the trigger
+                # stays open and each tick retries the decline.
+                DECLINE_ERR=$(gh pr comment "$PR_NUM" --repo "$REPO" --body "$BOT_AUTO_POST_MARKER
 $BOT_DECLINED_TRIGGER_MARKER
-A review was already landed on this commit (\`${KNOWN_SHA:0:7}\`) — declining to review again. Push new commits to get a fresh review." >/dev/null 2>&1 \
-                    || log "$PR_ID: failed to post decline comment — trigger stays open; retrying next tick"
+A review was already landed on this commit (\`${KNOWN_SHA:0:7}\`) — declining to review again. Push new commits to get a fresh review." 2>&1 >/dev/null) \
+                    || log "$PR_ID: failed to post decline comment — trigger stays open; retrying next tick: $(printf '%s' "$DECLINE_ERR" | tr '\n' ' ' | head -c 300)"
                 continue
             fi
             # Nothing to dispatch: record the updatedAt we just evaluated so the
