@@ -1197,9 +1197,10 @@ cat > "$MOCK_COMMENTS_FILE" <<'JSON'
 JSON
 run_orchestrator
 n=$(count_dispatches)
-if [ "$n" -ne 1 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
-    echo "FAIL scenario 24c (whole-over-incremental precedence regression): expected 1 force_whole=true dispatch when both command kinds are fresh, got $n dispatch(es)"
-    echo "--- log ---"; cat "$LOG_FILE"
+d=$(count_decline_comments)
+if [ "$n" -ne 1 ] || [ "$d" -ne 0 ] || ! grep -q 'force_whole=true' "$LOG_FILE"; then
+    echo "FAIL scenario 24c (whole-over-incremental precedence regression): expected 1 force_whole=true dispatch + 0 declines when both command kinds are fresh, got $n dispatch(es) + $d decline(s)"
+    echo "--- log ---"; cat "$LOG_FILE"; echo "--- pr-comment log ---"; cat "$PR_COMMENT_LOG"
     exit 1
 fi
 
