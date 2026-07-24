@@ -540,12 +540,7 @@ fi
 # indistinguishable from an enumeration failure when an operator later asks
 # "why didn't we get another review?". Exactly one line per evaluation — the
 # seen-updated watermark, not a per-tick reset, is what bounds it in prod.
-# ${n:-0} matches count_dispatches/count_comment_fetches: a missing $LOG_FILE
-# makes grep -c print nothing, and `[ "" -ne 1 ]` exits 2 ("integer expression
-# expected") which an `if` reads as false — the assertion would pass on exactly
-# the failure it guards.
 n=$(grep -c 'nothing to diff' "$LOG_FILE" 2>/dev/null || true)
-n="${n:-0}"
 if [ "$n" -ne 1 ]; then
     echo "FAIL scenario 7 (silent skip): expected exactly 1 'nothing to diff' log line, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
