@@ -335,6 +335,14 @@ if [ "$n" -ne 0 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+# Pins the FORCE_REVIEW gate on scenario 7's skip log: the no-trigger skip is
+# the common case (every quiet already-reviewed PR, every tick), so it must
+# stay silent or the log drowns.
+if grep -q 'nothing to diff' "$LOG_FILE"; then
+    echo "FAIL scenario 1 (skip-log gating): no-trigger skip must not log 'nothing to diff'"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 
 # Scenario 2: same SHA, bare @<bot> mention → no dispatch. @-mentions are
 # not triggers in the new model — only /srosro-review and
@@ -526,6 +534,16 @@ leaked=$(find "$STATE_DIR/tmp" -maxdepth 1 -name 'pr-review-trigger.*' -type f 2
 if [ -n "$leaked" ]; then
     echo "FAIL scenario 7 (skip-path tempfile leak): pre-skip mktemp leaked a trigger file under \$STATE_DIR/tmp:"
     echo "$leaked"
+    exit 1
+fi
+# The skip must say so: a swallowed trigger that leaves no trace is
+# indistinguishable from an enumeration failure when an operator later asks
+# "why didn't we get another review?". Exactly one line per evaluation — the
+# seen-updated watermark, not a per-tick reset, is what bounds it in prod.
+n=$(grep -c 'nothing to diff' "$LOG_FILE" 2>/dev/null || true)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7 (silent skip): expected exactly 1 'nothing to diff' log line, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
 
