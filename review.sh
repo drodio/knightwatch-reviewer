@@ -123,7 +123,8 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
-    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT DECLINED_ALREADY DECLINE_ERR
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -333,13 +334,21 @@ refresh_queue() {
                 # decline already posted since REVIEWED_AT_ISO (the same cutoff
                 # the trigger query uses), so it's one decline per review round no
                 # matter how many triggers land. A real review advances that
-                # cutoff and re-arms the post. Same shape as the worker's
-                # placeholder reuse (lib/review-one-pr.sh:525) — check for a prior
-                # bot post before POSTing — and it needs no new state, since
+                # cutoff and re-arms the post. It needs no new state, since
                 # COMMENTS_JSON is already in hand here.
+                #
+                # Recognized the same way the worker reuses its placeholder
+                # (lib/review-one-pr.sh:525): BOT_USER authorship + an EXACT
+                # header prefix, off one shared DECLINE_HEADER so the writer and
+                # the matcher can't drift. A bare substring match would let any
+                # commenter mute the requester's notification for the round by
+                # pasting the marker.
+                DECLINE_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_DECLINE_MARKER
+"
                 DECLINED_ALREADY=$(printf '%s' "$COMMENTS_JSON" |
-                    jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_DECLINE_MARKER" \
-                        '[.[] | select((.body | contains($mark)) and .created_at > $since)] | length')
+                    jq --arg since "$REVIEWED_AT_ISO" --arg header "$DECLINE_HEADER" --arg bot "$BOT_USER" \
+                        '[.[] | select(.user.login == $bot and (.body | startswith($header)) and .created_at > $since)] | length')
                 if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
                     # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
                     # above already exclude it — the decline can't self-trigger.
@@ -348,13 +357,19 @@ refresh_queue() {
                     # an abuse-limit 403 would otherwise fail every tick behind
                     # an opaque message with no diagnosable cause.
                     DECLINE_ERR=$(mktemp)
-                    gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
-                        -f body="$BOT_AUTO_POST_MARKER
-$BOT_DECLINE_MARKER
-⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
+                    if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                        -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
-This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR" \
-                        || log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (continuing)"
+This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
+                        log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (retrying next tick)"
+                        # Suppress the watermark write below so the idle-skip
+                        # can't latch this failure in. Otherwise a transient POST
+                        # error silences the requester until unrelated PR
+                        # activity moves updatedAt — fail-soft becoming
+                        # fail-silent-forever, the exact class this PR exists to
+                        # close. Reuses the existing nonempty guard; no branch.
+                        PR_UPDATED_AT=""
+                    fi
                     rm -f "$DECLINE_ERR"
                 fi
             fi

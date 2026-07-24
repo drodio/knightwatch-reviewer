@@ -130,6 +130,13 @@ elif [ "$1" = "api" ]; then
                         case "$a" in body=*) echo "POST ${a#body=}" >> "$COMMENT_POST_LOG" ;; esac
                     done
                 fi
+                # Opt-in POST failure (same shape as MOCK_PERMISSION_RC) so the
+                # decline's failure path — log the cause, skip the watermark, retry
+                # next tick — is exercised rather than assumed.
+                if [ -n "${MOCK_POST_RC:-}" ]; then
+                    echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                    exit "$MOCK_POST_RC"
+                fi
                 echo '{"id":1}'
                 exit 0
             fi
@@ -320,6 +327,15 @@ run_orchestrator() {
     ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
 }
 
+assert_decline_posts() {
+    local expected="$1" label="$2" n
+    n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+    [ "$n" -eq "$expected" ] && return
+    echo "FAIL $label: expected $expected decline POST(s), got $n"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
+    exit 1
+}
+
 count_comment_fetches() {
     local n
     n=$(grep -c '^FETCH ' "$COMMENT_FETCH_LOG" 2>/dev/null || true)
@@ -373,11 +389,7 @@ fi
 # Same gate, PR-visible side: a quiet already-reviewed PR must never be
 # commented on. This is the assertion that keeps the bot from becoming noisy
 # on every tracked repo.
-if grep -q 'already-reviewed' "$COMMENT_POST_LOG"; then
-    echo "FAIL scenario 1 (decline gating): no-trigger skip must not post a decline comment"
-    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
-    exit 1
-fi
+assert_decline_posts 0 "scenario 1 (decline gating)"
 
 # Scenario 2: same SHA, bare @<bot> mention → no dispatch. @-mentions are
 # not triggers in the new model — only /srosro-review and
@@ -584,12 +596,7 @@ fi
 # …and the requester gets told on the PR too. The log only reaches an operator
 # with shell access to the reviewer host; the thing that POSTED the trigger is
 # usually an agent on the PR, for which a silent skip is a dead end.
-n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 7 (decline not posted): expected exactly 1 decline POST, got $n"
-    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
-    exit 1
-fi
+assert_decline_posts 1 "scenario 7 (decline not posted)"
 
 # Scenario 7b: the decline is posted at most ONCE per review round — the
 # re-post loop fence. Posting bumps the PR's updatedAt past the watermark, so
@@ -605,12 +612,14 @@ echo "  scenario 7b: decline posted at most once per round (re-post loop fence).
 # scenario vacuously. run_orchestrator's fixture check now fails loud on that.
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnothing to re-review"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
-n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
-if [ "$n" -ne 0 ]; then
-    echo "FAIL scenario 7b (decline re-post loop): a decline already on the thread must suppress another, got $n POST(s)"
-    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
-    exit 1
-fi
+assert_decline_posts 0 "scenario 7b (decline re-post loop)"
+# …but only a BOT-authored decline suppresses. The matcher is authorship +
+# exact-header, not a bare substring, so a commenter can't mute the requester's
+# notification by pasting the marker into their own comment. Same fixture with
+# the author swapped — the decline must still go out.
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnot actually the bot"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+assert_decline_posts 1 "scenario 7b (marker spoofed by a non-bot commenter)"
 # Positive control: both assertions above are negative, so anything that drops
 # the PR BEFORE the decline gate (idle-skip watermark, trust defer, an
 # enumeration change) would satisfy them for the wrong reason. Require the gate
@@ -639,10 +648,24 @@ fi
 echo "  scenario 7c: a decline older than the last review re-arms (suppression is per-round)..."
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"2020-01-01T00:00:00Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nstale decline from a prior round"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
-n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
-if [ "$n" -ne 1 ]; then
-    echo "FAIL scenario 7c (suppression never re-arms): a pre-cutoff decline must not mute the new one, expected 1 POST, got $n"
-    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
+assert_decline_posts 1 "scenario 7c (suppression never re-arms)"
+
+# Scenario 7d: a FAILED decline POST must not be latched in by the watermark.
+# The POST is fail-soft, but writing seen-updated on the failure path makes the
+# idle-skip suppress every retry until unrelated PR activity moves updatedAt —
+# fail-soft degrading into fail-silent-forever, the exact class this PR exists to
+# close. Assert the cause reaches the log AND the watermark is withheld.
+echo "  scenario 7d: a failed decline POST logs its cause and withholds the watermark (retry next tick)..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_POST_RC=1 run_orchestrator
+if ! grep -q 'simulated-abuse-limit' "$LOG_FILE"; then
+    echo "FAIL scenario 7d (opaque failure): the POST's stderr cause must reach the log, not /dev/null"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL scenario 7d (failure latched in): watermark written after a failed decline POST — the idle-skip will suppress every retry"
     exit 1
 fi
 
@@ -1159,4 +1182,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (25 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (26 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-not-watermarked, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
