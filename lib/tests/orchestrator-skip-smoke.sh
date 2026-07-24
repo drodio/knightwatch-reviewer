@@ -464,7 +464,7 @@ fi
 # content-marker filter must let unmarked comments through regardless of
 # author.
 echo "  scenario 5: same SHA + /srosro-review by BOT_USER without marker (single-account)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -490,7 +490,7 @@ fi
 # with NO trigger_file. This isolates the marker-strip from the trust gate: the
 # poller's "auto-posted" attribution must never reach trigger-comment.md.
 echo "  scenario 5b: same SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
