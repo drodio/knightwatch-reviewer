@@ -123,7 +123,7 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
-    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT DECLINED_ALREADY
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -321,6 +321,36 @@ refresh_queue() {
             # below caps this at one line per PR-activity event, not per tick.
             if [ "$FORCE_REVIEW" = "true" ]; then
                 log "$PR_ID: /${BOT_CMD_PREFIX}-update-review on already-reviewed head $PR_SHA — nothing to diff; trigger stays open until a new commit lands (/${BOT_CMD_PREFIX}-review forces a whole-PR pass)"
+                # …and tell the requester, who is usually an agent on the PR with
+                # no access to this log. Same "why you're not getting a review"
+                # family as the worker's ⏭/⏸ posts (lib/review-one-pr.sh), and
+                # the only member of it that used to be silent.
+                #
+                # Idempotency is load-bearing, not polish: posting bumps the PR's
+                # updatedAt past the watermark written below, so the next tick
+                # re-evaluates, finds the SAME still-unconsumed trigger, and would
+                # post again — one comment per tick, forever. Suppress on any
+                # decline already posted since REVIEWED_AT_ISO (the same cutoff
+                # the trigger query uses), so it's one decline per review round no
+                # matter how many triggers land. A real review advances that
+                # cutoff and re-arms the post. Same shape as the worker's
+                # placeholder reuse (lib/review-one-pr.sh:525) — check for a prior
+                # bot post before POSTing — and it needs no new state, since
+                # COMMENTS_JSON is already in hand here.
+                DECLINED_ALREADY=$(printf '%s' "$COMMENTS_JSON" |
+                    jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_DECLINE_MARKER" \
+                        '[.[] | select((.body | contains($mark)) and .created_at > $since)] | length')
+                if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
+                    # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
+                    # above already exclude it — the decline can't self-trigger.
+                    gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                        -f body="$BOT_AUTO_POST_MARKER
+$BOT_DECLINE_MARKER
+⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
+
+This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>&1 \
+                        || log "$PR_ID: failed to post the already-reviewed decline (continuing)"
+                fi
             fi
             # Record the updatedAt we just evaluated so the next tick's idle-skip
             # gate (above) can avoid re-fetching comments while nothing changes.

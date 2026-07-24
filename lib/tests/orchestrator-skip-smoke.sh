@@ -42,6 +42,7 @@ export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
+export COMMENT_POST_LOG="$STATE_DIR/comment-post.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -118,6 +119,21 @@ elif [ "$1" = "api" ]; then
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
+        # A POST to this same URL is the orchestrator's "already reviewed"
+        # decline, not a fetch — record the body and echo a comment object
+        # back. Split by --method POST rather than URL, since both share the
+        # issues/<n>/comments shape.
+        for arg in "$@"; do
+            if [ "$arg" = "POST" ]; then
+                if [ -n "${COMMENT_POST_LOG:-}" ]; then
+                    for a in "$@"; do
+                        case "$a" in body=*) echo "POST ${a#body=}" >> "$COMMENT_POST_LOG" ;; esac
+                    done
+                fi
+                echo '{"id":1}'
+                exit 0
+            fi
+        done
         # Count comment-fetches so the idle-skip scenarios can assert the
         # gate avoided the core gh call entirely.
         [ -n "${COMMENT_FETCH_LOG:-}" ] && echo "FETCH $url" >> "$COMMENT_FETCH_LOG"
@@ -287,6 +303,17 @@ export MOCK_TRUSTED_USERS="srosro someuser"
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
     : > "$COMMENT_FETCH_LOG"
+    : > "$COMMENT_POST_LOG"
+    # Fail loud on a malformed comments fixture. An unparseable one makes
+    # fetch_issue_comments fail, so the PR is dropped BEFORE any gate under
+    # test — every assertion then passes vacuously. The trap is one printf
+    # away: `\n` inside a body expands to a real newline, which is an illegal
+    # unescaped control character in JSON (needs `\\n`).
+    local f
+    for f in "${MOCK_COMMENTS_FILE:-}" "${MOCK_COMMENTS_PAGE1_FILE:-}" "${MOCK_COMMENTS_PAGE2_FILE:-}"; do
+        [ -n "$f" ] && [ -f "$f" ] || continue
+        jq -e . "$f" >/dev/null 2>&1 || { echo "FATAL: malformed comments fixture $f"; cat "$f"; exit 1; }
+    done
     # ENUMERATE_SECS=0 forces a queue refresh every invocation (the floor is
     # always elapsed), so each scenario re-enumerates and re-evaluates its own
     # MOCK_COMMENTS from scratch rather than consuming a prior scenario's queue.
@@ -341,6 +368,14 @@ fi
 if grep -q 'nothing to diff' "$LOG_FILE"; then
     echo "FAIL scenario 1 (skip-log gating): no-trigger skip must not log 'nothing to diff'"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# Same gate, PR-visible side: a quiet already-reviewed PR must never be
+# commented on. This is the assertion that keeps the bot from becoming noisy
+# on every tracked repo.
+if grep -q 'already-reviewed' "$COMMENT_POST_LOG"; then
+    echo "FAIL scenario 1 (decline gating): no-trigger skip must not post a decline comment"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
     exit 1
 fi
 
@@ -543,6 +578,44 @@ fi
 n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)   # || true: grep -c exits 1 on a zero count
 if [ "$n" -ne 1 ]; then
     echo "FAIL scenario 7 (silent skip): expected exactly 1 'nothing to diff' log line, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# …and the requester gets told on the PR too. The log only reaches an operator
+# with shell access to the reviewer host; the thing that POSTED the trigger is
+# usually an agent on the PR, for which a silent skip is a dead end.
+n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7 (decline not posted): expected exactly 1 decline POST, got $n"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
+    exit 1
+fi
+
+# Scenario 7b: the decline is posted at most ONCE per review round — the
+# re-post loop fence. Posting bumps the PR's updatedAt past the watermark, so
+# the next tick re-evaluates and finds the SAME still-unconsumed trigger; without
+# the suppression check that yields one comment per tick, forever. Feed the prior
+# decline back as an existing comment (what the real thread would carry) and
+# require silence. Guards the one failure mode that would be visible to every
+# repo the bot watches.
+echo "  scenario 7b: decline posted at most once per round (re-post loop fence)..."
+# \\n, not \n: printf expands \n to a real newline, which is an unescaped
+# control character inside a JSON string and makes the whole fixture unparseable
+# — the PR would be dropped before ever reaching the decline path, passing this
+# scenario vacuously. run_orchestrator's fixture check now fails loud on that.
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnothing to re-review"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 7b (decline re-post loop): a decline already on the thread must suppress another, got $n POST(s)"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
+    exit 1
+fi
+# The skip itself must still happen — suppressing the comment must not
+# accidentally turn the round into a dispatch.
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 7b: expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -1060,4 +1133,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (23 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (24 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
