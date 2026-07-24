@@ -41,14 +41,14 @@ _pr_comments_from_json() {
         return 0
     fi
 
-    # BOT_USER is the GitHub login seam (review.sh:26, learn-from-replies.sh:36,
-    # poll-pr-actions.sh). Distinct from OPERATOR_NAME (the voice/display
+    # BOT_USER is the GitHub login seam, defaulted in lib/bootstrap.sh (every
+    # entrypoint sources it). Distinct from OPERATOR_NAME (the voice/display
     # seam in lib/pipeline.py). The bot's own auto-posts sign as $operator
     # (kw-reviewer's GH identity is the operator's account); the HTML marker
     # distinguishes bot output from human-authored replies. Comments whose
     # login == $operator and which carry NO bot marker are genuine operator
     # replies (trusted); everything else non-bot is a participant.
-    local operator="${BOT_USER:-srosro}"
+    local operator="$BOT_USER"
     local marker="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
     # The re-request poller's auto-trigger carries its own marker (not the
     # auto-post one, which would suppress dispatch). Filter it here too so the
@@ -122,7 +122,7 @@ fetch_pr_comments() {
     # with push access. One is_trusted_repo_author call per distinct
     # login (deduped via `unique`) keeps the gh cost bounded by the number
     # of participants, not the number of comments.
-    local operator="${BOT_USER:-srosro}"
+    local operator="$BOT_USER"
     local trusted="$operator" login
     while IFS= read -r login; do
         [ -z "$login" ] && continue

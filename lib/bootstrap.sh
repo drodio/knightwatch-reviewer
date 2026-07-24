@@ -7,17 +7,6 @@
 # loads config.env, which the others and the consumer's require_*/container-mode
 # logic read.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-# Must name the SAME identity $GH_TOKEN posts as. Two suppression fences match
-# on it — the worker's placeholder reuse (lib/review-one-pr.sh) and the
-# orchestrator's already-reviewed decline (review.sh) — and both fail OPEN if it
-# drifts: the bot stops recognizing its own comments and re-posts them forever.
-# Override in config.env (or the env), NOT here: this `:-` default is duplicated
-# in lib/review-one-pr.sh and specialist-bakeoff.sh, which source
-# tracked-repos.sh rather than this file, so editing this line alone moves the
-# orchestrator's fence and leaves the worker's behind. config.env is the one
-# seam all three read before their own default.
-BOT_USER="${BOT_USER:-srosro}"
-BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Marker prepended to every bot auto-post; the orchestrator's jq filter excludes
 # any comment containing it so the bot never self-triggers. Must match the
 # literal in lib/review-one-pr.sh — a smoke scenario catches drift.
@@ -34,6 +23,17 @@ BOT_AUTO_TRIGGER_MARKER="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:au
 # keeps the skip path from re-posting the same decline every tick.
 BOT_DECLINE_MARKER="${BOT_DECLINE_MARKER:-<!-- knightwatch-reviewer:already-reviewed -->}"
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
+# Identity defaults land AFTER config.env (sourced by tracked-repos.sh above), so
+# config.env is the single seam for all of them — matching lib/review-one-pr.sh
+# and specialist-bakeoff.sh, which carry the same `:-` defaults and also source
+# tracked-repos.sh first. Defaulting before it would make a `${BOT_USER:-…}`
+# config.env entry a no-op here while it took effect there, moving the
+# orchestrator's suppression fence and leaving the worker's behind. BOT_USER must
+# name the identity $GH_TOKEN posts as: two fences match on it — the worker's
+# placeholder reuse and the orchestrator's already-reviewed decline — and both
+# fail OPEN if it drifts, re-posting comments the bot no longer recognizes.
+BOT_USER="${BOT_USER:-srosro}"
+BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"
 . "$REVIEWER_LIB_DIR/gh-comments.sh"
