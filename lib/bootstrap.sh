@@ -7,6 +7,11 @@
 # loads config.env, which the others and the consumer's require_*/container-mode
 # logic read.
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
+# Must name the SAME identity $GH_TOKEN posts as. Two suppression fences match
+# on it — the worker's placeholder reuse (lib/review-one-pr.sh) and the
+# orchestrator's already-reviewed decline (review.sh) — and both fail OPEN if it
+# drifts: the bot stops recognizing its own comments and re-posts them. A
+# `…[bot]` app suffix or a secondary service account regresses both at once.
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Marker prepended to every bot auto-post; the orchestrator's jq filter excludes

@@ -613,17 +613,11 @@ echo "  scenario 7b: decline posted at most once per round (re-post loop fence).
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnothing to re-review"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 assert_decline_posts 0 "scenario 7b (decline re-post loop)"
-# …but only a BOT-authored decline suppresses. The matcher is authorship +
-# exact-header, not a bare substring, so a commenter can't mute the requester's
-# notification by pasting the marker into their own comment. Same fixture with
-# the author swapped — the decline must still go out.
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnot actually the bot"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-assert_decline_posts 1 "scenario 7b (marker spoofed by a non-bot commenter)"
-# Positive control: both assertions above are negative, so anything that drops
-# the PR BEFORE the decline gate (idle-skip watermark, trust defer, an
-# enumeration change) would satisfy them for the wrong reason. Require the gate
-# under test to have actually been reached.
+# Positive control — must stay attached to the run above, whose only assertion is
+# negative. run_orchestrator truncates $LOG_FILE, so any run inserted between the
+# two describes the WRONG invocation and silently re-opens the vacuity gap:
+# anything dropping the PR before the decline gate (idle-skip watermark, trust
+# defer, an enumeration change) would satisfy the negative for the wrong reason.
 n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)
 if [ "$n" -ne 1 ]; then
     echo "FAIL scenario 7b (never reached the gate): expected 1 'nothing to diff' log line, got $n"
@@ -638,6 +632,14 @@ if [ "$n" -ne 0 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+# …but only a BOT-authored decline suppresses. The matcher is authorship +
+# exact-header, not a bare substring, so a commenter can't mute the requester's
+# notification by pasting the marker into their own comment. Same fixture with
+# the author swapped — the decline must still go out. Needs no positive control:
+# assert_decline_posts 1 is itself positive.
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnot actually the bot"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+assert_decline_posts 1 "scenario 7b (marker spoofed by a non-bot commenter)"
 
 # Scenario 7c: the OTHER half of the idempotency contract — suppression is
 # scoped to the current review round, not the PR's lifetime. A decline that
@@ -650,12 +652,13 @@ printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-r
 run_orchestrator
 assert_decline_posts 1 "scenario 7c (suppression never re-arms)"
 
-# Scenario 7d: a FAILED decline POST must not be latched in by the watermark.
-# The POST is fail-soft, but writing seen-updated on the failure path makes the
-# idle-skip suppress every retry until unrelated PR activity moves updatedAt —
-# fail-soft degrading into fail-silent-forever, the exact class this PR exists to
-# close. Assert the cause reaches the log AND the watermark is withheld.
-echo "  scenario 7d: a failed decline POST logs its cause and withholds the watermark (retry next tick)..."
+# Scenario 7d: a FAILED decline POST logs its real cause and stays watermarked.
+# Both halves are deliberate. The cause must survive (not /dev/null) or a
+# locked/archived PR fails behind an opaque message forever. The watermark must
+# still be written, or a PERMANENT failure re-POSTs every tick on every affected
+# PR — feeding the secondary rate limit the idle-skip exists to prevent. The
+# trigger stays unconsumed, so the next real PR event retries.
+echo "  scenario 7d: a failed decline POST logs its cause and stays watermarked (no unbounded retry)..."
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
 MOCK_POST_RC=1 run_orchestrator
@@ -664,8 +667,8 @@ if ! grep -q 'simulated-abuse-limit' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
-    echo "FAIL scenario 7d (failure latched in): watermark written after a failed decline POST — the idle-skip will suppress every retry"
+if [ ! -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL scenario 7d (unbounded retry): watermark withheld after a failed decline POST — a permanent failure would re-POST every tick"
     exit 1
 fi
 
@@ -1182,4 +1185,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (26 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-not-watermarked, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (26 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

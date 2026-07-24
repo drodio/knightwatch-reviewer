@@ -361,14 +361,19 @@ $BOT_DECLINE_MARKER
                         -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
 This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
-                        log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (retrying next tick)"
-                        # Suppress the watermark write below so the idle-skip
-                        # can't latch this failure in. Otherwise a transient POST
-                        # error silences the requester until unrelated PR
-                        # activity moves updatedAt — fail-soft becoming
-                        # fail-silent-forever, the exact class this PR exists to
-                        # close. Reuses the existing nonempty guard; no branch.
-                        PR_UPDATED_AT=""
+                        # Deliberately still watermarked below — a failed POST is
+                        # NOT retried this round. Withholding the watermark to
+                        # retry sounds right but is worse: a PERMANENT failure
+                        # (locked/archived PR, token lost write access) then
+                        # re-fetches and re-POSTs every tick forever, on every
+                        # affected PR — feeding the secondary rate limit the
+                        # idle-skip exists to prevent. Distinguishing terminal
+                        # from transient means parsing gh's error text, which is
+                        # machinery for a rare case. The trigger stays unconsumed,
+                        # so the next real PR event re-evaluates and retries; a
+                        # missed notification recovers, a fleet-wide per-tick POST
+                        # loop does not.
+                        log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (not retried until the next PR event)"
                     fi
                     rm -f "$DECLINE_ERR"
                 fi
