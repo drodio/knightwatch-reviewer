@@ -131,8 +131,9 @@ elif [ "$1" = "api" ]; then
                     done
                 fi
                 # Opt-in POST failure (same shape as MOCK_PERMISSION_RC) so the
-                # decline's failure path — log the cause, skip the watermark, retry
-                # next tick — is exercised rather than assumed.
+                # decline's failure path — log the real cause and STILL watermark,
+                # since a failed POST is not retried this round (scenario 7d) — is
+                # exercised rather than assumed.
                 if [ -n "${MOCK_POST_RC:-}" ]; then
                     echo "gh: HTTP 403: simulated-abuse-limit" >&2
                     exit "$MOCK_POST_RC"

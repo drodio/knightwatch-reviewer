@@ -10,8 +10,12 @@ STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 # Must name the SAME identity $GH_TOKEN posts as. Two suppression fences match
 # on it — the worker's placeholder reuse (lib/review-one-pr.sh) and the
 # orchestrator's already-reviewed decline (review.sh) — and both fail OPEN if it
-# drifts: the bot stops recognizing its own comments and re-posts them. A
-# `…[bot]` app suffix or a secondary service account regresses both at once.
+# drifts: the bot stops recognizing its own comments and re-posts them forever.
+# Override in config.env (or the env), NOT here: this `:-` default is duplicated
+# in lib/review-one-pr.sh and specialist-bakeoff.sh, which source
+# tracked-repos.sh rather than this file, so editing this line alone moves the
+# orchestrator's fence and leaves the worker's behind. config.env is the one
+# seam all three read before their own default.
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Marker prepended to every bot auto-post; the orchestrator's jq filter excludes
