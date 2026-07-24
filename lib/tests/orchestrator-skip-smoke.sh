@@ -300,7 +300,7 @@ export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # and "someuser" is the realistic external collaborator shape. Scenarios
 # that need to test the untrusted path override this just before
 # run_orchestrator.
-export MOCK_TRUSTED_USERS="srosro someuser"
+export MOCK_TRUSTED_USERS="$BOT_USER someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
@@ -478,7 +478,7 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     exit 1
 fi
 if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
-    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
+    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (BOT_USER is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
