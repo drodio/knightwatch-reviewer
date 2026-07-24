@@ -540,7 +540,7 @@ fi
 # indistinguishable from an enumeration failure when an operator later asks
 # "why didn't we get another review?". Exactly one line per evaluation — the
 # seen-updated watermark, not a per-tick reset, is what bounds it in prod.
-n=$(grep -c 'nothing to diff' "$LOG_FILE" 2>/dev/null || true)
+n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)   # || true: grep -c exits 1 on a zero count
 if [ "$n" -ne 1 ]; then
     echo "FAIL scenario 7 (silent skip): expected exactly 1 'nothing to diff' log line, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
