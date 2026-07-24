@@ -112,36 +112,34 @@ elif [ "$1" = "api" ]; then
     # `gh api --paginate URL` both reach the orchestrator. Walk all args
     # and match by URL shape rather than position, so adding flags
     # (--paginate, --jq, --method) doesn't require stub edits.
-    url=""
+    # One pass over argv collects everything the stub branches on: the endpoint
+    # (any positional, so flags like --paginate/--jq don't need stub edits), the
+    # HTTP method, and a `-f body=…` payload. A POST and a GET to the same
+    # issues/<n>/comments URL are distinguished by method, not URL shape.
+    url=""; method="GET"; body=""
     for arg in "$@"; do
         case "$arg" in
-            repos/*) url="$arg"; break ;;
+            repos/*) url="$arg" ;;
+            POST|PATCH|PUT|DELETE) method="$arg" ;;
+            body=*) body="${arg#body=}" ;;
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
-        # A POST to this same URL is the orchestrator's "already reviewed"
-        # decline, not a fetch — record the body and echo a comment object
-        # back. Split by --method POST rather than URL, since both share the
-        # issues/<n>/comments shape.
-        for arg in "$@"; do
-            if [ "$arg" = "POST" ]; then
-                if [ -n "${COMMENT_POST_LOG:-}" ]; then
-                    for a in "$@"; do
-                        case "$a" in body=*) echo "POST ${a#body=}" >> "$COMMENT_POST_LOG" ;; esac
-                    done
-                fi
-                # Opt-in POST failure (same shape as MOCK_PERMISSION_RC) so the
-                # decline's failure path — log the real cause and STILL watermark,
-                # since a failed POST is not retried this round (scenario 7d) — is
-                # exercised rather than assumed.
-                if [ -n "${MOCK_POST_RC:-}" ]; then
-                    echo "gh: HTTP 403: simulated-abuse-limit" >&2
-                    exit "$MOCK_POST_RC"
-                fi
-                echo '{"id":1}'
-                exit 0
+        if [ "$method" = "POST" ]; then
+            # The orchestrator's "already reviewed" decline. Record the body,
+            # then echo a comment object back.
+            [ -n "${COMMENT_POST_LOG:-}" ] && echo "POST $body" >> "$COMMENT_POST_LOG"
+            # Opt-in POST failure (same shape as MOCK_PERMISSION_RC) so the
+            # decline's failure path — log the real cause and STILL watermark,
+            # since a failed POST is not retried this round (scenario 7d) — is
+            # exercised rather than assumed.
+            if [ -n "${MOCK_POST_RC:-}" ]; then
+                echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                exit "$MOCK_POST_RC"
             fi
-        done
+            echo '{"id":1}'
+            exit 0
+        fi
         # Count comment-fetches so the idle-skip scenarios can assert the
         # gate avoided the core gh call entirely.
         [ -n "${COMMENT_FETCH_LOG:-}" ] && echo "FETCH $url" >> "$COMMENT_FETCH_LOG"
@@ -335,6 +333,19 @@ assert_decline_posts() {
     echo "FAIL $label: expected $expected decline POST(s), got $n"
     echo "--- posts ---"; cat "$COMMENT_POST_LOG"
     exit 1
+}
+
+# One already-reviewed-head suppression case: a fresh /update-review trigger + a
+# prior decline by <author> at <created_at>, asserting the round's decline count.
+# The matcher keys on bot authorship + exact header, so those two are the only
+# axes that matter. `\\n` not `\n` keeps the body valid JSON (run_orchestrator
+# fixture-checks it); markers are literal (the test shell doesn't export them).
+assert_decline_suppression_case() {
+    local author="$1" created_at="$2" expected="$3" label="$4"
+    printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\ndecline"}]\n' \
+        "$NOW_ISO" "$created_at" "$author" > "$MOCK_COMMENTS_FILE"
+    run_orchestrator
+    assert_decline_posts "$expected" "$label"
 }
 
 count_comment_fetches() {
@@ -607,13 +618,11 @@ assert_decline_posts 1 "scenario 7 (decline not posted)"
 # require silence. Guards the one failure mode that would be visible to every
 # repo the bot watches.
 echo "  scenario 7b: decline posted at most once per round (re-post loop fence)..."
-# \\n, not \n: printf expands \n to a real newline, which is an unescaped
-# control character inside a JSON string and makes the whole fixture unparseable
-# — the PR would be dropped before ever reaching the decline path, passing this
-# scenario vacuously. run_orchestrator's fixture check now fails loud on that.
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnothing to re-review"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-assert_decline_posts 0 "scenario 7b (decline re-post loop)"
+# A bot-authored decline from this same round suppresses the re-post — the loop
+# fence. Posting bumps updatedAt past the watermark, so the next tick finds the
+# SAME unconsumed trigger; without suppression that's one comment per tick,
+# forever — the one failure mode visible to every repo the bot watches.
+assert_decline_suppression_case srosro "$NOW_ISO" 0 "scenario 7b (decline re-post loop)"
 # Positive control — must stay attached to the run above, whose only assertion is
 # negative. run_orchestrator truncates $LOG_FILE, so any run inserted between the
 # two describes the WRONG invocation and silently re-opens the vacuity gap:
@@ -633,14 +642,10 @@ if [ "$n" -ne 0 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
-# …but only a BOT-authored decline suppresses. The matcher is authorship +
-# exact-header, not a bare substring, so a commenter can't mute the requester's
-# notification by pasting the marker into their own comment. Same fixture with
-# the author swapped — the decline must still go out. Needs no positive control:
-# assert_decline_posts 1 is itself positive.
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"someuser"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nnot actually the bot"}]\n' "$NOW_ISO" "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-assert_decline_posts 1 "scenario 7b (marker spoofed by a non-bot commenter)"
+# …but only a BOT-authored decline suppresses. A non-bot commenter pasting the
+# marker must NOT mute the notification (authorship + exact-header, not a bare
+# substring). The expected-1 assertion is itself the positive control.
+assert_decline_suppression_case someuser "$NOW_ISO" 1 "scenario 7b (marker spoofed by a non-bot commenter)"
 
 # Scenario 7c: the OTHER half of the idempotency contract — suppression is
 # scoped to the current review round, not the PR's lifetime. A decline that
@@ -649,9 +654,7 @@ assert_decline_posts 1 "scenario 7b (marker spoofed by a non-bot commenter)"
 # the PR's life. That regression is an ABSENCE of a comment, which every
 # assertion in 7b still passes through.
 echo "  scenario 7c: a decline older than the last review re-arms (suppression is per-round)..."
-printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"2020-01-01T00:00:00Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nstale decline from a prior round"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_orchestrator
-assert_decline_posts 1 "scenario 7c (suppression never re-arms)"
+assert_decline_suppression_case srosro "2020-01-01T00:00:00Z" 1 "scenario 7c (suppression never re-arms)"
 
 # Scenario 7d: a FAILED decline POST logs its real cause and stays watermarked.
 # Both halves are deliberate. The cause must survive (not /dev/null) or a
