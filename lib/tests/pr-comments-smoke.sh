@@ -25,11 +25,6 @@
 set -uo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-# pr-comments.sh requires its caller to have set the bot identity (in production
-# lib/bootstrap.sh does, before lib/review-one-pr.sh sources this). It carries no
-# `:-srosro` fallback of its own, so under `set -u` an unset value fails loud
-# instead of silently trusting the wrong login — supply it here as the caller.
-BOT_USER="srosro"
 . "$PROJECT_ROOT/lib/pr-comments.sh"
 
 # --- fixture 1: empty comments → sentinel ---
