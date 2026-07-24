@@ -119,8 +119,8 @@ elif [ "$1" = "api" ]; then
     url=""; method="GET"; body=""
     for arg in "$@"; do
         case "$arg" in
-            repos/*) url="$arg" ;;
-            POST|PATCH|PUT|DELETE) method="$arg" ;;
+            repos/*) [ -n "$url" ] || url="$arg" ;;   # first match, as `break` did
+            POST) method="POST" ;;                    # the only verb this stub branches on
             body=*) body="${arg#body=}" ;;
         esac
     done
@@ -338,8 +338,9 @@ assert_decline_posts() {
 # One already-reviewed-head suppression case: a fresh /update-review trigger + a
 # prior decline by <author> at <created_at>, asserting the round's decline count.
 # The matcher keys on bot authorship + exact header, so those two are the only
-# axes that matter. `\\n` not `\n` keeps the body valid JSON (run_orchestrator
-# fixture-checks it); markers are literal (the test shell doesn't export them).
+# axes that matter — pass "$BOT_USER" for the bot cases so the identity reads off
+# the call site. `\\n` not `\n` keeps the body valid JSON (run_orchestrator
+# fixture-checks it); the markers are literal (the test shell doesn't export those).
 assert_decline_suppression_case() {
     local author="$1" created_at="$2" expected="$3" label="$4"
     printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\ndecline"}]\n' \
@@ -622,7 +623,7 @@ echo "  scenario 7b: decline posted at most once per round (re-post loop fence).
 # fence. Posting bumps updatedAt past the watermark, so the next tick finds the
 # SAME unconsumed trigger; without suppression that's one comment per tick,
 # forever — the one failure mode visible to every repo the bot watches.
-assert_decline_suppression_case srosro "$NOW_ISO" 0 "scenario 7b (decline re-post loop)"
+assert_decline_suppression_case "$BOT_USER" "$NOW_ISO" 0 "scenario 7b (decline re-post loop)"
 # Positive control — must stay attached to the run above, whose only assertion is
 # negative. run_orchestrator truncates $LOG_FILE, so any run inserted between the
 # two describes the WRONG invocation and silently re-opens the vacuity gap:
@@ -654,7 +655,7 @@ assert_decline_suppression_case someuser "$NOW_ISO" 1 "scenario 7b (marker spoof
 # the PR's life. That regression is an ABSENCE of a comment, which every
 # assertion in 7b still passes through.
 echo "  scenario 7c: a decline older than the last review re-arms (suppression is per-round)..."
-assert_decline_suppression_case srosro "2020-01-01T00:00:00Z" 1 "scenario 7c (suppression never re-arms)"
+assert_decline_suppression_case "$BOT_USER" "2020-01-01T00:00:00Z" 1 "scenario 7c (suppression never re-arms)"
 
 # Scenario 7d: a FAILED decline POST logs its real cause and stays watermarked.
 # Both halves are deliberate. The cause must survive (not /dev/null) or a
