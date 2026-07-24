@@ -108,10 +108,6 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         echo '[]'
     fi
 elif [ "$1" = "api" ]; then
-    # The endpoint URL can land at any positional arg — `gh api URL` and
-    # `gh api --paginate URL` both reach the orchestrator. Walk all args
-    # and match by URL shape rather than position, so adding flags
-    # (--paginate, --jq, --method) doesn't require stub edits.
     # One pass over argv collects everything the stub branches on: the endpoint
     # (any positional, so flags like --paginate/--jq don't need stub edits), the
     # HTTP method, and a `-f body=…` payload. A POST and a GET to the same
