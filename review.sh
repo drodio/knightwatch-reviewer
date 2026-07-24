@@ -312,6 +312,16 @@ refresh_queue() {
         # require a state schema change for a low-impact edge case at our
         # scale.
         if [ "$PR_SHA" = "$KNOWN_SHA" ] && [ "$FORCE_WHOLE_PR" = "false" ]; then
+            # Say so when a trigger is what we're swallowing. Without this the
+            # skip is indistinguishable from "the orchestrator never saw the
+            # PR" in the log, and answering "why didn't we get another review?"
+            # means reading meta.json + the seen-updated watermark + the queue
+            # by hand (plow-pbc/plow#1115). Gated on FORCE_REVIEW so the far
+            # commoner no-trigger skip stays quiet, and the watermark write
+            # below caps this at one line per PR-activity event, not per tick.
+            if [ "$FORCE_REVIEW" = "true" ]; then
+                log "$PR_ID: /${BOT_CMD_PREFIX}-update-review on already-reviewed head $PR_SHA — nothing to diff; trigger stays open until a new commit lands (/${BOT_CMD_PREFIX}-review forces a whole-PR pass)"
+            fi
             # Record the updatedAt we just evaluated so the next tick's idle-skip
             # gate (above) can avoid re-fetching comments while nothing changes.
             # Written only here, on the nothing-to-dispatch path — a dispatched
@@ -325,8 +335,8 @@ refresh_queue() {
 
         # Log the trigger reason now that we know we're dispatching. Logged
         # AFTER the skip check so the log matches what actually runs (a
-        # /srosro-update-review on an unchanged PR no longer logs
-        # "incremental re-review" before silently skipping).
+        # /srosro-update-review on an unchanged PR logs the skip above
+        # instead of claiming an "incremental re-review" that never runs).
         if [ "$FORCE_WHOLE_PR" = "true" ]; then
             log "$PR_ID: /${BOT_CMD_PREFIX}-review requested — whole-PR re-review"
         elif [ "$FORCE_REVIEW" = "true" ]; then
