@@ -611,12 +611,38 @@ if [ "$n" -ne 0 ]; then
     echo "--- posts ---"; cat "$COMMENT_POST_LOG"
     exit 1
 fi
+# Positive control: both assertions above are negative, so anything that drops
+# the PR BEFORE the decline gate (idle-skip watermark, trust defer, an
+# enumeration change) would satisfy them for the wrong reason. Require the gate
+# under test to have actually been reached.
+n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7b (never reached the gate): expected 1 'nothing to diff' log line, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 # The skip itself must still happen — suppressing the comment must not
 # accidentally turn the round into a dispatch.
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 7b: expected 0 dispatches, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+
+# Scenario 7c: the OTHER half of the idempotency contract — suppression is
+# scoped to the current review round, not the PR's lifetime. A decline that
+# predates the last review's cutoff must NOT suppress a fresh one, or dropping
+# the `.created_at > $since` clause would silently mute the bot for the rest of
+# the PR's life. That regression is an ABSENCE of a comment, which every
+# assertion in 7b still passes through.
+echo "  scenario 7c: a decline older than the last review re-arms (suppression is per-round)..."
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"2020-01-01T00:00:00Z","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\nstale decline from a prior round"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+run_orchestrator
+n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7c (suppression never re-arms): a pre-cutoff decline must not mute the new one, expected 1 POST, got $n"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
     exit 1
 fi
 
@@ -1133,4 +1159,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (24 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (25 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

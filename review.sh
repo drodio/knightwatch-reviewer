@@ -123,7 +123,7 @@ refresh_queue() {
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
-    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT DECLINED_ALREADY
+    local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT DECLINED_ALREADY DECLINE_ERR
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -343,13 +343,19 @@ refresh_queue() {
                 if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
                     # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
                     # above already exclude it — the decline can't self-trigger.
+                    # Capture gh's stderr rather than /dev/null'ing it (same
+                    # contract as fetch_issue_comments): a locked/archived PR or
+                    # an abuse-limit 403 would otherwise fail every tick behind
+                    # an opaque message with no diagnosable cause.
+                    DECLINE_ERR=$(mktemp)
                     gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                         -f body="$BOT_AUTO_POST_MARKER
 $BOT_DECLINE_MARKER
 ⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
-This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>&1 \
-                        || log "$PR_ID: failed to post the already-reviewed decline (continuing)"
+This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR" \
+                        || log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (continuing)"
+                    rm -f "$DECLINE_ERR"
                 fi
             fi
             # Record the updatedAt we just evaluated so the next tick's idle-skip
