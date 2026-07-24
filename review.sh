@@ -124,6 +124,7 @@ refresh_queue() {
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -321,6 +322,61 @@ refresh_queue() {
             # below caps this at one line per PR-activity event, not per tick.
             if [ "$FORCE_REVIEW" = "true" ]; then
                 log "$PR_ID: /${BOT_CMD_PREFIX}-update-review on already-reviewed head $PR_SHA — nothing to diff; trigger stays open until a new commit lands (/${BOT_CMD_PREFIX}-review forces a whole-PR pass)"
+                # …and tell the requester, who is usually an agent on the PR with
+                # no access to this log. Same "why you're not getting a review"
+                # family as the worker's ⏭/⏸ posts (lib/review-one-pr.sh), and
+                # the only member of it that used to be silent.
+                #
+                # Idempotency is load-bearing, not polish: posting bumps the PR's
+                # updatedAt past the watermark written below, so the next tick
+                # re-evaluates, finds the SAME still-unconsumed trigger, and would
+                # post again — one comment per tick, forever. Suppress on any
+                # decline already posted since REVIEWED_AT_ISO (the same cutoff
+                # the trigger query uses), so it's one decline per review round no
+                # matter how many triggers land. A real review advances that
+                # cutoff and re-arms the post. It needs no new state, since
+                # COMMENTS_JSON is already in hand here.
+                #
+                # Recognized the same way the worker reuses its placeholder
+                # (lib/review-one-pr.sh:525): BOT_USER authorship + an EXACT
+                # header prefix, off one shared DECLINE_HEADER so the writer and
+                # the matcher can't drift. A bare substring match would let any
+                # commenter mute the requester's notification for the round by
+                # pasting the marker.
+                DECLINE_HEADER="$BOT_AUTO_POST_MARKER
+$BOT_DECLINE_MARKER
+"
+                DECLINED_ALREADY=$(printf '%s' "$COMMENTS_JSON" |
+                    jq --arg since "$REVIEWED_AT_ISO" --arg header "$DECLINE_HEADER" --arg bot "$BOT_USER" \
+                        '[.[] | select(.user.login == $bot and (.body | startswith($header)) and .created_at > $since)] | length')
+                if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
+                    # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
+                    # above already exclude it — the decline can't self-trigger.
+                    # Capture gh's stderr rather than /dev/null'ing it (same
+                    # contract as fetch_issue_comments): a locked/archived PR or
+                    # an abuse-limit 403 would otherwise fail every tick behind
+                    # an opaque message with no diagnosable cause.
+                    DECLINE_ERR=$(mktemp)
+                    if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                        -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
+
+This request stays open and fires automatically on your next push. To force a whole-PR pass on the unchanged head, post \`/${BOT_CMD_PREFIX}-review\`." >/dev/null 2>"$DECLINE_ERR"; then
+                        # Deliberately still watermarked below — a failed POST is
+                        # NOT retried this round. Withholding the watermark to
+                        # retry sounds right but is worse: a PERMANENT failure
+                        # (locked/archived PR, token lost write access) then
+                        # re-fetches and re-POSTs every tick forever, on every
+                        # affected PR — feeding the secondary rate limit the
+                        # idle-skip exists to prevent. Distinguishing terminal
+                        # from transient means parsing gh's error text, which is
+                        # machinery for a rare case. The trigger stays unconsumed,
+                        # so the next real PR event re-evaluates and retries; a
+                        # missed notification recovers, a fleet-wide per-tick POST
+                        # loop does not.
+                        log "$PR_ID: failed to post the already-reviewed decline: $(tr '\n' ' ' < "$DECLINE_ERR" | head -c 400) (not retried until the next PR event)"
+                    fi
+                    rm -f "$DECLINE_ERR"
+                fi
             fi
             # Record the updatedAt we just evaluated so the next tick's idle-skip
             # gate (above) can avoid re-fetching comments while nothing changes.

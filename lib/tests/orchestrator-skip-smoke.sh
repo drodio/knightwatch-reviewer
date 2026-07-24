@@ -42,6 +42,7 @@ export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
+export COMMENT_POST_LOG="$STATE_DIR/comment-post.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -107,17 +108,34 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         echo '[]'
     fi
 elif [ "$1" = "api" ]; then
-    # The endpoint URL can land at any positional arg — `gh api URL` and
-    # `gh api --paginate URL` both reach the orchestrator. Walk all args
-    # and match by URL shape rather than position, so adding flags
-    # (--paginate, --jq, --method) doesn't require stub edits.
-    url=""
+    # One pass over argv collects everything the stub branches on: the endpoint
+    # (any positional, so flags like --paginate/--jq don't need stub edits), the
+    # HTTP method, and a `-f body=…` payload. A POST and a GET to the same
+    # issues/<n>/comments URL are distinguished by method, not URL shape.
+    url=""; method="GET"; body=""
     for arg in "$@"; do
         case "$arg" in
-            repos/*) url="$arg"; break ;;
+            repos/*) [ -n "$url" ] || url="$arg" ;;   # first match, as `break` did
+            POST) method="POST" ;;                    # the only verb this stub branches on
+            body=*) body="${arg#body=}" ;;
         esac
     done
     if [[ "$url" == */issues/*/comments* ]]; then
+        if [ "$method" = "POST" ]; then
+            # The orchestrator's "already reviewed" decline. Record the body,
+            # then echo a comment object back.
+            [ -n "${COMMENT_POST_LOG:-}" ] && echo "POST $body" >> "$COMMENT_POST_LOG"
+            # Opt-in POST failure (same shape as MOCK_PERMISSION_RC) so the
+            # decline's failure path — log the real cause and STILL watermark,
+            # since a failed POST is not retried this round (scenario 7d) — is
+            # exercised rather than assumed.
+            if [ -n "${MOCK_POST_RC:-}" ]; then
+                echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                exit "$MOCK_POST_RC"
+            fi
+            echo '{"id":1}'
+            exit 0
+        fi
         # Count comment-fetches so the idle-skip scenarios can assert the
         # gate avoided the core gh call entirely.
         [ -n "${COMMENT_FETCH_LOG:-}" ] && echo "FETCH $url" >> "$COMMENT_FETCH_LOG"
@@ -282,15 +300,49 @@ export MOCK_COMMENTS_FILE="$TMPDIR/comments.json"
 # and "someuser" is the realistic external collaborator shape. Scenarios
 # that need to test the untrusted path override this just before
 # run_orchestrator.
-export MOCK_TRUSTED_USERS="srosro someuser"
+export MOCK_TRUSTED_USERS="$BOT_USER someuser"
 
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
     : > "$COMMENT_FETCH_LOG"
+    : > "$COMMENT_POST_LOG"
+    # Fail loud on a malformed comments fixture. An unparseable one makes
+    # fetch_issue_comments fail, so the PR is dropped BEFORE any gate under
+    # test — every assertion then passes vacuously. The trap is one printf
+    # away: `\n` inside a body expands to a real newline, which is an illegal
+    # unescaped control character in JSON (needs `\\n`).
+    local f
+    for f in "${MOCK_COMMENTS_FILE:-}" "${MOCK_COMMENTS_PAGE1_FILE:-}" "${MOCK_COMMENTS_PAGE2_FILE:-}"; do
+        [ -n "$f" ] && [ -f "$f" ] || continue
+        jq -e . "$f" >/dev/null 2>&1 || { echo "FATAL: malformed comments fixture $f"; cat "$f"; exit 1; }
+    done
     # ENUMERATE_SECS=0 forces a queue refresh every invocation (the floor is
     # always elapsed), so each scenario re-enumerates and re-evaluates its own
     # MOCK_COMMENTS from scratch rather than consuming a prior scenario's queue.
     ENUMERATE_SECS=0 bash "$PROJECT_ROOT/review.sh" >/dev/null 2>&1 || true
+}
+
+assert_decline_posts() {
+    local expected="$1" label="$2" n
+    n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+    [ "$n" -eq "$expected" ] && return
+    echo "FAIL $label: expected $expected decline POST(s), got $n"
+    echo "--- posts ---"; cat "$COMMENT_POST_LOG"
+    exit 1
+}
+
+# One already-reviewed-head suppression case: a fresh /update-review trigger + a
+# prior decline by <author> at <created_at>, asserting the round's decline count.
+# The matcher keys on bot authorship + exact header, so those two are the only
+# axes that matter — pass "$BOT_USER" for the bot cases so the identity reads off
+# the call site. `\\n` not `\n` keeps the body valid JSON (run_orchestrator
+# fixture-checks it); the markers are literal (the test shell doesn't export those).
+assert_decline_suppression_case() {
+    local author="$1" created_at="$2" expected="$3" label="$4"
+    printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"},{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n<!-- knightwatch-reviewer:already-reviewed -->\\ndecline"}]\n' \
+        "$NOW_ISO" "$created_at" "$author" > "$MOCK_COMMENTS_FILE"
+    run_orchestrator
+    assert_decline_posts "$expected" "$label"
 }
 
 count_comment_fetches() {
@@ -343,6 +395,10 @@ if grep -q 'nothing to diff' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+# Same gate, PR-visible side: a quiet already-reviewed PR must never be
+# commented on. This is the assertion that keeps the bot from becoming noisy
+# on every tracked repo.
+assert_decline_posts 0 "scenario 1 (decline gating)"
 
 # Scenario 2: same SHA, bare @<bot> mention → no dispatch. @-mentions are
 # not triggers in the new model — only /srosro-review and
@@ -390,7 +446,7 @@ fi
 # orchestrator excludes any comment containing that marker so a successful
 # review doesn't re-trigger itself on the next tick.
 echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -408,7 +464,7 @@ fi
 # content-marker filter must let unmarked comments through regardless of
 # author.
 echo "  scenario 5: same SHA + /srosro-review by BOT_USER without marker (single-account)..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -422,7 +478,7 @@ if ! grep -q 'force_whole=true' "$LOG_FILE"; then
     exit 1
 fi
 if ! grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE"; then
-    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (srosro is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
+    echo "FAIL scenario 5: expected trigger_file=\$STATE_DIR/tmp/pr-review-trigger.* in dispatch (BOT_USER is in MOCK_TRUSTED_USERS) — anchors the bugfix path"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -434,7 +490,7 @@ fi
 # with NO trigger_file. This isolates the marker-strip from the trust gate: the
 # poller's "auto-posted" attribution must never reach trigger-comment.md.
 echo "  scenario 5b: same SHA + BOT_USER /srosro-review WITH auto-trigger marker → dispatch, no trigger_file..."
-printf '[{"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 1 ]; then
@@ -544,6 +600,76 @@ n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)   # || true: grep -c exits 1 
 if [ "$n" -ne 1 ]; then
     echo "FAIL scenario 7 (silent skip): expected exactly 1 'nothing to diff' log line, got $n"
     echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# …and the requester gets told on the PR too. The log only reaches an operator
+# with shell access to the reviewer host; the thing that POSTED the trigger is
+# usually an agent on the PR, for which a silent skip is a dead end.
+assert_decline_posts 1 "scenario 7 (decline not posted)"
+
+# Scenario 7b: the decline is posted at most ONCE per review round — the
+# re-post loop fence. Posting bumps the PR's updatedAt past the watermark, so
+# the next tick re-evaluates and finds the SAME still-unconsumed trigger; without
+# the suppression check that yields one comment per tick, forever. Feed the prior
+# decline back as an existing comment (what the real thread would carry) and
+# require silence. Guards the one failure mode that would be visible to every
+# repo the bot watches.
+echo "  scenario 7b: decline posted at most once per round (re-post loop fence)..."
+# A bot-authored decline from this same round suppresses the re-post — the loop
+# fence. Posting bumps updatedAt past the watermark, so the next tick finds the
+# SAME unconsumed trigger; without suppression that's one comment per tick,
+# forever — the one failure mode visible to every repo the bot watches.
+assert_decline_suppression_case "$BOT_USER" "$NOW_ISO" 0 "scenario 7b (decline re-post loop)"
+# Positive control — must stay attached to the run above, whose only assertion is
+# negative. run_orchestrator truncates $LOG_FILE, so any run inserted between the
+# two describes the WRONG invocation and silently re-opens the vacuity gap:
+# anything dropping the PR before the decline gate (idle-skip watermark, trust
+# defer, an enumeration change) would satisfy the negative for the wrong reason.
+n=$(grep -c 'nothing to diff' "$LOG_FILE" || true)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7b (never reached the gate): expected 1 'nothing to diff' log line, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# The skip itself must still happen — suppressing the comment must not
+# accidentally turn the round into a dispatch.
+n=$(count_dispatches)
+if [ "$n" -ne 0 ]; then
+    echo "FAIL scenario 7b: expected 0 dispatches, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# …but only a BOT-authored decline suppresses. A non-bot commenter pasting the
+# marker must NOT mute the notification (authorship + exact-header, not a bare
+# substring). The expected-1 assertion is itself the positive control.
+assert_decline_suppression_case someuser "$NOW_ISO" 1 "scenario 7b (marker spoofed by a non-bot commenter)"
+
+# Scenario 7c: the OTHER half of the idempotency contract — suppression is
+# scoped to the current review round, not the PR's lifetime. A decline that
+# predates the last review's cutoff must NOT suppress a fresh one, or dropping
+# the `.created_at > $since` clause would silently mute the bot for the rest of
+# the PR's life. That regression is an ABSENCE of a comment, which every
+# assertion in 7b still passes through.
+echo "  scenario 7c: a decline older than the last review re-arms (suppression is per-round)..."
+assert_decline_suppression_case "$BOT_USER" "2020-01-01T00:00:00Z" 1 "scenario 7c (suppression never re-arms)"
+
+# Scenario 7d: a FAILED decline POST logs its real cause and stays watermarked.
+# Both halves are deliberate. The cause must survive (not /dev/null) or a
+# locked/archived PR fails behind an opaque message forever. The watermark must
+# still be written, or a PERMANENT failure re-POSTs every tick on every affected
+# PR — feeding the secondary rate limit the idle-skip exists to prevent. The
+# trigger stays unconsumed, so the next real PR event retries.
+echo "  scenario 7d: a failed decline POST logs its cause and stays watermarked (no unbounded retry)..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_POST_RC=1 run_orchestrator
+if ! grep -q 'simulated-abuse-limit' "$LOG_FILE"; then
+    echo "FAIL scenario 7d (opaque failure): the POST's stderr cause must reach the log, not /dev/null"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+if [ ! -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL scenario 7d (unbounded retry): watermark withheld after a failed decline POST — a permanent failure would re-POST every tick"
     exit 1
 fi
 
@@ -1060,4 +1186,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (23 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (26 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
