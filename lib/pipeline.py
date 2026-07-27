@@ -235,8 +235,10 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     Unlink drops whatever entry is there without touching its inode, then
     O_EXCL|O_NOFOLLOW refuses anything re-planted in the window: a bare
     O_TRUNC would truncate and overwrite a hard-linked foreign inode with
-    content the injecting agent controls. Failing loudly aborts the review,
-    which is the right outcome — a planted entry means a hostile workdir.
+    content the injecting agent controls. So a quiescent planted entry is
+    dropped and replaced (logged — it's the only signal an operator gets
+    that a workdir went hostile); only a re-plant inside the unlink→open
+    window raises, which aborts the review.
 
     This fences the planted ENTRY only. The `.codex-scratch` DIRECTORY is
     not fenced here: review-one-pr.sh's wipe runs before the agents, so an
@@ -244,6 +246,10 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     redirected. Pre-existing hole, tracked separately.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # A legitimate re-stage (a specialist's raw output, then its layered
+    # rewrite) is a plain 1-link regular file, so this stays quiet.
+    if dest.is_symlink() or (dest.exists() and dest.stat().st_nlink > 1):
+        log(f"scratch: dropping planted entry at {dest} — workdir is hostile")
     dest.unlink(missing_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     with os.fdopen(os.open(dest, flags, 0o644), "wb") as f:

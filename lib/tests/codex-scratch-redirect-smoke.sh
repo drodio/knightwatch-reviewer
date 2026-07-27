@@ -69,12 +69,15 @@ fi
 # cover the writer it calls. Same shape as the review-one-pr.sh fence above:
 # pin the invariant where it can't drift.
 #
-# Matched on the PATH shape (any write_text/write_bytes/open whose line
-# names a scratch path), not one variable, so a rename or the
-# `(scratch / "x.md").write_bytes(...)` shape the other call sites use is
-# caught too. _stage_scratch's own definition doesn't mention `scratch`.
+# Matched on any write_text/write_bytes/open on a line mentioning `scratch`
+# anywhere — not a specific local — so a rename, the `(scratch / "x.md")`
+# form the other call sites use, and the inline
+# `(repo / ".codex-scratch" / ...)` form all trip it. Residual gap grep
+# can't close: a scratch path assigned to a name on an earlier line.
+# _stage_scratch's own definition writes to `dest`, and the surviving
+# call sites end in `.read_bytes(`, so neither matches.
 PIPELINE="$PROJECT_ROOT/lib/pipeline.py"
-if grep -nE '(scratch_path|scratch */)[^=]*\.(write_text|write_bytes)\(|open\([^)]*scratch' "$PIPELINE"; then
+if grep -nE 'scratch.*\.(write_text|write_bytes)\(|open\([^)]*scratch' "$PIPELINE"; then
     echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path outside _stage_scratch (lines above) — a bare write_text/write_bytes/open writes through a planted symlink or hard link, out of the workdir"
     exit 1
 fi

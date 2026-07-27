@@ -240,10 +240,12 @@ class TestStageScratch(unittest.TestCase):
     Two properties, both load-bearing: the entry is a REAL file (an agent
     enumerating with `find -type f` can't see a symlink — one that did
     concluded nothing was staged and bailed out of the review, plow#1139),
-    and the write refuses to follow a symlink at that path. Every call site
-    runs after agents have executed PR-controlled code in the workdir — and
-    Wave B specialists run concurrently, so a peer's `specialists/<name>.md`
-    is a live path a prompt-injected agent could plant.
+    and the write never lands on an inode outside the workdir. A quiescent
+    planted entry is dropped and replaced; one re-planted in the
+    unlink→open window is refused. Every call site runs after agents have
+    executed PR-controlled code in the workdir — and Wave B specialists run
+    concurrently, so a peer's `specialists/<name>.md` is a live path a
+    prompt-injected agent could plant.
     """
 
     def test_stages_a_real_file(self):
@@ -277,6 +279,28 @@ class TestStageScratch(unittest.TestCase):
                                      f"wrote through the planted {kind} — escaped the workdir")
                     self.assertFalse(dest.is_symlink())
                     self.assertEqual(dest.read_bytes(), b"staged content\n")
+
+    def test_refuses_an_entry_re_planted_in_the_unlink_open_window(self):
+        # The unlink alone covers a quiescent plant, so O_EXCL|O_NOFOLLOW is
+        # what stands between a CONCURRENT re-planter (a background writer an
+        # injected agent left behind) and a write onto a foreign inode.
+        # Suppressing the unlink simulates losing that race.
+        plants = {"symlink": lambda dst, src: dst.symlink_to(src),
+                  "hardlink": lambda dst, src: os.link(src, dst)}
+        for kind, plant in plants.items():
+            with self.subTest(plant=kind), TemporaryDirectory() as d:
+                root = Path(d)
+                outside = root / "OUTSIDE"
+                outside.write_text("original\n")
+                dest = root / ".codex-scratch" / "security.md"
+                dest.parent.mkdir(parents=True)
+                plant(dest, outside)
+
+                with patch.object(Path, "unlink"):
+                    with self.assertRaises(OSError):
+                        pipeline._stage_scratch(dest, b"staged content\n")
+                self.assertEqual(outside.read_text(), "original\n",
+                                 f"lost the re-plant race and wrote through the {kind}")
 
     def test_overwrites_an_existing_real_entry(self):
         # The specialist path stages twice (raw output, then layered), so
