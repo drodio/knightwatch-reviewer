@@ -62,7 +62,7 @@ if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
 fi
 
 # --- Static fence: every .codex-scratch write in pipeline.py must route
-# through _stage_scratch (the unlink + O_EXCL|O_NOFOLLOW writer).
+# through _stage_scratch (which refuses a planted entry, then O_EXCLs).
 # run_specialist previously staged specialists/<name>.md with a bare
 # write_text — which writes through a planted symlink or hard link, out of
 # the workdir — and no behavioral test caught it, because a test can only

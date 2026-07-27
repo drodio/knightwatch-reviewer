@@ -231,14 +231,13 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     the workdir, and Wave B specialists run concurrently, so a peer's
     `specialists/<name>.md` is a live path a prompt-injected agent could
     plant — as a symlink OR a hard link (same fs, same uid, so
-    fs.protected_hardlinks doesn't apply) — pointing outside the workdir.
-    Unlink drops whatever entry is there without touching its inode, then
-    O_EXCL|O_NOFOLLOW refuses anything re-planted in the window: a bare
-    O_TRUNC would truncate and overwrite a hard-linked foreign inode with
-    content the injecting agent controls. So a quiescent planted entry is
-    dropped and replaced (logged — it's the only signal an operator gets
-    that a workdir went hostile); only a re-plant inside the unlink→open
-    window raises, which aborts the review.
+    fs.protected_hardlinks doesn't apply) — pointing outside the workdir. A
+    plain write would truncate and overwrite that foreign inode with content
+    the injecting agent controls. So a planted entry is refused, not
+    replaced: it aborts the review, which is the right outcome and the only
+    signal an operator gets that a workdir went hostile. O_EXCL closes the
+    check→open window against a re-plant. (O_NOFOLLOW would be inert here —
+    O_CREAT|O_EXCL already fails EEXIST on a symlink.)
 
     This fences the planted ENTRY only. The `.codex-scratch` DIRECTORY is
     not fenced here: review-one-pr.sh's wipe runs before the agents, so an
@@ -247,12 +246,11 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     # A legitimate re-stage (a specialist's raw output, then its layered
-    # rewrite) is a plain 1-link regular file, so this stays quiet.
+    # rewrite) is a plain 1-link regular file, so it passes.
     if dest.is_symlink() or (dest.exists() and dest.stat().st_nlink > 1):
-        log(f"scratch: dropping planted entry at {dest} — workdir is hostile")
+        raise OSError(f"planted entry at {dest} — hostile workdir")
     dest.unlink(missing_ok=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    with os.fdopen(os.open(dest, flags, 0o644), "wb") as f:
+    with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
         f.write(data)
 
 
