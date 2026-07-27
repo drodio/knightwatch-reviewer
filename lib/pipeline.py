@@ -227,17 +227,23 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     an agent enumerating with `find -type f` — one that enumerated that way
     concluded nothing was staged and bailed out of the review (plow#1139).
 
-    Unlink first, exactly as the `_relink` this replaced did: every call
-    site runs after agents have executed PR-controlled code in the workdir,
-    so the entry could be a symlink or hard link pointing outside it, and a
-    plain write would land on that foreign inode. Dropping the entry leaves
-    its inode untouched. Fences the planted ENTRY only, and only when it is
-    quiescent — a redirected `.codex-scratch` *directory*, and a re-plant
-    racing this unlink, are both out of scope (#190).
+    Unlink-then-O_EXCL reproduces exactly what the `_relink` this replaced
+    did: every call site runs after agents have executed PR-controlled code
+    in the workdir, so the entry could be a symlink or hard link pointing
+    outside it, and a plain write would land on that foreign inode.
+    Unlinking drops the entry without touching its inode; O_EXCL then covers
+    the window between — up to four Wave B specialists run concurrently, so
+    a peer can re-plant there, and `write_bytes` would follow it.
+    `_relink`'s `symlink_to` was race-safe for free (`symlink(2)` is EEXIST),
+    so a plain write would have been a regression, not merely weaker.
+
+    Fences the planted ENTRY. A redirected `.codex-scratch` *directory* is
+    out of scope — the wipe that fences it runs before the agents (#190).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)
-    dest.write_bytes(data)
+    with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
+        f.write(data)
 
 
 def _wait_with_watchdog(
