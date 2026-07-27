@@ -219,27 +219,30 @@ def log(msg: str) -> None:
             f.write(line)
 
 
-def _stage_scratch_text(dest: Path, text: str) -> None:
-    """Write `text` to `dest` as a real file so `find -type f` sees it.
+def _stage_scratch(dest: Path, data: bytes) -> None:
+    """Write `data` to `dest` as a real file so `find -type f` sees it.
 
     The single scratch writer for everything pipeline.py stages: Wave A/B
-    artifacts and every specialist/critic output. Unlink first rather than
-    writing through — all of these run after agents have executed
-    PR-controlled code in the workdir (and Wave B specialists run
-    concurrently, so a peer's `specialists/<name>.md` is a live path), so
-    the entry could be a planted symlink an open-for-write would follow out
-    of the workdir. Fences the planted ENTRY only; a redirected
-    `.codex-scratch` *directory* is fenced by review-one-pr.sh's wipe.
+    artifacts and every specialist/critic output. A symlink is invisible to
+    an agent enumerating with `find -type f` — one that enumerated that way
+    concluded nothing was staged and bailed out of the review (plow#1139).
+
+    O_NOFOLLOW because every call site runs AFTER agents have executed
+    PR-controlled code in the workdir, and Wave B specialists run
+    concurrently, so a peer's `specialists/<name>.md` is a live path a
+    prompt-injected agent could plant as a symlink out of the workdir. One
+    syscall, so a background writer can't re-plant between a check and the
+    write; ELOOP aborts the review rather than silently replacing the entry.
+
+    This fences the planted ENTRY only. The `.codex-scratch` DIRECTORY is
+    not fenced here: review-one-pr.sh's wipe runs before the agents, so an
+    agent that replaces the whole dir with a symlink still gets these writes
+    redirected. Pre-existing hole, tracked separately.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() or dest.is_symlink():
-        dest.unlink()
-    dest.write_text(text)
-
-
-def _stage_scratch(dest: Path, source: Path) -> None:
-    """Stage `source`'s content at `dest`. See _stage_scratch_text."""
-    _stage_scratch_text(dest, source.read_text())
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    with os.fdopen(os.open(dest, flags, 0o644), "wb") as f:
+        f.write(data)
 
 
 def _wait_with_watchdog(
@@ -660,7 +663,7 @@ def run_specialist(
     # via the path documented in prompts/critic.md. Overwritten with layered
     # content after a successful critic.
     scratch_path = repo / ".codex-scratch" / "specialists" / f"{specialist}.md"
-    _stage_scratch_text(scratch_path, spec_out)
+    _stage_scratch(scratch_path, spec_out.encode())
 
     # A specialist that emitted zero probes (the 'No probes.' sentinel, the
     # only other run_codex-valid output) has nothing for the critic to
@@ -671,7 +674,7 @@ def run_specialist(
     if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
-        _stage_scratch_text(scratch_path, layered)
+        _stage_scratch(scratch_path, layered.encode())
         return 0
 
     crit_prompt = build_prompt(
@@ -729,7 +732,7 @@ def run_specialist(
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
-    _stage_scratch_text(scratch_path, layered)
+    _stage_scratch(scratch_path, layered.encode())
     return 0
 
 
@@ -822,8 +825,9 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    _stage_scratch(scratch / "inferred-intent.md", intent_dir / "output.md")
-    _stage_scratch(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
+    _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
+    _stage_scratch(scratch / "dead-code.md",
+                   (run / "agents" / "dead-code-search" / "output.md").read_bytes())
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
     # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
@@ -899,7 +903,8 @@ def run_pipeline(
 
     # Momentum may itself have timed out; only stage a real output.
     if has_prev and (run / "agents" / "momentum" / "output.md").exists():
-        _stage_scratch(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
+        _stage_scratch(scratch / "momentum.md",
+                       (run / "agents" / "momentum" / "output.md").read_bytes())
     log(f"{pr_id}: Wave B complete")
 
     # Aggregator (sequential — depends on Waves A + B)

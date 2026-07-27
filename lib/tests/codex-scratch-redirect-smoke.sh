@@ -61,6 +61,18 @@ if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
     exit 1
 fi
 
+# --- Static fence: every .codex-scratch write in pipeline.py must route
+# through _stage_scratch (the O_NOFOLLOW writer). run_specialist previously
+# staged specialists/<name>.md with a bare write_text — which follows a
+# planted symlink out of the workdir — and no behavioral test caught it,
+# because a test can only cover the writer it calls. Same shape as the
+# review-one-pr.sh fence above: pin the invariant where it can't drift.
+PIPELINE="$PROJECT_ROOT/lib/pipeline.py"
+if grep -nE '^[[:space:]]*scratch_path\.write_(text|bytes)\(' "$PIPELINE"; then
+    echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path with a bare write_text/write_bytes (lines above) — that follows a planted symlink out of the workdir; route it through _stage_scratch"
+    exit 1
+fi
+
 # Function under test: the exact two-line sequence the worker runs at the
 # redirect-fence point. Sourcing review-one-pr.sh end-to-end would pull in
 # a production-shaped pipeline (gh, codex, git fetch); this localizes the

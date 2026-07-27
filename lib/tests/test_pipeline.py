@@ -240,35 +240,46 @@ class TestStageScratch(unittest.TestCase):
     Two properties, both load-bearing: the entry is a REAL file (an agent
     enumerating with `find -type f` can't see a symlink — one that did
     concluded nothing was staged and bailed out of the review, plow#1139),
-    and the write does NOT follow a pre-existing symlink at that path. Every
-    call site runs after agents have executed PR-controlled code in the
-    workdir — and Wave B specialists run concurrently, so a peer's
-    `specialists/<name>.md` is a live path a prompt-injected agent could
-    plant. A plain write would land outside the workdir.
+    and the write refuses to follow a symlink at that path. Every call site
+    runs after agents have executed PR-controlled code in the workdir — and
+    Wave B specialists run concurrently, so a peer's `specialists/<name>.md`
+    is a live path a prompt-injected agent could plant.
     """
 
-    def test_stages_real_file_without_following_a_planted_symlink(self):
-        # Both entry points, and both scratch shapes: a Wave A/B artifact at
-        # the scratch root and a specialist output one level down.
-        cases = ["momentum.md", "specialists/security.md"]
-        for name in cases:
+    def test_stages_a_real_file(self):
+        with TemporaryDirectory() as d:
+            dest = Path(d) / ".codex-scratch" / "specialists" / "security.md"
+            pipeline._stage_scratch(dest, b"layered output\n")
+            self.assertTrue(dest.is_file() and not dest.is_symlink())
+            self.assertEqual(dest.read_bytes(), b"layered output\n")
+
+    def test_refuses_to_write_through_a_planted_symlink(self):
+        # Both scratch shapes: a Wave A/B artifact at the scratch root and a
+        # specialist output one level down.
+        for name in ("momentum.md", "specialists/security.md"):
             with self.subTest(entry=name), TemporaryDirectory() as d:
                 root = Path(d)
-                source = root / "agents" / "out.md"
-                source.parent.mkdir(parents=True)
-                source.write_text("staged content\n")
                 outside = root / "OUTSIDE"
                 outside.write_text("original\n")
                 dest = root / "repo" / ".codex-scratch" / name
                 dest.parent.mkdir(parents=True)
                 dest.symlink_to(outside)
 
-                pipeline._stage_scratch(dest, source)
-
+                # O_NOFOLLOW → ELOOP. Aborting the review is the right
+                # outcome: a planted entry means the workdir is hostile.
+                with self.assertRaises(OSError):
+                    pipeline._stage_scratch(dest, b"staged content\n")
                 self.assertEqual(outside.read_text(), "original\n",
                                  "wrote through the planted symlink — escaped the workdir")
-                self.assertFalse(dest.is_symlink())
-                self.assertEqual(dest.read_text(), "staged content\n")
+
+    def test_overwrites_an_existing_real_entry(self):
+        # The specialist path stages twice (raw output, then layered), so
+        # replacing a real file must still work.
+        with TemporaryDirectory() as d:
+            dest = Path(d) / "scratch" / "security.md"
+            pipeline._stage_scratch(dest, b"raw\n")
+            pipeline._stage_scratch(dest, b"layered\n")
+            self.assertEqual(dest.read_bytes(), b"layered\n")
 
 
 class TestRunCodex(unittest.TestCase):
