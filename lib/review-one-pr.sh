@@ -189,8 +189,8 @@ LOG_FILE="$RUN_DIR/run.log"
 # REVIEW_START_TS) — used for meta.json.started_at when meta is written.
 
 # write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
-# with the same shape (real files in $RUN_DIR/inputs/, symlinks under
-# .codex-scratch/) without reimplementing the contract.
+# with the same shape (real files under .codex-scratch/, archived to
+# $RUN_DIR/inputs/) without reimplementing the contract.
 . "$_LIB_DIR/scratch.sh"
 
 # Convenience symlink: latest run for this PR. Lets `tail -f
@@ -1227,7 +1227,7 @@ fi
 # the first write and AFTER all PR-controlled execution (`just test`, canonical
 # fetch). A PR checkout could commit .codex-scratch as a symlink to a writable
 # service path, OR a trusted-author `just test` could replace it with one mid-run;
-# either would make the root-owned write_scratch + per-specialist symlinks below
+# either would make the root-owned write_scratch + per-specialist writes below
 # redirect critic/momentum/dead-code outputs (and prompt files) into that target.
 # Wiping after the untrusted code runs closes both. Mirrors lib/sibling-symlinks.sh.
 rm -rf "$REPO_DIR/.codex-scratch"
@@ -1240,7 +1240,7 @@ write_scratch "$REPO_DIR" "dead-code-static.md" "${DEAD_CODE_STATIC:-}"
 write_scratch "$REPO_DIR" "search-roots.md"    "${SEARCH_ROOTS:-}"
 write_scratch "$REPO_DIR" "standards.md"       "$STANDARDS"
 # convention.md — staged HERE (after the redirect-safe reset above), not at
-# detection time, so the .codex-scratch symlink survives for the specialists.
+# detection time, so the .codex-scratch entry survives for the specialists.
 # Write the BODY READ AT DETECTION (CONVENTION_BODY), not a fresh read of the
 # mutable cache, so the staged body matches the test note/header read earlier
 # (org-sync may have git-pulled the cache to a new revision in between).

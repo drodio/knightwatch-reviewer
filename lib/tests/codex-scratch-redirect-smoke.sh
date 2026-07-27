@@ -4,7 +4,7 @@
 # Mirrors lib/tests/sibling-symlinks-smoke.sh's scenario 3 in shape: a PR
 # checkout could commit `.codex-scratch` as a symlink pointing at a writable
 # service path (e.g. ~/.pr-reviewer/runs/...) so that subsequent writes via
-# write_scratch + the per-specialist symlinks would redirect critic /
+# write_scratch + the per-specialist writes would redirect critic /
 # momentum / dead-code outputs into our own state dir. The fence in
 # review-one-pr.sh:
 #
@@ -173,4 +173,31 @@ if [ ! -d "$REPO_DIR/.codex-scratch" ] || [ -L "$REPO_DIR/.codex-scratch" ]; the
     exit 1
 fi
 
-echo "  ok: .codex-scratch staging is redirect-safe (symlink-to-dir, leaf-symlink, dangling, and idempotent on real-dir all defeated)"
+# --- scenario 5: staged artifacts must be enumerable by `find -type f` ---
+# Agents enumerate .codex-scratch to discover what was staged. `find` defaults
+# to -P (no-follow), so a symlink is -type l and NEVER matches -type f. When
+# write_scratch staged symlinks, an aggregator that probed with `-type f` saw
+# only the specialists' real files, concluded nothing had been staged, and
+# posted a bail-out instead of a review (plow#1139, howto#25) — or silently
+# skipped intent inference, carry-forward, and test verification. Real files
+# are visible to ANY enumeration; a regression back to `ln -s` fails here.
+echo "  scenario 5: write_scratch output is visible to 'find -type f' and archived to RUN_DIR/inputs..."
+rm -rf "$REPO_DIR"
+mkdir -p "$REPO_DIR"
+codex_scratch_stage "$REPO_DIR"
+RUN_DIR="$TMPDIR/run"
+mkdir -p "$RUN_DIR/inputs"
+# shellcheck source=../scratch.sh
+. "$PROJECT_ROOT/lib/scratch.sh"
+write_scratch "$REPO_DIR" "inferred-intent.md" "It appears the author is working towards X."
+if ! (cd "$REPO_DIR" && find .codex-scratch -maxdepth 2 -type f -print) | grep -qx ".codex-scratch/inferred-intent.md"; then
+    echo "FAIL scenario 5: staged inferred-intent.md is invisible to 'find -type f' — write_scratch is staging a symlink again, agents enumerating scratch will conclude nothing was staged"
+    (cd "$REPO_DIR" && find .codex-scratch -maxdepth 2 -print)
+    exit 1
+fi
+if [ "$(cat "$RUN_DIR/inputs/inferred-intent.md")" != "It appears the author is working towards X." ]; then
+    echo "FAIL scenario 5: run-dir archive at inputs/inferred-intent.md is missing or has the wrong content"
+    exit 1
+fi
+
+echo "  ok: .codex-scratch staging is redirect-safe (symlink-to-dir, leaf-symlink, dangling, and idempotent on real-dir all defeated) and enumerable by 'find -type f'"

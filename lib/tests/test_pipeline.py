@@ -1432,30 +1432,36 @@ class TestRunPipeline(unittest.TestCase):
         self.assertLessEqual(state["peak"], 2)      # never exceeded the cap
 
     @patch("pipeline.subprocess.Popen")
-    def test_wave_b_starts_after_wave_a_artifacts_linked(self, mock_popen):
+    def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` linked at the moment they start."""
+        `.codex-scratch/dead-code.md` staged at the moment they start.
+
+        Staged means a REGULAR file, not a symlink: an agent that enumerates
+        the dir with `find -type f` can't see a symlink, and one that did
+        concluded nothing was staged and bailed out of the review entirely
+        (plow#1139)."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
-        seen_links: list[tuple[str, set[str]]] = []
+        seen: list[tuple[str, set[str]]] = []
         lock = threading.Lock()
-        def capture_scratch_links(name, _out_path):
+        def capture_scratch_files(name, _out_path):
             if name in pipeline.SPECIALISTS or name == "momentum":
                 with lock:
-                    seen_links.append((
+                    seen.append((
                         name,
-                        {p.name for p in scratch.iterdir() if p.is_symlink()},
+                        {p.name for p in scratch.iterdir()
+                         if p.is_file() and not p.is_symlink()},
                     ))
-        mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_links)
+        mock_popen.side_effect = _make_codex_stub(before_write=capture_scratch_files)
         rc = self._run()
         self.assertEqual(rc, 0)
-        self.assertEqual(len(seen_links), len(pipeline.SPECIALISTS) + 1)  # +momentum
-        for name, links in seen_links:
-            self.assertIn("inferred-intent.md", links,
-                          f"{name} started before Wave A linked inferred-intent.md")
-            self.assertIn("dead-code.md", links,
-                          f"{name} started before Wave A linked dead-code.md")
+        self.assertEqual(len(seen), len(pipeline.SPECIALISTS) + 1)  # +momentum
+        for name, staged in seen:
+            self.assertIn("inferred-intent.md", staged,
+                          f"{name} started before Wave A staged inferred-intent.md as a real file")
+            self.assertIn("dead-code.md", staged,
+                          f"{name} started before Wave A staged dead-code.md as a real file")
 
     @patch("pipeline.subprocess.Popen")
     def test_specialist_timeout_completes_review_with_sentinel(self, mock_popen):

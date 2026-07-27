@@ -125,7 +125,7 @@ rm -rf "$REPO_DIR/.codex-scratch"
 mkdir -p "$REPO_DIR/.codex-scratch"
 
 # Stage scratch via the same write_scratch primitive production uses
-# (lib/scratch.sh) so paths and symlink shape match. Prompts cite paths
+# (lib/scratch.sh) so paths and file shape match. Prompts cite paths
 # like .codex-scratch/standards.md; using the same writer is the only
 # way prompt A/B replays produce production-comparable output.
 #

@@ -219,12 +219,18 @@ def log(msg: str) -> None:
             f.write(line)
 
 
-def _relink(link: Path, target: Path) -> None:
-    """Replace `link` with a symlink to `target`. mkdir parents as needed."""
-    link.parent.mkdir(parents=True, exist_ok=True)
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(target)
+def _stage_scratch(dest: Path, source: Path) -> None:
+    """Copy `source` to `dest` as a real file so `find -type f` sees it.
+
+    Unlink first rather than writing through: these run after agents have
+    executed PR-controlled code in the workdir, so an existing entry could
+    be a planted symlink and an open-for-write would follow it out of the
+    workdir. Same redirect fence as review-one-pr.sh's .codex-scratch wipe.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        dest.unlink()
+    dest.write_bytes(source.read_bytes())
 
 
 def _wait_with_watchdog(
@@ -808,8 +814,8 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    _relink(scratch / "inferred-intent.md", intent_dir / "output.md")
-    _relink(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
+    _stage_scratch(scratch / "inferred-intent.md", intent_dir / "output.md")
+    _stage_scratch(scratch / "dead-code.md", run / "agents" / "dead-code-search" / "output.md")
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
     # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
@@ -883,9 +889,9 @@ def run_pipeline(
             f"(timeout / model-at-capacity: {', '.join(timed_out)}) — completing review without them"
         )
 
-    # Momentum may itself have timed out; only link a real output.
+    # Momentum may itself have timed out; only stage a real output.
     if has_prev and (run / "agents" / "momentum" / "output.md").exists():
-        _relink(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
+        _stage_scratch(scratch / "momentum.md", run / "agents" / "momentum" / "output.md")
     log(f"{pr_id}: Wave B complete")
 
     # Aggregator (sequential — depends on Waves A + B)
