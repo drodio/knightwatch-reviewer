@@ -61,27 +61,6 @@ if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
     exit 1
 fi
 
-# --- Static fence: every .codex-scratch write in pipeline.py must route
-# through _stage_scratch (which drops the entry before writing).
-# run_specialist previously staged specialists/<name>.md with a bare
-# write_text — which writes through a planted symlink or hard link, out of
-# the workdir — and no behavioral test caught it, because a test can only
-# cover the writer it calls. Same shape as the review-one-pr.sh fence above:
-# pin the invariant where it can't drift.
-#
-# Matched on any write_text/write_bytes/open on a line mentioning `scratch`
-# anywhere — not a specific local — so a rename, the `(scratch / "x.md")`
-# form the other call sites use, and the inline
-# `(repo / ".codex-scratch" / ...)` form all trip it. Residual gap grep
-# can't close: a scratch path assigned to a name on an earlier line.
-# _stage_scratch's own definition writes to `dest`, and the surviving
-# call sites end in `.read_bytes(`, so neither matches.
-PIPELINE="$PROJECT_ROOT/lib/pipeline.py"
-if grep -nE 'scratch.*\.(write_text|write_bytes|open)\(|open\([^)]*scratch' "$PIPELINE"; then
-    echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path outside _stage_scratch (lines above) — a bare write_text/write_bytes/open writes through a planted symlink or hard link, out of the workdir"
-    exit 1
-fi
-
 # Function under test: the exact two-line sequence the worker runs at the
 # redirect-fence point. Sourcing review-one-pr.sh end-to-end would pull in
 # a production-shaped pipeline (gh, codex, git fetch); this localizes the

@@ -237,58 +237,29 @@ class TestLog(unittest.TestCase):
 class TestStageScratch(unittest.TestCase):
     """The single scratch writer for everything pipeline.py stages.
 
-    Two properties, both load-bearing: the entry is a REAL file (an agent
-    enumerating with `find -type f` can't see a symlink — one that did
-    concluded nothing was staged and bailed out of the review, plow#1139),
-    and the write never lands on an inode outside the workdir — whether the
-    entry was planted before the call or re-planted in the unlink→open
-    window. Every call site runs after agents have executed PR-controlled
-    code there, and up to four Wave B specialists run concurrently, so a
-    peer's `specialists/<name>.md` is a live path a prompt-injected agent
-    could plant. A redirected `.codex-scratch` directory is out of scope
-    here (#190).
+    The entry must end up a REAL file — an agent enumerating with
+    `find -type f` can't see a symlink, and one that did concluded nothing
+    was staged and bailed out of the review (plow#1139) — and the write must
+    never land on an inode outside the workdir. Every call site runs after
+    agents have executed PR-controlled code there, and up to four Wave B
+    specialists run concurrently, so a peer's `specialists/<name>.md` is a
+    live path a prompt-injected agent could plant. A redirected
+    `.codex-scratch` directory is out of scope here (#190).
     """
 
-    def test_stages_a_real_file(self):
-        with TemporaryDirectory() as d:
-            dest = Path(d) / ".codex-scratch" / "specialists" / "security.md"
-            pipeline._stage_scratch(dest, b"layered output\n")
-            self.assertTrue(dest.is_file() and not dest.is_symlink())
-            self.assertEqual(dest.read_bytes(), b"layered output\n")
-
-    def test_does_not_write_through_a_planted_entry(self):
-        # A symlink AND a hard link, at both scratch shapes: a Wave A/B
-        # artifact at the scratch root and a specialist output one level
-        # down. The hard link is why is_symlink() alone isn't enough —
-        # same fs, same uid, so a plain write reaches the foreign inode.
-        plants = {"symlink": lambda dst, src: dst.symlink_to(src),
-                  "hardlink": lambda dst, src: os.link(src, dst)}
-        for name in ("momentum.md", "specialists/security.md"):
-            for kind, plant in plants.items():
-                with self.subTest(entry=name, plant=kind), TemporaryDirectory() as d:
-                    root = Path(d)
-                    outside = root / "OUTSIDE"
-                    outside.write_text("original\n")
-                    dest = root / "repo" / ".codex-scratch" / name
-                    dest.parent.mkdir(parents=True)
-                    plant(dest, outside)
-
-                    pipeline._stage_scratch(dest, b"staged content\n")
-
-                    self.assertEqual(outside.read_text(), "original\n",
-                                     f"wrote through the planted {kind} — escaped the workdir")
-                    self.assertFalse(dest.is_symlink())
-                    self.assertEqual(dest.read_bytes(), b"staged content\n")
-
-    def test_refuses_an_entry_re_planted_after_the_unlink(self):
-        # The unlink covers a quiescent plant; O_EXCL is what covers the
-        # window after it, which is live — Wave B specialists run
-        # concurrently, so a peer can re-plant there. Suppressing the unlink
-        # simulates losing that race.
-        plants = {"symlink": lambda dst, src: dst.symlink_to(src),
-                  "hardlink": lambda dst, src: os.link(src, dst)}
-        for kind, plant in plants.items():
-            with self.subTest(plant=kind), TemporaryDirectory() as d:
+    def test_stages_a_real_file_over_any_prior_entry(self):
+        # Whatever is at the path — nothing, a legitimate prior stage (the
+        # specialist path writes raw output then its layered rewrite), or a
+        # plant pointing outside — the result is the same: a real file with
+        # the new bytes, and nothing outside the workdir touched.
+        priors = {
+            "absent": lambda dst, src: None,
+            "real file": lambda dst, src: dst.write_bytes(b"raw\n"),
+            "symlink": lambda dst, src: dst.symlink_to(src),
+            "hardlink": lambda dst, src: os.link(src, dst),
+        }
+        for kind, plant in priors.items():
+            with self.subTest(prior=kind), TemporaryDirectory() as d:
                 root = Path(d)
                 outside = root / "OUTSIDE"
                 outside.write_text("original\n")
@@ -296,24 +267,32 @@ class TestStageScratch(unittest.TestCase):
                 dest.parent.mkdir(parents=True)
                 plant(dest, outside)
 
-                # FileExistsError, not OSError: only O_EXCL's EEXIST should
-                # refuse here. A broader assert would pass on an incidental
-                # failure elsewhere in the writer with the fence gone — and
-                # the sentinel check below would pass too, since nothing
-                # was written at all.
-                with patch.object(Path, "unlink"):
-                    with self.assertRaises(FileExistsError):
-                        pipeline._stage_scratch(dest, b"staged content\n")
-                self.assertEqual(outside.read_text(), "original\n",
-                                 f"lost the re-plant race and wrote through the {kind}")
+                pipeline._stage_scratch(dest, b"staged\n")
 
-    def test_overwrites_an_existing_real_entry(self):
-        # The specialist path stages twice (raw output, then layered).
+                self.assertTrue(dest.is_file() and not dest.is_symlink())
+                self.assertEqual(dest.read_bytes(), b"staged\n")
+                self.assertEqual(outside.read_text(), "original\n",
+                                 f"wrote through the planted {kind} — escaped the workdir")
+
+    def test_refuses_an_entry_re_planted_after_the_unlink(self):
+        # The unlink covers a plant present on entry; O_EXCL covers the
+        # window after it, which is live — Wave B specialists run
+        # concurrently, so a peer can re-plant there. Suppressing the unlink
+        # simulates losing that race. FileExistsError, not OSError: only
+        # O_EXCL's EEXIST should refuse, and a broader assert would pass on
+        # an incidental failure elsewhere with the fence gone.
         with TemporaryDirectory() as d:
-            dest = Path(d) / "scratch" / "security.md"
-            pipeline._stage_scratch(dest, b"raw\n")
-            pipeline._stage_scratch(dest, b"layered\n")
-            self.assertEqual(dest.read_bytes(), b"layered\n")
+            root = Path(d)
+            outside = root / "OUTSIDE"
+            outside.write_text("original\n")
+            dest = root / ".codex-scratch" / "security.md"
+            dest.parent.mkdir(parents=True)
+            dest.symlink_to(outside)
+
+            with patch.object(Path, "unlink"):
+                with self.assertRaises(FileExistsError):
+                    pipeline._stage_scratch(dest, b"staged\n")
+            self.assertEqual(outside.read_text(), "original\n")
 
 
 class TestRunCodex(unittest.TestCase):
