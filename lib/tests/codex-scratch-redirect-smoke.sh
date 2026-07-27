@@ -62,7 +62,7 @@ if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
 fi
 
 # --- Static fence: every .codex-scratch write in pipeline.py must route
-# through _stage_scratch (which refuses a planted entry, then O_EXCLs).
+# through _stage_scratch (which drops the entry before writing).
 # run_specialist previously staged specialists/<name>.md with a bare
 # write_text — which writes through a planted symlink or hard link, out of
 # the workdir — and no behavioral test caught it, because a test can only
@@ -77,7 +77,7 @@ fi
 # _stage_scratch's own definition writes to `dest`, and the surviving
 # call sites end in `.read_bytes(`, so neither matches.
 PIPELINE="$PROJECT_ROOT/lib/pipeline.py"
-if grep -nE 'scratch.*\.(write_text|write_bytes)\(|open\([^)]*scratch' "$PIPELINE"; then
+if grep -nE 'scratch.*\.(write_text|write_bytes|open)\(|open\([^)]*scratch' "$PIPELINE"; then
     echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path outside _stage_scratch (lines above) — a bare write_text/write_bytes/open writes through a planted symlink or hard link, out of the workdir"
     exit 1
 fi

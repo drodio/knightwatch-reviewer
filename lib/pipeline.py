@@ -227,31 +227,17 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     an agent enumerating with `find -type f` — one that enumerated that way
     concluded nothing was staged and bailed out of the review (plow#1139).
 
-    Every call site runs AFTER agents have executed PR-controlled code in
-    the workdir, and Wave B specialists run concurrently, so a peer's
-    `specialists/<name>.md` is a live path a prompt-injected agent could
-    plant — as a symlink OR a hard link (same fs, same uid, so
-    fs.protected_hardlinks doesn't apply) — pointing outside the workdir. A
-    plain write would truncate and overwrite that foreign inode with content
-    the injecting agent controls. So a planted entry is refused, not
-    replaced: it aborts the review, which is the right outcome and the only
-    signal an operator gets that a workdir went hostile. O_EXCL closes the
-    check→open window against a re-plant. (O_NOFOLLOW would be inert here —
-    O_CREAT|O_EXCL already fails EEXIST on a symlink.)
-
-    This fences the planted ENTRY only. The `.codex-scratch` DIRECTORY is
-    not fenced here: review-one-pr.sh's wipe runs before the agents, so an
-    agent that replaces the whole dir with a symlink still gets these writes
-    redirected. Pre-existing hole, tracked separately.
+    Unlink first, exactly as the `_relink` this replaced did: every call
+    site runs after agents have executed PR-controlled code in the workdir,
+    so the entry could be a symlink or hard link pointing outside it, and a
+    plain write would land on that foreign inode. Dropping the entry leaves
+    its inode untouched. Fences the planted ENTRY only, and only when it is
+    quiescent — a redirected `.codex-scratch` *directory*, and a re-plant
+    racing this unlink, are both out of scope (#190).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # A legitimate re-stage (a specialist's raw output, then its layered
-    # rewrite) is a plain 1-link regular file, so it passes.
-    if dest.is_symlink() or (dest.exists() and dest.stat().st_nlink > 1):
-        raise OSError(f"planted entry at {dest} — hostile workdir")
     dest.unlink(missing_ok=True)
-    with os.fdopen(os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644), "wb") as f:
-        f.write(data)
+    dest.write_bytes(data)
 
 
 def _wait_with_watchdog(
@@ -834,12 +820,9 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    try:
-        _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
-        _stage_scratch(scratch / "dead-code.md",
-                       (run / "agents" / "dead-code-search" / "output.md").read_bytes())
-    except OSError as e:
-        return _abort(repo, f"{pr_id}: scratch staging refused ({e}) — hostile workdir, aborting")
+    _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
+    _stage_scratch(scratch / "dead-code.md",
+                   (run / "agents" / "dead-code-search" / "output.md").read_bytes())
     log(f"{pr_id}: Wave A complete: {intent_text}")
 
     # Wave B: all SPECIALISTS + (momentum if re-review) in parallel. Momentum
@@ -915,11 +898,8 @@ def run_pipeline(
 
     # Momentum may itself have timed out; only stage a real output.
     if has_prev and (run / "agents" / "momentum" / "output.md").exists():
-        try:
-            _stage_scratch(scratch / "momentum.md",
-                           (run / "agents" / "momentum" / "output.md").read_bytes())
-        except OSError as e:
-            return _abort(repo, f"{pr_id}: scratch staging refused ({e}) — hostile workdir, aborting")
+        _stage_scratch(scratch / "momentum.md",
+                       (run / "agents" / "momentum" / "output.md").read_bytes())
     log(f"{pr_id}: Wave B complete")
 
     # Aggregator (sequential — depends on Waves A + B)
