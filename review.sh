@@ -318,7 +318,7 @@ refresh_queue() {
                 # Fail open — but say so. Falling through silently reproduces
                 # the exact bug this check exists to prevent (declining against
                 # a superseded head), with nothing in the log to attribute it.
-                log "$PR_ID: live-head re-check failed — proceeding against the enumerated head ${PR_SHA:0:7}"
+                log "$PR_ID: live-head re-check failed — declining against the enumerated head ${PR_SHA:0:7}"
             elif [ "$LIVE_SHA" != "$PR_SHA" ]; then
                 log "$PR_ID: enumerated head ${PR_SHA:0:7} is stale — live head is ${LIVE_SHA:0:7}; reviewing the new commits instead of declining"
                 PR_SHA="$LIVE_SHA"

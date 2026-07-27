@@ -700,9 +700,11 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 assert_decline_posts 0 "scenario 7e (declined against a superseded head)"
-# …and the worker must be handed the LIVE head, not the superseded one — a
-# refactor that only suppresses the decline would leave the worker naming its
-# run dir and running its pre-checks against a SHA that is no longer HEAD.
+# …and the worker must be handed the LIVE head, not the superseded one. The
+# worker re-reads HEAD after checkout, so this pins the spec contract rather
+# than the review itself: a refactor that suppresses the decline without
+# adopting LIVE_SHA names the run dir with a superseded SHA and ships a spec
+# that no longer reflects the head the dispatch decision was made on.
 if ! grep -q 'WORKER_DISPATCHED .* sha=def456' "$LOG_FILE"; then
     echo "FAIL scenario 7e (stale spec): worker dispatched with the enumerated SHA, not the live head"
     echo "--- log ---"; cat "$LOG_FILE"
