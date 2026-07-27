@@ -20,6 +20,9 @@
 #   7. /srosro-update-review on an unchanged SHA → no dispatch (skipped
 #      to avoid empty-diff aborts; the trigger stays open until commits
 #      land and a future tick picks it up).
+#   7e. /srosro-update-review whose head only LOOKS unchanged (a push
+#      landed after the enumeration snapshot) → 1 dispatch, no decline.
+#      The live-head re-fetch is what keeps the skip decision honest.
 #  13. /srosro-update-review on PAGE 2 of the issue-comments endpoint
 #      → 1 dispatch. Stub emits page 2 only when --paginate is in args,
 #      so a regression that drops --paginate from lib/gh-comments.sh
@@ -165,6 +168,12 @@ elif [ "$1" = "api" ]; then
         # the skip happens before cooldown), but stub it anyway so a
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
+    elif [[ "$url" == */pulls/* ]]; then
+        # Live head re-fetch (`--jq .head.sha`), used to re-check an
+        # apparently-unchanged head before declining a trigger. Defaults to the
+        # enumerated SHA (snapshot still current); scenario 7e overrides it to
+        # simulate a push that landed after the enumeration snapshot.
+        echo "${MOCK_LIVE_HEAD_SHA:-abc123}"
     elif [[ "$url" == */collaborators/*/permission ]]; then
         # Opt-in: simulate a 403 rate-limit on the permission check → an
         # INDETERMINATE trust result (rc=2). Default unset → normal path below.
@@ -672,6 +681,25 @@ if [ ! -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
     echo "FAIL scenario 7d (unbounded retry): watermark withheld after a failed decline POST — a permanent failure would re-POST every tick"
     exit 1
 fi
+
+# Scenario 7e: the enumerated head is STALE — a push landed between the
+# GraphQL snapshot and this PR's turn in the loop, so a fresh trigger would
+# otherwise be judged against a superseded SHA. The requester then gets a
+# "your push isn't there" decline seconds after pushing, and the review they
+# asked for waits for the next tick (observed live: head moved 85s before the
+# decline fired). Re-fetching the live head must flip the decision: dispatch,
+# no decline.
+echo "  scenario 7e: stale enumerated head + /srosro-update-review → dispatch, no decline..."
+rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"
+printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_LIVE_HEAD_SHA=def456 run_orchestrator
+n=$(count_dispatches)
+if [ "$n" -ne 1 ]; then
+    echo "FAIL scenario 7e (stale-head decline): expected 1 dispatch, got $n"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+assert_decline_posts 0 "scenario 7e (declined against a superseded head)"
 
 # Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
 # are handled out-of-band by poll-pr-actions.sh, not by the review
@@ -1186,4 +1214,4 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-echo "  PASS (26 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
