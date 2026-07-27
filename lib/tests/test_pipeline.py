@@ -264,7 +264,13 @@ class TestStageScratch(unittest.TestCase):
                 outside = root / "OUTSIDE"
                 outside.write_text("original\n")
                 dest = root / ".codex-scratch" / "specialists" / "security.md"
-                dest.parent.mkdir(parents=True)
+                # Only pre-create the parent when something has to be
+                # planted in it — the `absent` case leaves it missing so
+                # the writer's own mkdir is exercised. run_pipeline creates
+                # .codex-scratch but nothing creates specialists/, so
+                # run_specialist depends on it.
+                if kind != "absent":
+                    dest.parent.mkdir(parents=True)
                 plant(dest, outside)
 
                 pipeline._stage_scratch(dest, b"staged\n")
