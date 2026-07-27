@@ -93,10 +93,11 @@ assert_redirect_defeated() {
         exit 1
     fi
 
-    # Behavioral: stage via the REAL write_scratch (not a raw printf), then
-    # verify the bytes landed under REPO_DIR. Routing through the primitive
-    # covers its own no-follow guarantee — a `>` that followed a planted leaf
-    # symlink would escape even with the wipe intact.
+    # Behavioral: stage via the REAL write_scratch (not a stand-in printf),
+    # then verify the bytes landed under REPO_DIR. These scenarios prove the
+    # WIPE defeats a redirect — the wipe runs first, so the planted entry is
+    # already gone by the time write_scratch runs. write_scratch's OWN
+    # no-follow guarantee is scenario 6's job; don't fold the two together.
     write_scratch "$REPO_DIR" "diff.patch" "review payload"
     if [ ! -f "$REPO_DIR/.codex-scratch/diff.patch" ]; then
         echo "FAIL ($label): write into .codex-scratch did not land at the expected path"
@@ -209,7 +210,7 @@ fi
 # primitive: this stages against a leaf symlink with no wipe in between.
 echo "  scenario 6: write_scratch does not write through a planted leaf symlink (no wipe)..."
 rm -rf "$REPO_DIR" "$ATTACK_TARGET" "$RUN_DIR"
-mkdir -p "$REPO_DIR/.codex-scratch" "$ATTACK_TARGET" "$RUN_DIR/inputs"
+mkdir -p "$REPO_DIR/.codex-scratch" "$ATTACK_TARGET"
 printf 'original\n' > "$ATTACK_TARGET/sentinel"
 ln -sfn "$ATTACK_TARGET/sentinel" "$REPO_DIR/.codex-scratch/standards.md"
 write_scratch "$REPO_DIR" "standards.md" "worker payload"

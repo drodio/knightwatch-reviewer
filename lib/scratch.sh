@@ -21,8 +21,11 @@ write_scratch() {
     local scratch_dir="$repo_dir/.codex-scratch"
     mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
     # rm first: `>` follows an existing symlink at that path and would write
-    # through it, out of the workdir. `ln -sfn` never did. Callers all run
-    # after the .codex-scratch wipe, but the primitive owns the property.
+    # through it, out of the workdir. `ln -sfn` never did. Fences the planted
+    # ENTRY; a redirected .codex-scratch *directory* is the caller's wipe to
+    # fence (review-one-pr.sh:1233, replay.sh:124 — both run before any call
+    # here). Callers are all downstream of that wipe today; the entry-level
+    # property belongs to the primitive so it doesn't rest on call ordering.
     rm -f "$scratch_dir/$filename"
     printf '%s' "$content" > "$scratch_dir/$filename"
     cp "$scratch_dir/$filename" "$input_path"

@@ -235,34 +235,40 @@ class TestLog(unittest.TestCase):
 
 
 class TestStageScratch(unittest.TestCase):
-    """_stage_scratch materializes a Wave A/B artifact at .codex-scratch/<name>.
+    """The single scratch writer for everything pipeline.py stages.
 
     Two properties, both load-bearing: the entry is a REAL file (an agent
     enumerating with `find -type f` can't see a symlink — one that did
     concluded nothing was staged and bailed out of the review, plow#1139),
-    and the write does NOT follow a pre-existing symlink at that path. The
-    three call sites run after agents have executed PR-controlled code in the
-    workdir, so an entry could be planted; a plain write would land outside.
+    and the write does NOT follow a pre-existing symlink at that path. Every
+    call site runs after agents have executed PR-controlled code in the
+    workdir — and Wave B specialists run concurrently, so a peer's
+    `specialists/<name>.md` is a live path a prompt-injected agent could
+    plant. A plain write would land outside the workdir.
     """
 
     def test_stages_real_file_without_following_a_planted_symlink(self):
-        with TemporaryDirectory() as d:
-            root = Path(d)
-            source = root / "agents" / "momentum" / "output.md"
-            source.parent.mkdir(parents=True)
-            source.write_text("momentum finding\n")
-            outside = root / "OUTSIDE"
-            outside.write_text("original\n")
-            dest = root / "repo" / ".codex-scratch" / "momentum.md"
-            dest.parent.mkdir(parents=True)
-            dest.symlink_to(outside)
+        # Both entry points, and both scratch shapes: a Wave A/B artifact at
+        # the scratch root and a specialist output one level down.
+        cases = ["momentum.md", "specialists/security.md"]
+        for name in cases:
+            with self.subTest(entry=name), TemporaryDirectory() as d:
+                root = Path(d)
+                source = root / "agents" / "out.md"
+                source.parent.mkdir(parents=True)
+                source.write_text("staged content\n")
+                outside = root / "OUTSIDE"
+                outside.write_text("original\n")
+                dest = root / "repo" / ".codex-scratch" / name
+                dest.parent.mkdir(parents=True)
+                dest.symlink_to(outside)
 
-            pipeline._stage_scratch(dest, source)
+                pipeline._stage_scratch(dest, source)
 
-            self.assertEqual(outside.read_text(), "original\n",
-                             "wrote through the planted symlink — escaped the workdir")
-            self.assertFalse(dest.is_symlink())
-            self.assertEqual(dest.read_text(), "momentum finding\n")
+                self.assertEqual(outside.read_text(), "original\n",
+                                 "wrote through the planted symlink — escaped the workdir")
+                self.assertFalse(dest.is_symlink())
+                self.assertEqual(dest.read_text(), "staged content\n")
 
 
 class TestRunCodex(unittest.TestCase):

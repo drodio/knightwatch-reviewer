@@ -219,18 +219,27 @@ def log(msg: str) -> None:
             f.write(line)
 
 
-def _stage_scratch(dest: Path, source: Path) -> None:
-    """Copy `source` to `dest` as a real file so `find -type f` sees it.
+def _stage_scratch_text(dest: Path, text: str) -> None:
+    """Write `text` to `dest` as a real file so `find -type f` sees it.
 
-    Unlink first rather than writing through: these run after agents have
-    executed PR-controlled code in the workdir, so an existing entry could
-    be a planted symlink and an open-for-write would follow it out of the
-    workdir. Same redirect fence as review-one-pr.sh's .codex-scratch wipe.
+    The single scratch writer for everything pipeline.py stages: Wave A/B
+    artifacts and every specialist/critic output. Unlink first rather than
+    writing through — all of these run after agents have executed
+    PR-controlled code in the workdir (and Wave B specialists run
+    concurrently, so a peer's `specialists/<name>.md` is a live path), so
+    the entry could be a planted symlink an open-for-write would follow out
+    of the workdir. Fences the planted ENTRY only; a redirected
+    `.codex-scratch` *directory* is fenced by review-one-pr.sh's wipe.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists() or dest.is_symlink():
         dest.unlink()
-    dest.write_bytes(source.read_bytes())
+    dest.write_text(text)
+
+
+def _stage_scratch(dest: Path, source: Path) -> None:
+    """Stage `source`'s content at `dest`. See _stage_scratch_text."""
+    _stage_scratch_text(dest, source.read_text())
 
 
 def _wait_with_watchdog(
@@ -651,8 +660,7 @@ def run_specialist(
     # via the path documented in prompts/critic.md. Overwritten with layered
     # content after a successful critic.
     scratch_path = repo / ".codex-scratch" / "specialists" / f"{specialist}.md"
-    scratch_path.parent.mkdir(parents=True, exist_ok=True)
-    scratch_path.write_text(spec_out)
+    _stage_scratch_text(scratch_path, spec_out)
 
     # A specialist that emitted zero probes (the 'No probes.' sentinel, the
     # only other run_codex-valid output) has nothing for the critic to
@@ -663,7 +671,7 @@ def run_specialist(
     if not _probe_ids(spec_out):
         layered = spec_out + "\n\n---\n\nNo probes."
         (spec_agent_dir / "layered.md").write_text(layered)
-        scratch_path.write_text(layered)
+        _stage_scratch_text(scratch_path, layered)
         return 0
 
     crit_prompt = build_prompt(
@@ -721,7 +729,7 @@ def run_specialist(
 
     layered = spec_out + "\n\n---\n\n" + crit_out
     (spec_agent_dir / "layered.md").write_text(layered)
-    scratch_path.write_text(layered)
+    _stage_scratch_text(scratch_path, layered)
     return 0
 
 
