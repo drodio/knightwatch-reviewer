@@ -62,14 +62,20 @@ if [ "$((MKDIR_LINE - RM_LINE))" -ne 1 ]; then
 fi
 
 # --- Static fence: every .codex-scratch write in pipeline.py must route
-# through _stage_scratch (the O_NOFOLLOW writer). run_specialist previously
-# staged specialists/<name>.md with a bare write_text — which follows a
-# planted symlink out of the workdir — and no behavioral test caught it,
-# because a test can only cover the writer it calls. Same shape as the
-# review-one-pr.sh fence above: pin the invariant where it can't drift.
+# through _stage_scratch (the unlink + O_EXCL|O_NOFOLLOW writer).
+# run_specialist previously staged specialists/<name>.md with a bare
+# write_text — which writes through a planted symlink or hard link, out of
+# the workdir — and no behavioral test caught it, because a test can only
+# cover the writer it calls. Same shape as the review-one-pr.sh fence above:
+# pin the invariant where it can't drift.
+#
+# Matched on the PATH shape (any write_text/write_bytes/open whose line
+# names a scratch path), not one variable, so a rename or the
+# `(scratch / "x.md").write_bytes(...)` shape the other call sites use is
+# caught too. _stage_scratch's own definition doesn't mention `scratch`.
 PIPELINE="$PROJECT_ROOT/lib/pipeline.py"
-if grep -nE '^[[:space:]]*scratch_path\.write_(text|bytes)\(' "$PIPELINE"; then
-    echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path with a bare write_text/write_bytes (lines above) — that follows a planted symlink out of the workdir; route it through _stage_scratch"
+if grep -nE '(scratch_path|scratch */)[^=]*\.(write_text|write_bytes)\(|open\([^)]*scratch' "$PIPELINE"; then
+    echo "FAIL setup: lib/pipeline.py stages a .codex-scratch path outside _stage_scratch (lines above) — a bare write_text/write_bytes/open writes through a planted symlink or hard link, out of the workdir"
     exit 1
 fi
 

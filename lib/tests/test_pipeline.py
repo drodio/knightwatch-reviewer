@@ -253,24 +253,30 @@ class TestStageScratch(unittest.TestCase):
             self.assertTrue(dest.is_file() and not dest.is_symlink())
             self.assertEqual(dest.read_bytes(), b"layered output\n")
 
-    def test_refuses_to_write_through_a_planted_symlink(self):
-        # Both scratch shapes: a Wave A/B artifact at the scratch root and a
-        # specialist output one level down.
+    def test_does_not_write_through_a_planted_entry(self):
+        # A symlink AND a hard link, at both scratch shapes: a Wave A/B
+        # artifact at the scratch root and a specialist output one level
+        # down. O_NOFOLLOW alone fences only the symlink — a hard link
+        # (same fs, same uid) would take O_TRUNC straight to the foreign
+        # inode; dropping the entry first is what covers both.
+        plants = {"symlink": lambda dst, src: dst.symlink_to(src),
+                  "hardlink": lambda dst, src: os.link(src, dst)}
         for name in ("momentum.md", "specialists/security.md"):
-            with self.subTest(entry=name), TemporaryDirectory() as d:
-                root = Path(d)
-                outside = root / "OUTSIDE"
-                outside.write_text("original\n")
-                dest = root / "repo" / ".codex-scratch" / name
-                dest.parent.mkdir(parents=True)
-                dest.symlink_to(outside)
+            for kind, plant in plants.items():
+                with self.subTest(entry=name, plant=kind), TemporaryDirectory() as d:
+                    root = Path(d)
+                    outside = root / "OUTSIDE"
+                    outside.write_text("original\n")
+                    dest = root / "repo" / ".codex-scratch" / name
+                    dest.parent.mkdir(parents=True)
+                    plant(dest, outside)
 
-                # O_NOFOLLOW → ELOOP. Aborting the review is the right
-                # outcome: a planted entry means the workdir is hostile.
-                with self.assertRaises(OSError):
                     pipeline._stage_scratch(dest, b"staged content\n")
-                self.assertEqual(outside.read_text(), "original\n",
-                                 "wrote through the planted symlink — escaped the workdir")
+
+                    self.assertEqual(outside.read_text(), "original\n",
+                                     f"wrote through the planted {kind} — escaped the workdir")
+                    self.assertFalse(dest.is_symlink())
+                    self.assertEqual(dest.read_bytes(), b"staged content\n")
 
     def test_overwrites_an_existing_real_entry(self):
         # The specialist path stages twice (raw output, then layered), so
