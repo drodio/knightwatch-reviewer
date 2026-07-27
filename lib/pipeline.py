@@ -238,7 +238,8 @@ def _stage_scratch(dest: Path, data: bytes) -> None:
     so a plain write would have been a regression, not merely weaker.
 
     Fences the planted ENTRY. A redirected `.codex-scratch` *directory* is
-    out of scope — the wipe that fences it runs before the agents (#190).
+    out of scope — no entry-level fence can see it, and the pre-agent wipe
+    doesn't cover an agent-planted one (#190).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)

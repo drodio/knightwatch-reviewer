@@ -296,8 +296,13 @@ class TestStageScratch(unittest.TestCase):
                 dest.parent.mkdir(parents=True)
                 plant(dest, outside)
 
+                # FileExistsError, not OSError: only O_EXCL's EEXIST should
+                # refuse here. A broader assert would pass on an incidental
+                # failure elsewhere in the writer with the fence gone — and
+                # the sentinel check below would pass too, since nothing
+                # was written at all.
                 with patch.object(Path, "unlink"):
-                    with self.assertRaises(OSError):
+                    with self.assertRaises(FileExistsError):
                         pipeline._stage_scratch(dest, b"staged content\n")
                 self.assertEqual(outside.read_text(), "original\n",
                                  f"lost the re-plant race and wrote through the {kind}")
