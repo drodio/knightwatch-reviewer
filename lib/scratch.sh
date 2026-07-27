@@ -20,6 +20,10 @@ write_scratch() {
     local input_path="$RUN_DIR/inputs/$filename"
     local scratch_dir="$repo_dir/.codex-scratch"
     mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
+    # rm first: `>` follows an existing symlink at that path and would write
+    # through it, out of the workdir. `ln -sfn` never did. Callers all run
+    # after the .codex-scratch wipe, but the primitive owns the property.
+    rm -f "$scratch_dir/$filename"
     printf '%s' "$content" > "$scratch_dir/$filename"
     cp "$scratch_dir/$filename" "$input_path"
 }

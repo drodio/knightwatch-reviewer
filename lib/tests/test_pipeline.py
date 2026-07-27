@@ -234,6 +234,37 @@ class TestLog(unittest.TestCase):
                     self.assertEqual("[w7]" in written, want_tag)
 
 
+class TestStageScratch(unittest.TestCase):
+    """_stage_scratch materializes a Wave A/B artifact at .codex-scratch/<name>.
+
+    Two properties, both load-bearing: the entry is a REAL file (an agent
+    enumerating with `find -type f` can't see a symlink — one that did
+    concluded nothing was staged and bailed out of the review, plow#1139),
+    and the write does NOT follow a pre-existing symlink at that path. The
+    three call sites run after agents have executed PR-controlled code in the
+    workdir, so an entry could be planted; a plain write would land outside.
+    """
+
+    def test_stages_real_file_without_following_a_planted_symlink(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            source = root / "agents" / "momentum" / "output.md"
+            source.parent.mkdir(parents=True)
+            source.write_text("momentum finding\n")
+            outside = root / "OUTSIDE"
+            outside.write_text("original\n")
+            dest = root / "repo" / ".codex-scratch" / "momentum.md"
+            dest.parent.mkdir(parents=True)
+            dest.symlink_to(outside)
+
+            pipeline._stage_scratch(dest, source)
+
+            self.assertEqual(outside.read_text(), "original\n",
+                             "wrote through the planted symlink — escaped the workdir")
+            self.assertFalse(dest.is_symlink())
+            self.assertEqual(dest.read_text(), "momentum finding\n")
+
+
 class TestRunCodex(unittest.TestCase):
     """run_codex wraps `codex exec`; matches lib/run-specialist.sh contract."""
 

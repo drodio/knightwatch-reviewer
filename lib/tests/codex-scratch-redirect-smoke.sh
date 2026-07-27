@@ -74,6 +74,9 @@ codex_scratch_stage() {
 
 REPO_DIR="$TMPDIR/repo"
 ATTACK_TARGET="$TMPDIR/SHOULD_NOT_BE_TOUCHED"
+RUN_DIR="$TMPDIR/run"
+# shellcheck source=../scratch.sh
+. "$PROJECT_ROOT/lib/scratch.sh"
 
 assert_redirect_defeated() {
     local label="$1"
@@ -90,9 +93,11 @@ assert_redirect_defeated() {
         exit 1
     fi
 
-    # Behavioral: write into .codex-scratch, then verify the bytes
-    # landed under REPO_DIR (not under the attacker's target).
-    printf 'review payload\n' > "$REPO_DIR/.codex-scratch/diff.patch"
+    # Behavioral: stage via the REAL write_scratch (not a raw printf), then
+    # verify the bytes landed under REPO_DIR. Routing through the primitive
+    # covers its own no-follow guarantee — a `>` that followed a planted leaf
+    # symlink would escape even with the wipe intact.
+    write_scratch "$REPO_DIR" "diff.patch" "review payload"
     if [ ! -f "$REPO_DIR/.codex-scratch/diff.patch" ]; then
         echo "FAIL ($label): write into .codex-scratch did not land at the expected path"
         exit 1
@@ -185,10 +190,6 @@ echo "  scenario 5: write_scratch output is visible to 'find -type f' and archiv
 rm -rf "$REPO_DIR"
 mkdir -p "$REPO_DIR"
 codex_scratch_stage "$REPO_DIR"
-RUN_DIR="$TMPDIR/run"
-mkdir -p "$RUN_DIR/inputs"
-# shellcheck source=../scratch.sh
-. "$PROJECT_ROOT/lib/scratch.sh"
 write_scratch "$REPO_DIR" "inferred-intent.md" "It appears the author is working towards X."
 if ! (cd "$REPO_DIR" && find .codex-scratch -maxdepth 2 -type f -print) | grep -qx ".codex-scratch/inferred-intent.md"; then
     echo "FAIL scenario 5: staged inferred-intent.md is invisible to 'find -type f' — write_scratch is staging a symlink again, agents enumerating scratch will conclude nothing was staged"
@@ -200,4 +201,26 @@ if [ "$(cat "$RUN_DIR/inputs/inferred-intent.md")" != "It appears the author is 
     exit 1
 fi
 
-echo "  ok: .codex-scratch staging is redirect-safe (symlink-to-dir, leaf-symlink, dangling, and idempotent on real-dir all defeated) and enumerable by 'find -type f'"
+# --- scenario 6: write_scratch itself must not follow a planted leaf symlink.
+# Scenarios 1-4 prove the WIPE defeats a redirect, but they wipe before every
+# write — so they never exercise the primitive's own guarantee. `ln -sfn`
+# replaced the entry without dereferencing; a bare `>` writes THROUGH it. Every
+# call site is downstream of the wipe today, but the property belongs to the
+# primitive: this stages against a leaf symlink with no wipe in between.
+echo "  scenario 6: write_scratch does not write through a planted leaf symlink (no wipe)..."
+rm -rf "$REPO_DIR" "$ATTACK_TARGET" "$RUN_DIR"
+mkdir -p "$REPO_DIR/.codex-scratch" "$ATTACK_TARGET" "$RUN_DIR/inputs"
+printf 'original\n' > "$ATTACK_TARGET/sentinel"
+ln -sfn "$ATTACK_TARGET/sentinel" "$REPO_DIR/.codex-scratch/standards.md"
+write_scratch "$REPO_DIR" "standards.md" "worker payload"
+if [ "$(cat "$ATTACK_TARGET/sentinel")" != "original" ]; then
+    echo "FAIL scenario 6: write_scratch followed the planted symlink and overwrote the attacker target — the write escaped REPO_DIR"
+    exit 1
+fi
+if [ -L "$REPO_DIR/.codex-scratch/standards.md" ] || [ "$(cat "$REPO_DIR/.codex-scratch/standards.md")" != "worker payload" ]; then
+    echo "FAIL scenario 6: staged standards.md is not a real file holding the worker's payload"
+    ls -la "$REPO_DIR/.codex-scratch/"
+    exit 1
+fi
+
+echo "  ok: .codex-scratch staging is redirect-safe (symlink-to-dir, leaf-symlink, dangling, idempotent on real-dir, and planted-leaf-symlink all defeated) and enumerable by 'find -type f'"
