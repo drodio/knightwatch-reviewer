@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke for the unified deterministic-registry rendering path:
 #   prepend_review_header COMMENT_BODY NOTE [NOTE...]
-#   format_review_scope SCOPE  (scope-token → human-readable fragment)
+#   format_review_scope SCOPE HEAD_SHA  (scope-token → human-readable fragment)
 #   compute_review_scope FORCE KNOWN_SHA USED_FALLBACK
 #   classify_just_test_outcome TEST_EXIT TEST_LOG TEST_TIMEOUT
 #   format_tests_note TESTS_RAN TEST_SUMMARY
