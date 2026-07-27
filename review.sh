@@ -124,7 +124,7 @@ refresh_queue() {
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
-    local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER
+    local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
         PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
@@ -290,6 +290,38 @@ refresh_queue() {
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi
                 fi
+            fi
+        fi
+
+        # Re-fetch the live head before judging a trigger "nothing to diff".
+        # PR_SHA comes from the batched GraphQL snapshot taken at the top of
+        # this refresh, but COMMENTS_JSON above is fetched live inside the
+        # loop — so a push that lands between the snapshot and this PR's turn
+        # yields a FRESH trigger evaluated against a STALE head. Observed on
+        # srosro/youtube-live-count-chime#5: head moved at 21:42:18Z, the
+        # /srosro-update-review landed at 21:43:26Z, and the skip below fired
+        # at 21:43:43Z citing the superseded SHA — the requester got a "your
+        # push isn't there" comment 85s after pushing, and the review they
+        # asked for waited for the next tick. Same staleness the worker
+        # already reconciles at checkout ("orchestrator enumerated X, worker
+        # checked out Y"); this is that reconciliation moved early enough to
+        # keep the skip decision honest. Gated on the exact conditions the
+        # skip below tests — an incremental trigger in hand and an
+        # apparently-unchanged head — so it costs one API call only on the
+        # path whose decision it can change. (A whole-PR trigger dispatches
+        # regardless, and the worker re-reads the head at checkout anyway.)
+        # Same `gh pr view --json headRefOid` shape the worker's two head
+        # re-checks use, so there's one live-head idiom in the repo.
+        if [ "$FORCE_REVIEW" = "true" ] && [ "$FORCE_WHOLE_PR" = "false" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
+            LIVE_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+            if [ -z "$LIVE_SHA" ]; then
+                # Fail open — but say so. Falling through silently reproduces
+                # the exact bug this check exists to prevent (declining against
+                # a superseded head), with nothing in the log to attribute it.
+                log "$PR_ID: live-head re-check failed — declining against the enumerated head ${PR_SHA:0:7}"
+            elif [ "$LIVE_SHA" != "$PR_SHA" ]; then
+                log "$PR_ID: enumerated head ${PR_SHA:0:7} is stale — live head is ${LIVE_SHA:0:7}; reviewing the new commits instead of declining"
+                PR_SHA="$LIVE_SHA"
             fi
         fi
 
