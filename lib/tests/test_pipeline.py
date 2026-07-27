@@ -240,10 +240,12 @@ class TestStageScratch(unittest.TestCase):
     Two properties, both load-bearing: the entry is a REAL file (an agent
     enumerating with `find -type f` can't see a symlink — one that did
     concluded nothing was staged and bailed out of the review, plow#1139),
-    and the write never lands on an inode outside the workdir. Every call
-    site runs after agents have executed PR-controlled code there — and
-    Wave B specialists run concurrently, so a peer's `specialists/<name>.md`
-    is a live path a prompt-injected agent could plant.
+    and a quiescent planted entry is dropped, not written through. Every
+    call site runs after agents have executed PR-controlled code there —
+    and Wave B specialists run concurrently, so a peer's
+    `specialists/<name>.md` is a live path a prompt-injected agent could
+    plant. A redirected `.codex-scratch` directory, and a re-plant racing
+    the unlink, are out of scope here (#190).
     """
 
     def test_stages_a_real_file(self):
