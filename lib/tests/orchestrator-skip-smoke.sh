@@ -110,6 +110,12 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
     else
         echo '[]'
     fi
+elif [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    # Live head re-fetch (--json headRefOid), used to re-check an apparently-
+    # unchanged head before declining a trigger. Defaults to the enumerated
+    # SHA (snapshot still current); scenario 7e overrides it to simulate a
+    # push that landed after the enumeration snapshot.
+    echo "${MOCK_LIVE_HEAD_SHA:-abc123}"
 elif [ "$1" = "api" ]; then
     # One pass over argv collects everything the stub branches on: the endpoint
     # (any positional, so flags like --paginate/--jq don't need stub edits), the
@@ -168,12 +174,6 @@ elif [ "$1" = "api" ]; then
         # the skip happens before cooldown), but stub it anyway so a
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
-    elif [[ "$url" == */pulls/* ]]; then
-        # Live head re-fetch (`--jq .head.sha`), used to re-check an
-        # apparently-unchanged head before declining a trigger. Defaults to the
-        # enumerated SHA (snapshot still current); scenario 7e overrides it to
-        # simulate a push that landed after the enumeration snapshot.
-        echo "${MOCK_LIVE_HEAD_SHA:-abc123}"
     elif [[ "$url" == */collaborators/*/permission ]]; then
         # Opt-in: simulate a 403 rate-limit on the permission check → an
         # INDETERMINATE trust result (rc=2). Default unset → normal path below.
@@ -700,6 +700,14 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 assert_decline_posts 0 "scenario 7e (declined against a superseded head)"
+# …and the worker must be handed the LIVE head, not the superseded one — a
+# refactor that only suppresses the decline would leave the worker naming its
+# run dir and running its pre-checks against a SHA that is no longer HEAD.
+if ! grep -q 'WORKER_DISPATCHED .* sha=def456' "$LOG_FILE"; then
+    echo "FAIL scenario 7e (stale spec): worker dispatched with the enumerated SHA, not the live head"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 
 # Scenario 8: same SHA, /srosro-approve → no dispatch. Approve requests
 # are handled out-of-band by poll-pr-actions.sh, not by the review

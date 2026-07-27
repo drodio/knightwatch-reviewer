@@ -305,12 +305,21 @@ refresh_queue() {
         # asked for waited for the next tick. Same staleness the worker
         # already reconciles at checkout ("orchestrator enumerated X, worker
         # checked out Y"); this is that reconciliation moved early enough to
-        # keep the skip decision honest. Gated on an in-hand trigger AND an
-        # apparently-unchanged head, so it costs one API call only on the
-        # path whose decision it changes.
-        if [ "$FORCE_REVIEW" = "true" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
-            LIVE_SHA=$(gh api "repos/$REPO/pulls/$PR_NUM" --jq '.head.sha' 2>/dev/null || echo "")
-            if [ -n "$LIVE_SHA" ] && [ "$LIVE_SHA" != "$PR_SHA" ]; then
+        # keep the skip decision honest. Gated on the exact conditions the
+        # skip below tests — an incremental trigger in hand and an
+        # apparently-unchanged head — so it costs one API call only on the
+        # path whose decision it can change. (A whole-PR trigger dispatches
+        # regardless, and the worker re-reads the head at checkout anyway.)
+        # Same `gh pr view --json headRefOid` shape the worker's two head
+        # re-checks use, so there's one live-head idiom in the repo.
+        if [ "$FORCE_REVIEW" = "true" ] && [ "$FORCE_WHOLE_PR" = "false" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; then
+            LIVE_SHA=$(gh pr view "$PR_NUM" --repo "$REPO" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+            if [ -z "$LIVE_SHA" ]; then
+                # Fail open — but say so. Falling through silently reproduces
+                # the exact bug this check exists to prevent (declining against
+                # a superseded head), with nothing in the log to attribute it.
+                log "$PR_ID: live-head re-check failed — proceeding against the enumerated head ${PR_SHA:0:7}"
+            elif [ "$LIVE_SHA" != "$PR_SHA" ]; then
                 log "$PR_ID: enumerated head ${PR_SHA:0:7} is stale — live head is ${LIVE_SHA:0:7}; reviewing the new commits instead of declining"
                 PR_SHA="$LIVE_SHA"
             fi
