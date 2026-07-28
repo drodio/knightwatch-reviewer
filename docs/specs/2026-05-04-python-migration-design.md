@@ -124,7 +124,7 @@ def run_angle(angle: str, ...):
 - `inferred-intent.md`, `dead-code.md`, `momentum.md` — copied from the corresponding `RUN_DIR/agents/<agent>/output.md`, which stays the run archive.
 - `specialists/<angle>.md` — written with the layered content (spec + critic).
 
-These were symlinks into `RUN_DIR` until #188: `find` defaults to `-P`, so a symlink is `-type l` and never matches `-type f`. An aggregator that enumerated `.codex-scratch` that way saw only the specialists' regular files, concluded nothing had been staged, and posted a bail-out in place of a review. Any enumeration must see every artifact.
+These were symlinks into `RUN_DIR` until #188: `find` defaults to `-P`, so a symlink is `-type l` and never matches `-type f`. An aggregator that enumerated `.codex-scratch` that way saw only the specialists' regular files, concluded nothing had been staged, and posted a bail-out in place of a review (plow#1139, howto#25). Any enumeration must see every artifact.
 
 **Re-review carry-forward**: each per-angle critic's prompt receives `previous-review.md` if present. Carry-forward becomes per-angle (each critic addresses prior pushback in its own angle). The aggregator handles cross-angle re-review framing today's central critic does.
 

@@ -235,8 +235,9 @@ class TestLog(unittest.TestCase):
 
 
 class TestStageScratch(unittest.TestCase):
-    """Two properties of the writer: the entry ends up a REAL file, and the
-    write never lands on an inode outside the workdir. See _stage_scratch."""
+    """Two properties of the writer: the entry ends up a REAL file, and a
+    planted entry is dropped rather than written through — the entry, not
+    the directory (#190). See _stage_scratch."""
 
     def test_stages_a_real_file_over_any_prior_entry(self):
         # Whatever is at the path — nothing, a legitimate prior stage (the

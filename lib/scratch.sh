@@ -19,7 +19,9 @@ write_scratch() {
     local scratch_dir="$repo_dir/.codex-scratch"
     mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
     # rm first: `>` follows a planted symlink out of the workdir; `ln -sfn`
-    # never did. Fences the entry, not the directory (#190).
+    # never did. Fences the planted entry; the directory redirect is the
+    # caller's wipe (review-one-pr.sh:1233, replay.sh:124 — both immediately
+    # upstream, after all PR-controlled execution).
     rm -f "$scratch_dir/$filename"
     printf '%s' "$content" > "$scratch_dir/$filename"
     cp "$scratch_dir/$filename" "$input_path"
