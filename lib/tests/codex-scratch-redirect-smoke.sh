@@ -180,13 +180,8 @@ if [ ! -d "$REPO_DIR/.codex-scratch" ] || [ -L "$REPO_DIR/.codex-scratch" ]; the
 fi
 
 # --- scenario 5: staged artifacts must be enumerable by `find -type f` ---
-# Agents enumerate .codex-scratch to discover what was staged. `find` defaults
-# to -P (no-follow), so a symlink is -type l and NEVER matches -type f. When
-# write_scratch staged symlinks, an aggregator that probed with `-type f` saw
-# only the specialists' real files, concluded nothing had been staged, and
-# posted a bail-out instead of a review (plow#1139, howto#25) — or silently
-# skipped intent inference, carry-forward, and test verification. Real files
-# are visible to ANY enumeration; a regression back to `ln -s` fails here.
+# A regression back to `ln -s` fails here — `find` defaults to -P, so it
+# would never match the entry.
 echo "  scenario 5: write_scratch output is visible to 'find -type f' and archived to RUN_DIR/inputs..."
 rm -rf "$REPO_DIR"
 mkdir -p "$REPO_DIR"
@@ -203,11 +198,8 @@ if [ "$(cat "$RUN_DIR/inputs/inferred-intent.md")" != "It appears the author is 
 fi
 
 # --- scenario 6: write_scratch itself must not follow a planted leaf symlink.
-# Scenarios 1-4 prove the WIPE defeats a redirect, but they wipe before every
-# write — so they never exercise the primitive's own guarantee. `ln -sfn`
-# replaced the entry without dereferencing; a bare `>` writes THROUGH it. Every
-# call site is downstream of the wipe today, but the property belongs to the
-# primitive: this stages against a leaf symlink with no wipe in between.
+# Scenarios 1-4 wipe before every write, so they only ever prove the WIPE
+# works. This one stages with no wipe in between, exercising the primitive.
 echo "  scenario 6: write_scratch does not write through a planted leaf symlink (no wipe)..."
 rm -rf "$REPO_DIR" "$ATTACK_TARGET" "$RUN_DIR"
 mkdir -p "$REPO_DIR/.codex-scratch" "$ATTACK_TARGET"

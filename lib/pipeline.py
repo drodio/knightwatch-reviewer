@@ -220,26 +220,17 @@ def log(msg: str) -> None:
 
 
 def _stage_scratch(dest: Path, data: bytes) -> None:
-    """Write `data` to `dest` as a real file so `find -type f` sees it.
+    """Stage `data` at `dest` as a real file — the one scratch writer.
 
-    The single scratch writer for everything pipeline.py stages: Wave A/B
-    artifacts and every specialist/critic output. A symlink is invisible to
-    an agent enumerating with `find -type f` — one that enumerated that way
-    concluded nothing was staged and bailed out of the review (plow#1139).
-
-    Unlink-then-O_EXCL reproduces exactly what the `_relink` this replaced
-    did: every call site runs after agents have executed PR-controlled code
-    in the workdir, so the entry could be a symlink or hard link pointing
-    outside it, and a plain write would land on that foreign inode.
-    Unlinking drops the entry without touching its inode; O_EXCL then covers
-    the window between — up to four Wave B specialists run concurrently, so
-    a peer can re-plant there, and `write_bytes` would follow it.
-    `_relink`'s `symlink_to` was race-safe for free (`symlink(2)` is EEXIST),
-    so a plain write would have been a regression, not merely weaker.
-
-    Fences the planted ENTRY. A redirected `.codex-scratch` *directory* is
-    out of scope — no entry-level fence can see it, and the pre-agent wipe
-    doesn't cover an agent-planted one (#190).
+    Real, because an agent enumerating with `find -type f` can't see a
+    symlink. Unlink-then-O_EXCL, because every call site runs after agents
+    have executed PR-controlled code in the workdir and Wave B specialists
+    run concurrently, so the entry may be a symlink or hard link pointing
+    outside it: unlink drops the entry without touching its inode, O_EXCL
+    refuses a peer's re-plant in the window after. That reproduces the
+    `_relink` this replaced, whose `symlink_to` was race-safe for free
+    (`symlink(2)` is EEXIST) — a plain write would be a regression, not
+    merely weaker. Fences the entry, not the directory (#190).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.unlink(missing_ok=True)

@@ -1149,11 +1149,11 @@ if ! grep -q "ref/verify.sh" "$TEST_RESULTS_MD9"; then
     exit 1
 fi
 
-# The .codex-scratch SYMLINK (what specialists actually read) must be present when
+# The .codex-scratch ENTRY (what specialists actually read) must be present when
 # codex runs. Regression fence for the staging-order bug: staging convention.md at
 # detection time (before the redirect-safe `.codex-scratch` reset) leaves
 # inputs/convention.md intact — so the inputs/ checks above still pass — but wipes
-# the symlink, so specialists never see it. The codex stub captured the dir listing
+# the staged entry, so specialists never see it. The codex stub captured the dir listing
 # at specialist-run time; standards.md is the control (always staged post-reset).
 if [ ! -f "$SCRATCH_SNAPSHOT9" ]; then
     echo "FAIL: scenario 9 — codex stub never ran (worker aborted before specialists) — can't verify convention.md visibility"

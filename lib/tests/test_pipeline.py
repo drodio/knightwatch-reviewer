@@ -235,17 +235,8 @@ class TestLog(unittest.TestCase):
 
 
 class TestStageScratch(unittest.TestCase):
-    """The single scratch writer for everything pipeline.py stages.
-
-    The entry must end up a REAL file — an agent enumerating with
-    `find -type f` can't see a symlink, and one that did concluded nothing
-    was staged and bailed out of the review (plow#1139) — and the write must
-    never land on an inode outside the workdir. Every call site runs after
-    agents have executed PR-controlled code there, and up to four Wave B
-    specialists run concurrently, so a peer's `specialists/<name>.md` is a
-    live path a prompt-injected agent could plant. A redirected
-    `.codex-scratch` directory is out of scope here (#190).
-    """
+    """Two properties of the writer: the entry ends up a REAL file, and the
+    write never lands on an inode outside the workdir. See _stage_scratch."""
 
     def test_stages_a_real_file_over_any_prior_entry(self):
         # Whatever is at the path — nothing, a legitimate prior stage (the
@@ -1502,12 +1493,8 @@ class TestRunPipeline(unittest.TestCase):
     def test_wave_b_starts_after_wave_a_artifacts_staged(self, mock_popen):
         """Wave A → Wave B is a hard barrier: every specialist (and momentum
         on re-review) must see `.codex-scratch/inferred-intent.md` and
-        `.codex-scratch/dead-code.md` staged at the moment they start.
-
-        Staged means a REGULAR file, not a symlink: an agent that enumerates
-        the dir with `find -type f` can't see a symlink, and one that did
-        concluded nothing was staged and bailed out of the review entirely
-        (plow#1139)."""
+        `.codex-scratch/dead-code.md` staged as REGULAR files at the moment
+        they start."""
         (self.run_dir / "inputs" / "previous-review.md").write_text("prior\n")
         scratch = self.repo_dir / ".codex-scratch"
         seen: list[tuple[str, set[str]]] = []
