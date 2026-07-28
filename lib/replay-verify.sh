@@ -139,8 +139,8 @@ fi
 PASS=1
 
 # Verdict check — read the LAST VERDICT line to match production
-# (grep "^VERDICT=" in lib/review-one-pr.sh) and the aggregator contract
-# (grep "VERY LAST LINE" in prompts/aggregator.md).
+# (see the VERDICT= assignment in lib/review-one-pr.sh) and the aggregator
+# contract (grep "VERY LAST LINE" in prompts/aggregator.md).
 # Rendered reviews can quote earlier verdict-shaped text (e.g. a previous
 # review's "VERDICT: APPROVE"); using head -1 would assert against that
 # quoted line and bypass production's contract.
