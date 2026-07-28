@@ -20,8 +20,10 @@ write_scratch() {
     mkdir -p "$(dirname "$input_path")" "$scratch_dir/specialists"
     # rm first: `>` follows a planted symlink out of the workdir; `ln -sfn`
     # never did. Fences the planted entry; the directory redirect is the
-    # caller's wipe (review-one-pr.sh:1233, replay.sh:124 — both immediately
-    # upstream, after all PR-controlled execution).
+    # caller's wipe — both callers rm -rf + recreate .codex-scratch
+    # immediately before their first write_scratch (grep "Redirect-safe
+    # staging"), and in production that also lands after PR-controlled
+    # execution.
     rm -f "$scratch_dir/$filename"
     printf '%s' "$content" > "$scratch_dir/$filename"
     cp "$scratch_dir/$filename" "$input_path"
