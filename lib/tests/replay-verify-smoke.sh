@@ -82,8 +82,9 @@ expect_pass "passing" "$FIXTURE_DIR/sample-aggregator-output.md"
 
 # Test: last-verdict-wins — an earlier line that grep -E '^VERDICT:'
 # DOES match shouldn't shadow the real final one. Production
-# (see the VERDICT= assignment in lib/review-one-pr.sh) uses tail -1 per the
-# aggregator contract (grep "VERY LAST LINE" in prompts/aggregator.md).
+# (see the VERDICT= assignment in lib/review-one-pr.sh) uses tail -1
+# per the aggregator contract (grep "VERY LAST LINE" in
+# prompts/aggregator.md).
 # With head -1, this scenario would extract APPROVE from the prepended
 # line and FAIL the COMMENT match.
 TMP_AGG_LV="$LOG_DIR/last-verdict-wins.agg.md"
