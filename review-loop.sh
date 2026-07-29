@@ -58,6 +58,14 @@ log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_S
 # reviews until it passes, so a capped account backs off and the other accounts
 # carry the queue.
 while true; do
+    # Register + liveness tick: bump the pool dir's mtime so pool_status can
+    # tell a running account from a stopped/decommissioned one whose dir
+    # lingers on the shared volume (registration alone reads "active" forever).
+    # This is the ONE registration point — it runs before any worker dispatch
+    # and re-fires at least every POLL_SECS (a tick blocks on an in-flight
+    # worker, hence pool_status's 2h threshold); stop-state writers rely on it,
+    # their redirects silently fail to stick without it (unreachable here).
+    mkdir -p "$(pool_state_dir)" && touch "$(pool_state_dir)"
     # Fatal auth (invalidated token) → offline until operator re-login, NOT a
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.

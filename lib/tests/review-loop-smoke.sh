@@ -7,6 +7,7 @@
 # instead of looping forever, (4) a FUTURE quota-paused-until epoch makes the
 # loop skip ticks (never claim) and a PAST one resumes.
 set -euo pipefail
+export WORKER_ID="solo"   # the modeled account; pool-state contract requires it
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/review-loop.sh"
 [ -f "$SRC" ] || { echo "FAIL: review-loop.sh not found at $SRC" >&2; exit 1; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -28,7 +29,7 @@ make_sandbox() {
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 1\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"    # `docker info` always fails
 printf '#!/bin/bash\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x ./review-loop.sh ) >/dev/null 2>&1; then
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 when the dind daemon never came up (should fail loud)"
 fi
 rm -rf "$d"
@@ -48,7 +49,7 @@ chmod +x "$d/review.sh"
 # Inherit bogus REVIEWER_LIB_DIR/PROMPTS_DIR to prove the entrypoint OWNS these
 # (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
 # review-loop must override them to the in-image paths, not honor the caller.
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" \
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
         REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
         ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 on a fatal (non-zero) review.sh tick (should exit for restart)"
@@ -63,11 +64,16 @@ rm -rf "$d"
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
-printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/quota-paused-until"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
+mkdir -p "$d/state/pool/solo"
+printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/quota-paused-until"
+# Backdate AFTER the file write (creating a file bumps the dir mtime): the
+# loop's registration touch is then the only thing that can freshen it — the pin.
+touch -d '3 hours ago' "$d/state/pool/solo"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-paused (should skip the tick)"
-printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/quota-paused-until"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
+[ "$(stat -c %Y "$d/state/pool/solo")" -gt $(( $(date +%s) - 3600 )) ] || fail "loop tick did not touch the account dir (liveness registration unpinned)"
+printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
@@ -82,15 +88,16 @@ mkdir -p "$d/codex"; : > "$d/codex/auth.json"
 # Producer: the same mark_auth_offline (lib/state-io.sh) review-one-pr.sh calls
 # on a fatal-auth abort — exercises the real produce→consume handoff, not a
 # hand-written marker. It records the live auth.json mtime (not re-logged yet).
-( cd "$d" && LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
-[ -s "$d/state/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+mkdir -p "$d/state/pool/solo"   # review-loop's registration, done test-side
+( cd "$d" && STATE_DIR="$d/state" CODEX_HOME="$d/codex" bash -c '. lib/state-io.sh && mark_auth_offline' )
+[ -s "$d/state/pool/solo/auth-offline" ] || fail "mark_auth_offline did not write the auth-offline marker"
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while auth-offline (should skip until re-login)"
 # Simulate operator re-login: bump auth.json mtime past the marker.
 touch -d "+1 hour" "$d/codex/auth.json"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x LOCAL_STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
-[ ! -e "$d/state/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
+[ ! -e "$d/state/pool/solo/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
 rm -rf "$d"
 
 echo "PASS: review-loop-smoke"

@@ -78,6 +78,7 @@ run_worker_in_state() {
     shift
     (
         export STATE_DIR="$state"
+        export WORKER_ID="solo"   # the modeled account; WORKER_ID is part of the pool-state contract
         export STATE_FILE="$state/state.json"
         export REPOS_DIR="$state/repos"
         export WORKDIRS_DIR="$state/workdirs"
@@ -968,7 +969,7 @@ echo "  placeholder-reuse anti-spam scenario ok"
 # where a bare 429 hard-aborted + instantly retried into a self-sustaining loop.
 #
 # Behavior asserted (user-visible): the single placeholder says "codex rate
-# limit (429)", and $STATE/quota-paused-until is a FUTURE epoch so the worker
+# limit (429)", and $STATE/pool/solo/quota-paused-until is a FUTURE epoch so the worker
 # backs off instead of immediately re-claiming.
 echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not hard-abort..."
 
@@ -976,35 +977,39 @@ echo "  scenario: codex 429 → backoff (quota-pause + 429 placeholder), not har
 # codex's 429 lands — not an early build_prompt abort.
 cp -r "$PROJECT_ROOT/prompts/." "$HOME/.pr-reviewer/prompts/"
 
-# Fake codex: emit codex's first-party 429 retry-exhaustion line to stderr
-# (err.txt) and exit non-zero, on every `exec`. pipeline.py reads err.txt for
-# the classification regex.
-cat > "$HOME/.local/bin/codex" <<'CODEX'
-#!/usr/bin/env bash
-echo "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000" >&2
-exit 1
-CODEX
-chmod +x "$HOME/.local/bin/codex"
+# Shared arrange/act for the codex stop-state abort scenarios (7 = transient
+# 429, 7b = usage cap): a fake codex emitting one stderr line, fresh comment
+# store + state dir (+ any sibling pool accounts), one worker run. Row-specific
+# assertions stay at each call site.
+run_codex_abort_scenario() {  # <state_dir> <store> <stderr_line> [sibling_account]...
+    local state="$1" store="$2" line="$3"; shift 3
+    { printf '#!/usr/bin/env bash\n'
+      printf 'echo %s >&2\n' "$(printf '%q' "$line")"
+      printf 'exit 1\n'; } > "$HOME/.local/bin/codex"
+    chmod +x "$HOME/.local/bin/codex"
+    echo "[]" > "$store"
+    write_stateful_gh_stub "$HOME/.local/bin/gh" "$store" "main" "$NEW_PR_SHA"
+    seed_state_dir "$state"
+    git clone -q "$GITHUB_BARE" "$state/repos/test-org_probe-repo"
+    mkdir -p "$state/pool/solo"   # review-loop's registration, done test-side
+    local sib; for sib in "$@"; do mkdir -p "$state/pool/$sib"; done
+    run_worker_in_state "$state" \
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+    rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+}
 
-STORE7="$TMPDIR/comment-store-7.json"
-echo "[]" > "$STORE7"
-write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE7" "main" "$NEW_PR_SHA"
-
-STATE7="$TMPDIR/state-7"
-seed_state_dir "$STATE7"
-git clone -q "$GITHUB_BARE" "$STATE7/repos/test-org_probe-repo"
-
-run_worker_in_state "$STATE7" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
-
-rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
+# Row 1 — transient 429 (codex's first-party retry-exhaustion line; pipeline.py
+# classifies it via _CODEX_RATE_LIMIT_RE into _codex_rate_limit.txt).
+STORE7="$TMPDIR/comment-store-7.json"; STATE7="$TMPDIR/state-7"
+run_codex_abort_scenario "$STATE7" "$STORE7" \
+    "ERROR: exceeded retry limit, last status: 429 Too Many Requests, request id: 00000000-0000-0000-0000-000000000000"
 
 if ! jq -e '[.[] | select(.body | contains("codex rate limit (429)"))] | length == 1' "$STORE7" >/dev/null; then
     echo "FAIL: scenario 7 — placeholder body missing 'codex rate limit (429)' (429 sentinel → backoff body not wired)"
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:90])"' "$STORE7"
     exit 1
 fi
-PAUSE_UNTIL=$(head -n1 "$STATE7/quota-paused-until" 2>/dev/null || echo 0)
+PAUSE_UNTIL=$(head -n1 "$STATE7/pool/solo/quota-paused-until" 2>/dev/null || echo 0)
 if [ "$PAUSE_UNTIL" -le "$(date +%s)" ]; then
     echo "FAIL: scenario 7 — quota-paused-until=$PAUSE_UNTIL is not a future epoch (worker would re-claim immediately, no backoff)"
     exit 1
@@ -1012,6 +1017,38 @@ fi
 
 echo "  codex 429 backoff scenario ok"
 
+# ===== Scenario 7b: codex usage cap → quota placeholder with whole-pool status =====
+# The user-visible path this PR exists to correct: pipeline.py classifies the
+# usage-cap stderr (_CODEX_QUOTA_RE) into _codex_quota.txt and review-one-pr.sh
+# renders the per-account quota placeholder + pool_status. Bare-time reset
+# ("6:26 PM", codex's rolling-window format) so the fixture never goes stale;
+# the conservative-1h parse path stamps a future pause either way.
+echo "  scenario: codex usage cap → quota placeholder (queued + account + pool status)..."
+
+# Row 2 — usage cap, with a healthy sibling account (pool/1) so the pool clause
+# renders mixed states.
+STORE7B="$TMPDIR/comment-store-7b.json"; STATE7B="$TMPDIR/state-7b"
+run_codex_abort_scenario "$STATE7B" "$STORE7B" \
+    "ERROR: You've hit your usage limit. Please try again at 6:26 PM." 1
+
+if ! jq -e '[.[] | select(.body
+        | contains("reviewer account solo hit its codex quota (resets at 6:26 PM)")
+          and contains("This PR stays queued")
+          and contains("any active account picks it up")
+          and contains("Pool:")
+          and contains("account 1: ✅ active")
+          and contains("account solo: ⏸ quota-paused"))] | length == 1' "$STORE7B" >/dev/null; then
+    echo "FAIL: scenario 7b — quota placeholder missing the queued/account/pool-status contract"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:220])"' "$STORE7B"
+    exit 1
+fi
+PAUSE_UNTIL7B=$(head -n1 "$STATE7B/pool/solo/quota-paused-until" 2>/dev/null || echo 0)
+if [ "$PAUSE_UNTIL7B" -le "$(date +%s)" ]; then
+    echo "FAIL: scenario 7b — quota-paused-until=$PAUSE_UNTIL7B is not a future epoch (capped account would keep claiming)"
+    exit 1
+fi
+
+echo "  usage-cap quota placeholder scenario ok"
 
 # ===== Scenario 8: BOTH 429 + fatal-auth sentinels → fatal-auth wins =====
 # Fences the stop-state PRECEDENCE introduced by this branch: when a run leaves
@@ -1031,7 +1068,7 @@ echo "  codex 429 backoff scenario ok"
 # the both-present state the precedence guard exists to resolve.
 #
 # Behavior asserted (user-visible): the placeholder says the worker is OFFLINE
-# (auth invalid), $STATE/auth-offline exists, and $STATE/quota-paused-until does
+# (auth invalid), $STATE/pool/solo/auth-offline exists, and $STATE/pool/solo/quota-paused-until does
 # NOT — i.e. fatal-auth won and no timed backoff was stamped.
 echo "  scenario: BOTH 429 + fatal-auth sentinels → fatal-auth wins (offline, no quota-pause)..."
 
@@ -1067,6 +1104,17 @@ write_stateful_gh_stub "$HOME/.local/bin/gh" "$STORE8" "main" "$NEW_PR_SHA"
 STATE8="$TMPDIR/state-8"
 seed_state_dir "$STATE8"
 git clone -q "$GITHUB_BARE" "$STATE8/repos/test-org_probe-repo"
+# Seed a sibling account with an active quota pause so the abort body's
+# pool_status rendering (multi-account, mixed states) is exercised — every
+# other assertion in this file matches text before the "Pool:" clause.
+mkdir -p "$STATE8/pool/2"
+printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/2/quota-paused-until"
+# And a stale sibling (>2h since last tick) WITH a still-future pause: liveness
+# must win the branch order — a dead account renders 💤, not its stale pause.
+mkdir -p "$STATE8/pool/9"
+printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$STATE8/pool/9/quota-paused-until"
+touch -d '3 hours ago' "$STATE8/pool/9"
+mkdir -p "$STATE8/pool/solo"   # review-loop's registration, done test-side
 
 run_worker_in_state "$STATE8" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
@@ -1089,12 +1137,20 @@ if ! jq -e '[.[] | select(.body | contains("knightwatch offline") and contains("
     jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:100])"' "$STORE8"
     exit 1
 fi
-if [ ! -f "$STATE8/auth-offline" ]; then
+# pool_status rendering: the body must show BOTH accounts with their real
+# states — the aborting worker (solo, freshly marked offline) and the seeded
+# sibling (2, active quota pause) — not just the aborting account's own state.
+if ! jq -e '[.[] | select(.body | contains("Pool:") and contains("account 2: ⏸ quota-paused") and contains("account solo: 🔒 offline") and contains("account 9: 💤 not running"))] | length == 1' "$STORE8" >/dev/null; then
+    echo "FAIL: scenario 8 — abort body missing the whole-pool status clause (Pool: / account 2 quota-paused / account solo offline / account 9 not-running despite future pause)"
+    jq -r '.[] | "  id=\(.id) body=\(.body | gsub("\n";" ") | .[0:200])"' "$STORE8"
+    exit 1
+fi
+if [ ! -f "$STATE8/pool/solo/auth-offline" ]; then
     echo "FAIL: scenario 8 — \$STATE/auth-offline missing (worker not taken offline despite fatal-auth sentinel)"
     exit 1
 fi
-if [ -f "$STATE8/quota-paused-until" ]; then
-    echo "FAIL: scenario 8 — \$STATE/quota-paused-until exists ($(head -n1 "$STATE8/quota-paused-until")); the 429 block stamped a timed pause despite fatal-auth precedence"
+if [ -f "$STATE8/pool/solo/quota-paused-until" ]; then
+    echo "FAIL: scenario 8 — \$STATE/quota-paused-until exists ($(head -n1 "$STATE8/pool/solo/quota-paused-until")); the 429 block stamped a timed pause despite fatal-auth precedence"
     exit 1
 fi
 
@@ -1461,4 +1517,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
