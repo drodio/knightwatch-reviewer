@@ -44,8 +44,8 @@ grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-o
 # `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
 COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
 # Assert once, here: without it a missing/renamed compose file makes the awk
-# on the next line exit 2, aborting the suite under `set -e` with no
-# attribution at all — a bare exit 1 pointing at none of the assertions below.
+# on the next line exit 2, aborting the suite under `set -e` with awk's exit
+# 2 and no attribution at all — pointing at none of the assertions below.
 [ -f "$COMPOSE" ] || fail "docker-compose.yml not found at $COMPOSE"
 claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
 printf '%s\n' "$claims_block" | grep -q 'external: true' \

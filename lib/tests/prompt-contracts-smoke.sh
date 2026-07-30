@@ -58,16 +58,6 @@ assert_grep_count() {
     [ "$got" -ge "$want" ] || { echo "FAIL: $label (found $got, want >= $want)"; exit 1; }
 }
 
-# Every assertion below greps a tracked file. A renamed or moved one aborts
-# the suite at the first reference — under `set -e`, with only grep's raw
-# stderr and no indication which contract broke. Checking the set up front
-# turns that into a labeled failure naming the file. Cheaper than a guard in
-# each helper, and it also covers the inline greps that bypass the helpers.
-for _f in $(grep -oE '(prompts|lib)/[A-Za-z0-9_./-]+\.(md|sh|py)' "${BASH_SOURCE[0]}" | sort -u); do
-    [ -f "$_f" ] || { echo "FAIL: contract input missing (renamed or moved?): $_f"; exit 1; }
-done
-unset _f
-
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
