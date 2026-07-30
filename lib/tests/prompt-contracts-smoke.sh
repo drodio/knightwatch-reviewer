@@ -185,13 +185,24 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. Two positive fences — the global statement plus Path 1's own
-# route-through clause — pin the invariant itself rather than the wording of
-# the deleted skip instruction (see this file's no-content-pinning contract).
+# for a round. Two positive fences: the global unconditional-steps statement,
+# plus Path 1's own route-through clause. Both are prose pins, which this
+# file's header cautions against — but the alternative (a negative fence on
+# skip-wording) is worse here: `assert_no_grep` is file-scoped, and Path 2's
+# legitimate "Skip legacy Path 2 pause rounds" makes any file-wide skip
+# pattern either false-positive or narrow enough to be over-fitted itself.
 assert_grep "aggregator.md must state the rendering steps are unconditional across paths" \
     "Steps 6-9 below are unconditional" prompts/aggregator.md
 assert_grep "Path 1 must route its probes through the shared rendering format, not strip severity/attribution" \
     "They render through step 6's format" prompts/aggregator.md
+
+# The COMMENT floor for both step-back paths lives ONLY in step 9; Path 1 d
+# and Path 2 c back-reference it. This fence stops a regression that re-states
+# the floor per-path (three copies, three drift points) or drops the override
+# entirely — without it a born-large redirect carrying 3 `low` probes reads
+# APPROVE, which is the one verdict a redirect must never emit.
+assert_grep "aggregator.md must pin COMMENT as the verdict floor when either step-back path fires" \
+    "the verdict is \`COMMENT\` regardless of probe severity" prompts/aggregator.md
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
@@ -594,7 +605,7 @@ assert_no_grep "Path 2 must not regress to 'Skip the per-angle Probes block' wor
     "Skip the per-angle Probes block" prompts/aggregator.md
 
 echo "  asserting carry-forward source picks past Path 2 pause rounds..."
-# Step 38 must walk back to the most recent review WITH a Probes block
+# Re-review handling must walk back to the most recent review WITH a Probes block
 # when previous-review.md is itself a Path 2 pause round. Without this,
 # the next round sees zero probes to carry forward and falsely signals
 # convergence.
