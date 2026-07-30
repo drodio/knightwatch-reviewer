@@ -139,7 +139,7 @@ The per-agent files exist only once the agent pipeline has started. A run that a
 
 A tick that skipped *cleanly* — the `refs/pull/N/head` fetch failed (usually the head isn't published yet — a persistent auth or repo-access failure fails the base-ref fetch one call earlier and lands in the paragraph above; when it's something else, the truncated `fetch_err` is all you get), or the head was already reviewed by a concurrent worker — discards its run dir outright, so `$NEWEST` silently resolves to an **earlier** run. Check the `__<ts>__` in `$r` against the clock before trusting what you're reading; the skip line, carrying the fetch error when there was one, goes to `/shared/orchestrator.log` rather than to any run dir.
 
-`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
+`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so picking the newest needs no `stat()`. `ls -t` needs one per entry, so a prune that catches the newest matching dir makes it print `cannot access` on stderr and quietly hand back an older run — quietly because `head`'s status, not `ls`'s, is what the substitution returns.
 
 ## Configure repos
 
