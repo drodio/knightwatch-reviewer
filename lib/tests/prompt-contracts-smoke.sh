@@ -44,19 +44,29 @@ assert_no_grep() {
 # review rounds caught a comment claiming exactly that coverage from a
 # presence-only assert. Counting makes the claim mechanically true.
 #
-# `|| true` is load-bearing: grep exits 1 on zero matches and 2 on a missing
-# file, either of which would abort the whole suite at the assignment under
-# `set -e` — before the comparison runs, so the labeled FAIL never prints and
-# the run dies with a bare exit 1 pointing at none of the ~40 asserts here.
-# Zero matches is the primary case this fence exists to catch, so it must
-# reach the comparison. `grep -o` counts occurrences, not matching lines, so
-# two pointers sharing one line still count as two.
+# `|| true` is load-bearing: grep exits 1 on zero matches, which would abort
+# the whole suite at the assignment under `set -e` — before the comparison
+# runs, so the labeled FAIL never prints and the run dies with a bare exit 1
+# pointing at none of the ~40 asserts here. Zero matches is the primary case
+# this fence exists to catch, so it must reach the comparison. `grep -o`
+# counts occurrences, not matching lines, so two pointers sharing one line
+# still count as two.
 assert_grep_count() {
     local label="$1" pattern="$2" file="$3" want="$4"
     local got
     got=$(grep -oF -- "$pattern" "$file" | wc -l | tr -d ' ' || true)
     [ "$got" -ge "$want" ] || { echo "FAIL: $label (found $got, want >= $want)"; exit 1; }
 }
+
+# Every assertion below greps a tracked file. A renamed or moved one aborts
+# the suite at the first reference — under `set -e`, with only grep's raw
+# stderr and no indication which contract broke. Checking the set up front
+# turns that into a labeled failure naming the file. Cheaper than a guard in
+# each helper, and it also covers the inline greps that bypass the helpers.
+for _f in $(grep -oE '(prompts|lib)/[A-Za-z0-9_./-]+\.(md|sh|py)' "${BASH_SOURCE[0]}" | sort -u); do
+    [ -f "$_f" ] || { echo "FAIL: contract input missing (renamed or moved?): $_f"; exit 1; }
+done
+unset _f
 
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)

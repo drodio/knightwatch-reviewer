@@ -43,9 +43,9 @@ grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-o
 # Match the top-level `claims:` block (2-space indent under `volumes:`), not the
 # `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
 COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
-# Assert once, here: without it a missing/renamed compose file makes every
-# `grep -c` below print nothing and exit 2, so the counts land empty and the
-# failure messages blame a mount regression instead of the real cause.
+# Assert once, here: without it a missing/renamed compose file makes the awk
+# on the next line exit 2, aborting the suite under `set -e` with no
+# attribution at all — a bare exit 1 pointing at none of the assertions below.
 [ -f "$COMPOSE" ] || fail "docker-compose.yml not found at $COMPOSE"
 claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
 printf '%s\n' "$claims_block" | grep -q 'external: true' \
@@ -87,6 +87,10 @@ n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPO
 # suite stays green (it never builds the image). Pure text assertion pins the
 # install contract so a Dockerfile edit can't silently drop it. (PR #157.)
 DOCKERFILE="$(cd "$HERE/.." && pwd)/docker/Dockerfile"
+# Same reason as the $COMPOSE guard above: without it a missing Dockerfile
+# reports "missing pinned ARG COMPOSE_VERSION" — blaming a content regression
+# for a file that isn't there.
+[ -f "$DOCKERFILE" ] || fail "Dockerfile not found at $DOCKERFILE"
 grep -qE '^ARG COMPOSE_VERSION=' "$DOCKERFILE" \
   || fail "Dockerfile missing pinned ARG COMPOSE_VERSION (compose plugin install regressed — PR #157)"
 grep -qF '/usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \
