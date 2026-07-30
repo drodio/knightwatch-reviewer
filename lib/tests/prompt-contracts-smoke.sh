@@ -190,13 +190,15 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # exact-sentence pins turn each benign edit into a red suite (this file's
 # header disclaims content-pinning for exactly that reason).
 #
-# Scope, stated once for both markers: each fences the GLOBAL statement it
-# sits above, nothing else. The per-path restatements — Path 1 c's
-# route-through clause and Path 2 a's renders-in-full clause — are
-# deliberately unfenced. That is the trade the marker collapse makes: a
-# per-path strip instruction re-introduced at either site passes the suite
-# so long as the marker and the global statement survive. Buying that back
-# would mean re-adding the exact-sentence pins this collapse removed.
+# Scope, stated once for both markers: each asserts only that its marker line
+# is present. Of the two per-path restatements, Path 1 c's route-through
+# clause is genuinely unfenced — re-introducing a strip instruction there
+# passes the suite so long as the markers survive, and that is the trade the
+# collapse makes (buying it back means re-adding the exact-sentence pins the
+# collapse removed). Path 2 a's clause is *incidentally* pinned: the
+# `through the shape lens` token asserted below lives inside it, so deleting
+# the clause reds the suite — but a rewrite that moves the token elsewhere
+# would leave it as unfenced as Path 1 c's.
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
@@ -590,7 +592,7 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # pin is gone under the marker-collapse trade documented at the
 # unconditional-probe-rendering fence above; the negative fence on the old
 # skip wording plus the stall-lens framing tokens stay.
-assert_grep "Path 2 Overview must classify probes through the shape lens" \
+assert_grep "Path 2 item a must keep the shape-lens framing of the rendered Probes block (carrier: the 'renders in full through the shape lens' clause; the Overview template says 'shape-vs-spec lens' and does not carry this token)" \
     "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
 # Overview's specific job: distinguish the ONE structural-ask probe from
