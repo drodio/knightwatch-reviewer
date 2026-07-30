@@ -185,11 +185,13 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. Both fences guard that regression.
+# for a round. Two positive fences — the global statement plus Path 1's own
+# route-through clause — pin the invariant itself rather than the wording of
+# the deleted skip instruction (see this file's no-content-pinning contract).
 assert_grep "aggregator.md must state the rendering steps are unconditional across paths" \
     "Steps 6-9 below are unconditional" prompts/aggregator.md
-assert_no_grep "no path may strip the per-probe severity/attribution markers — that breaks props/critique attribution and the T2 stall count" \
-    "Skip** the per-probe" prompts/aggregator.md
+assert_grep "Path 1 must route its probes through the shared rendering format, not strip severity/attribution" \
+    "They render through step 6's format" prompts/aggregator.md
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
@@ -500,7 +502,7 @@ assert_grep "architecture-refined.md should anchor on the inferred-intent scratc
 # Section 4: elegant-convergence rule fences (PR #70)
 # ====================================================================
 # Three competing "is this probe alive?" mechanisms (K-decay in critic,
-# carry-forward in aggregator step 38, BCR in aggregator step 4a) collapsed
+# carry-forward in aggregator Re-review handling, BCR in aggregator step 4a) collapsed
 # into ONE rule: a probe persists iff its cited shape is still present at
 # HEAD. Two competing "is the PR converging?" signals (loc-trend trichotomy,
 # BCR-fired-N-rounds counter) collapsed into ONE: when the carried-forward
@@ -516,10 +518,10 @@ assert_grep "aggregator carry-forward should cite \`Files:\` field" \
     "\`Files:\` shape" prompts/aggregator.md
 assert_grep "aggregator carry-forward should compare against HEAD" \
     "at HEAD" prompts/aggregator.md
-# Negative fence: the legacy step 38 said "decide: still active given this
+# Negative fence: the legacy Re-review handling rule said "decide: still active given this
 # round's diff" — implicit, deferred to LLM judgment. The new rule is a
 # concrete cited-shape grep.
-assert_no_grep "aggregator step 38 must not regress to 'decide: still active' wording — cited-shape-at-HEAD is the test, not implicit LLM judgment" \
+assert_no_grep "aggregator Re-review handling must not regress to 'decide: still active' wording — cited-shape-at-HEAD is the test, not implicit LLM judgment" \
     "decide: still active" prompts/aggregator.md
 
 echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
@@ -528,7 +530,7 @@ echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
 # were remediated. PR #584 round 13 cited prior probes by run-id as
 # evidence of recurrence while round 10's text acknowledged the original
 # concerns were resolved.
-assert_no_grep "aggregator must not re-introduce Bug-Class-Recurrence — carry-forward (step 38) covers persistence without the counter" \
+assert_no_grep "aggregator must not re-introduce Bug-Class-Recurrence — carry-forward (Re-review handling) covers persistence without the counter" \
     "Bug-Class-Recurrence" prompts/aggregator.md
 
 echo "  asserting Path 2 trigger uses HEAD-anchored strict-decrease + skips pause rounds..."
@@ -571,7 +573,6 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
 # lost the leaf info they still needed to actually push fixes.
-#
 assert_grep "Path 2 must render the Probes block in full, not skip it" \
     "The Probes block still renders in full" prompts/aggregator.md
 assert_grep "Path 2 Overview must classify probes through the shape lens" \
@@ -597,7 +598,7 @@ echo "  asserting carry-forward source picks past Path 2 pause rounds..."
 # when previous-review.md is itself a Path 2 pause round. Without this,
 # the next round sees zero probes to carry forward and falsely signals
 # convergence.
-assert_grep "step 38 should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
+assert_grep "Re-review handling should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
     "most recent review that DID have a Probes block" prompts/aggregator.md
 
 # --- Re-eval banner: T1 (LOC) trigger + fire-once markers + durable note ---
@@ -650,10 +651,10 @@ done
 echo "  asserting K-decay is fully deleted from critic.md..."
 # Negative fence: K-decay measured author engagement (commits/comments
 # touching cited files) as a proxy for "is the probe still alive?". The
-# aggregator's tightened carry-forward (step 38) asks the question
+# aggregator's tightened carry-forward (Re-review handling) asks the question
 # directly via cited shape at HEAD; K-decay's behavioral proxy is
 # redundant.
-assert_no_grep "critic.md must not re-introduce K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator step 38) is the single resolution rule" \
+assert_no_grep "critic.md must not re-introduce K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator Re-review handling) is the single resolution rule" \
     "K-decay" prompts/critic.md
 
 echo "  asserting LoC-trend trichotomy tags are gone from momentum.md..."

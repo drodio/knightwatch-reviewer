@@ -163,7 +163,7 @@ When T1 and/or T2 is live this round:
    - For `Answer: unknown`: `N. [open] [from: <specialist>] [<class>] **Q: <Q in 5-10 words>** — <Q full text>. If yes, <If yes, edit clause>. If no, <If no, cost clause>.`
    - A probe carrying a `Sketch:` renders its fenced code block directly under its rendered line, verbatim. The sketch is the highest-value part of a removal-shaped finding — never drop it for length, and never invent one for a probe that lacks it.
 
-7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. **Path 1 (first-review redirect mode, above) overrides this length contract** — a redirect review is 200-400 words, because the redirect is the review and it carries only its 3 structural probes. Path 2 does not override it; its callout banner adds ~80-150 words on top of an otherwise-normal review, landing the typical Path 2 round in the upper half of the range.
+7. Produce the final posted review in EXACTLY this structure. Target 300-500 words for typical PRs. For large diffs (>500 KB) or PRs with many substantive probes, you may flex up to 1000 words — but only if the extra length carries real content. Quality over length: don't pad to hit the floor, and don't drop important probes to hit the ceiling. This range is unconditional: Path 1's restraint is already carried by its 3-probe cap, and Path 2's callout banner adds ~80-150 words that land it in the upper half. Neither path gets its own word ceiling.
 
 ```
 _<intent line, italicized — see formatting rule below>_
@@ -204,7 +204,7 @@ _<intent line, italicized — see formatting rule below>_
 
    You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
 
-9. On the VERY LAST LINE of your output, put exactly one of:
+9. On the VERY LAST LINE of your output, put exactly one of the following. **If Path 1 or Path 2 fired this round, the verdict is `COMMENT` regardless of probe severity** — a born-large redirect can legitimately surface 3 `low` probes, and the redirect itself is the thing that must not be approved.
    - `VERDICT: APPROVE` — no surviving probes, or all surviving probes are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
    - `VERDICT: COMMENT` — one or more `medium` or `blocking` probes (including `[open]` probes whose `Severity if yes` is `medium` or `blocking`) must be addressed before merge. An unanswered load-bearing assumption is a merge blocker just like a confirmed bug.

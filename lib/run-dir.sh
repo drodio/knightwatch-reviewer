@@ -66,7 +66,7 @@ allocate_run_dir() {
 # lib/tests/prior-reviews-smoke.sh exercises the same function the
 # worker calls — a wrong glob, missing self-exclusion, or empty-file
 # filter regression silently disables the aggregator's carry-forward
-# (step 38) without tripping any other test.
+# (Re-review handling) without tripping any other test.
 # finalize_meta_json META_FILE FINISHED_AT STATUS GH_POSTED
 #
 # Atomically rewrites $META_FILE with finished_at + status, and repairs

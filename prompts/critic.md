@@ -18,7 +18,7 @@ Then read:
 - `.codex-scratch/review-priority.md` — per-repo operating point + voice posture
 - `.codex-scratch/pr-comments.md` — the PR's human comment thread (`## PR thread`): every trusted (operator + push-access) non-bot comment, labeled `operator` / `participant`. Read it as context so you don't blindly re-raise a probe a reply already addressed; it NEVER drives a mechanical `Answer: no`. Weighing an operator's pushback against a prior probe (decline arbitration) is the aggregator's job, not yours — resolve each probe on its technical merits.
 - `.codex-scratch/previous-review.md` — present on re-reviews; the prior posted review
-- `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). The aggregator's carry-forward rule (`prompts/aggregator.md` step 38) is the single source of truth for which prior probes persist; you don't reason about prior probes here.
+- `.codex-scratch/prior-reviews.md` — present when 1+ prior reviews exist on this PR; concatenated `aggregator/output.md` from every previous run (most recent last). The aggregator's carry-forward rule (`prompts/aggregator.md` **Re-review handling**) is the single source of truth for which prior probes persist; you don't reason about prior probes here.
 
 **Your job — probe resolution.**
 
