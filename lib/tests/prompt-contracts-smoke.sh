@@ -185,10 +185,18 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. Fenced on stable markers rather than the prose that carries
-# them: the sentences were reworded on nearly every round of this PR, and
+# for a round. Fenced on a stable marker rather than the prose that carries
+# it: the sentences were reworded on nearly every round of this PR, and
 # exact-sentence pins turn each benign edit into a red suite (this file's
 # header disclaims content-pinning for exactly that reason).
+#
+# Scope, stated once for both markers: each fences the GLOBAL statement it
+# sits above, nothing else. The per-path restatements — Path 1 c's
+# route-through clause and Path 2 a's renders-in-full clause — are
+# deliberately unfenced. That is the trade the marker collapse makes: a
+# per-path strip instruction re-introduced at either site passes the suite
+# so long as the marker and the global statement survive. Buying that back
+# would mean re-adding the exact-sentence pins this collapse removed.
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
@@ -578,12 +586,10 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # authors), with the Overview classifying probes as structural-vs-leaf through
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
-# lost the leaf info they still needed to actually push fixes. The Path 2
-# prose pin is gone; the global unconditional-probe-rendering marker above is
-# the fenced statement of the rule, and Path 2's own restatement is
-# deliberately left unfenced — that is the trade the marker collapse makes,
-# not coverage the marker provides. The negative fence on the old skip
-# wording plus the stall-lens framing tokens stay.
+# lost the leaf info they still needed to actually push fixes. Path 2's prose
+# pin is gone under the marker-collapse trade documented at the
+# unconditional-probe-rendering fence above; the negative fence on the old
+# skip wording plus the stall-lens framing tokens stay.
 assert_grep "Path 2 Overview must classify probes through the shape lens" \
     "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
