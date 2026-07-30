@@ -190,12 +190,10 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. Each of the three sites gets a marker (stable across any
-# rewording) plus a short token from its own statement, so an orphaned marker
-# over a deleted rule reds the suite. The tokens are deliberately 3-4 words
-# and carry no step ordinals: aggregator.md renumbers its steps as the list
-# grows, and a pin like `step 6's format` would red on a renumbering that
-# touches nothing about this contract.
+# for a round. Three rules are fenced below, per the header's pin carve-out:
+# the two global statements are marker-anchored, so each gets a marker
+# assertion plus a token proving the rule under it still exists; Path 1 c is
+# unmarked and pinned by token alone.
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
