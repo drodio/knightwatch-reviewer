@@ -118,6 +118,29 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 
 `docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
+**Watching one review.** `docker compose logs -f reviewer-1` follows a whole unit; to follow a single PR instead, read its per-run dir on the shared `claims` volume. Every worker writes `runs/<slug>__<pr>__<ts>__<sha7>/` containing `run.log` (the worker's own log lines), plus per-agent `prompt.txt` (what the agent was sent), `output.md` (its verdict), `log.txt` (codex **stdout** — model reasoning), and `err.txt` (codex **stderr** — quota / auth / network errors land here, so this is the file to check on a failure). Any reviewer container can read the volume, so pick one and resolve the PR's newest run:
+
+```sh
+CID=$(docker ps -q --filter name=knightwatch-reviewer-reviewer- | head -1)
+SLUG=cncorp_plow; PR=523
+NEWEST='r=$(ls /shared/runs | grep "^'"$SLUG"'__'"$PR"'__" | sort | tail -1)'
+
+# the worker's own log
+docker exec "$CID" sh -c "$NEWEST"'; tail -f "/shared/runs/$r/run.log"'
+
+# one agent's reasoning, then the errors it hit (aggregator is the usual suspect on a stall)
+docker exec "$CID" sh -c "$NEWEST"'; tail -f "/shared/runs/$r/agents/aggregator/log.txt"'
+docker exec "$CID" sh -c "$NEWEST"'; cat "/shared/runs/$r/agents/aggregator/err.txt"'
+```
+
+`-f` is for a run still in flight — swap `tail -f` for `cat` on a finished one, which is the usual case when `err.txt` is what you're after.
+
+The per-agent files exist only once the agent pipeline has started. A run that aborted before then — e.g. canonical clone, `--unshallow`, base-ref fetch — keeps `run.log` and two empty dirs, so `agents/` being empty *is* the diagnosis: read `run.log`, which carries the abort reason.
+
+A tick that skipped *cleanly* — the `refs/pull/N/head` fetch failed (usually the head isn't published yet — a persistent auth or repo-access failure fails the base-ref fetch one call earlier and lands in the paragraph above; when it's something else, the truncated `fetch_err` is all you get), or the head was already reviewed by a concurrent worker — discards its run dir outright, so `$NEWEST` silently resolves to an **earlier** run. Check the `__<ts>__` in `$r` against the clock before trusting what you're reading; the skip line, carrying the fetch error when there was one, goes to `/shared/orchestrator.log` rather than to any run dir.
+
+`sort | tail -1`, not `ls -t | head -1`: `RUN_ID`'s embedded UTC timestamp makes lexical order chronological, so this needs no `stat()`. That matters — the live `runs/` carries directory entries whose inodes are gone (`ls -t` prints `cannot access` for ~28 of them), and an entry `ls -t` can't stat sorts unpredictably and can win `head -1`.
+
 ## Configure repos
 
 The tracked-repo manifest is split into a committed template ([`repos.conf.example`](repos.conf.example)) and a per-operator live file (`repos.conf`, gitignored). On first `./install.sh` run the live file is bootstrapped from the template — edit it in place, then re-run `./install.sh`:

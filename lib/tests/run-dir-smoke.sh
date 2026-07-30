@@ -10,6 +10,13 @@
 #   4. RUN_DIR's parent unwritable (read-only) → returns 1, logs the
 #      parent-create failure
 #
+# Plus discard_empty_run_dir (the inverse, used by the worker's clean-skip
+# exits — issue #189):
+#   5. Freshly-allocated dir + run.log → removed, returns 0
+#   6. Dir holding real artifacts (nested aggregator output.md → subdir rmdir
+#      refused; top-level meta.json → subdirs pruned) → content kept incl. its
+#      run.log, returns 1
+#
 # Sources lib/run-dir.sh directly so this test exercises the same
 # function review-one-pr.sh calls. Stubs `log()` to capture log lines
 # locally; the production log() is in lib/state-io.sh.
@@ -126,4 +133,58 @@ else
     chmod +w "$RO_PARENT"
 fi
 
-echo "  PASS (4 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled)"
+# ---- discard_empty_run_dir ------------------------------------------------
+# Inverse of allocate_run_dir: undoes an allocation for a review that then
+# skipped cleanly. Deliberately non-recursive: `rmdir` refusing a non-empty dir
+# is the whole protection against destroying a real review's artifacts — no
+# path check involved — so scenario 6 is the load-bearing one. The two scenarios
+# ask different questions (empty→gone, artifacts→kept), not one input swapped.
+
+echo "  scenario 5: freshly-allocated dir + run.log → removed, returns 0..."
+RD="$TMPDIR/state/runs/discard-empty-id"
+allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
+echo "[ts] Reviewing test/repo#1" > "$RD/run.log"
+if ! discard_empty_run_dir "$RD"; then
+    echo "FAIL: discard returned non-zero on an empty run dir"
+    exit 1
+fi
+if [ -e "$RD" ]; then
+    echo "FAIL: run dir survived discard"
+    ls -laR "$RD"
+    exit 1
+fi
+
+# Every artifact case carries a run.log too, because that is the shape of a
+# real run dir (review-one-pr.sh points LOG_FILE at RUN_DIR/run.log the moment
+# it allocates). Sparing output.md/meta.json while stripping the log of the run
+# that wrote them is a half-kept promise, so log survival IS the assertion.
+#
+# The two rows exercise DIFFERENT branches, not one input swapped — don't drop
+# either: agents/aggregator/output.md leaves agents/ non-empty, so the subdir
+# rmdir is refused and a directory is among the survivors; meta.json lets both
+# subdir rmdirs succeed, leaving only top-level files. What survives is the
+# run's CONTENT (artifacts + run.log), not the allocation scaffolding — an
+# already-empty inputs/ is pruned on the way out, which is the "three EMPTY
+# directories" blast radius the helper's docstring concedes.
+echo "  scenario 6: dir holding real artifacts → content kept (artifacts + run.log), returns 1..."
+for artifact in agents/aggregator/output.md meta.json; do
+    RD="$TMPDIR/state/runs/discard-kept-${artifact//\//-}"
+    allocate_run_dir "$RD" || { echo "FAIL: setup allocation failed"; exit 1; }
+    echo "[ts] Reviewing test/repo#1" > "$RD/run.log"
+    mkdir -p "$RD/$(dirname "$artifact")"
+    echo "content" > "$RD/$artifact"
+    if discard_empty_run_dir "$RD"; then
+        echo "FAIL: discard returned 0 on a dir holding $artifact"
+        exit 1
+    fi
+    if [ ! -f "$RD/$artifact" ]; then
+        echo "FAIL: discard destroyed $artifact"
+        exit 1
+    fi
+    if [ ! -f "$RD/run.log" ]; then
+        echo "FAIL: discard stripped run.log from a dir whose $artifact it spared"
+        exit 1
+    fi
+done
+
+echo "  PASS (6 scenarios: clean allocation, collision detected, subdir-failure rollback, real failure not mislabeled, discard empty/artifact-content-kept)"
