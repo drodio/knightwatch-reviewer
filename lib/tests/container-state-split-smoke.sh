@@ -43,6 +43,10 @@ grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-o
 # Match the top-level `claims:` block (2-space indent under `volumes:`), not the
 # `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
 COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
+# Assert once, here: without it a missing/renamed compose file makes every
+# `grep -c` below print nothing and exit 2, so the counts land empty and the
+# failure messages blame a mount regression instead of the real cause.
+[ -f "$COMPOSE" ] || fail "docker-compose.yml not found at $COMPOSE"
 claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
 printf '%s\n' "$claims_block" | grep -q 'external: true' \
   || fail "claims volume is not external:true (durable review state regressed — PR #130)"
@@ -55,9 +59,10 @@ printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
 # fail loud at review time when KWR_CONFIG_REPO is set). Pure text assertion.
 grep -qF 'KWR_CONFIG_DIR: /root/.kwr-config' "$COMPOSE" \
   || fail "x-reviewer-env missing KWR_CONFIG_DIR: /root/.kwr-config (containers can't locate the convention cache)"
-# `|| true` on both: grep exits 1 on zero matches, which under `set -e` would
-# abort at the assignment — losing the labeled `fail` message for exactly the
-# cases these counts exist to catch (no reviewers found, mount missing).
+# `|| true` on every count below: grep exits 1 on zero matches, which under
+# `set -e` would abort at the assignment — losing the labeled `fail` message
+# for exactly the cases these counts exist to catch (no reviewers found,
+# mount missing).
 n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE" || true)
 n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE" || true)
 [ "$n_reviewers" -ge 1 ] || fail "no reviewer-N services found in compose"
@@ -71,7 +76,7 @@ n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE
 # test-scenarios on the ANTHROPIC_API_KEY gate while THIS suite stays green.
 grep -qF 'REPO_ENV_DIR: /root/.kwr/repo-env' "$COMPOSE" \
   || fail "x-reviewer-env missing REPO_ENV_DIR: /root/.kwr/repo-env (per-repo secret seam regressed)"
-n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE")
+n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE" || true)
 [ "$n_repo_env" -eq "$n_reviewers" ] \
   || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
 

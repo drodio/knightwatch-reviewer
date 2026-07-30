@@ -55,7 +55,7 @@ assert_grep_count() {
     local label="$1" pattern="$2" file="$3" want="$4"
     local got
     got=$(grep -oF -- "$pattern" "$file" | wc -l | tr -d ' ' || true)
-    [ "${got:-0}" -ge "$want" ] || { echo "FAIL: $label (found ${got:-0}, want >= $want)"; exit 1; }
+    [ "$got" -ge "$want" ] || { echo "FAIL: $label (found $got, want >= $want)"; exit 1; }
 }
 
 # ====================================================================
