@@ -83,6 +83,11 @@ n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPO
 # suite stays green (it never builds the image). Pure text assertion pins the
 # install contract so a Dockerfile edit can't silently drop it. (PR #157.)
 DOCKERFILE="$(cd "$HERE/.." && pwd)/docker/Dockerfile"
+# Unlike the compose reads above — where awk exits 2 and `set -e` aborts with
+# no label at all — `grep -q ... || fail` on a missing file fires the fail
+# with the WRONG message, reporting a content regression for a file that
+# isn't there. Misattribution earns the guard; a bare abort didn't.
+[ -f "$DOCKERFILE" ] || fail "Dockerfile not found at $DOCKERFILE"
 grep -qE '^ARG COMPOSE_VERSION=' "$DOCKERFILE" \
   || fail "Dockerfile missing pinned ARG COMPOSE_VERSION (compose plugin install regressed — PR #157)"
 grep -qF '/usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \

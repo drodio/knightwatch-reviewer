@@ -191,9 +191,9 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # header disclaims content-pinning for exactly that reason).
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
-    "<!-- contract:unconditional-probe-rendering -->" prompts/aggregator.md
+    "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
 assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
-    "<!-- contract:verdict-floor -->" prompts/aggregator.md
+    "<!-- kwr-test-fence:verdict-floor -->" prompts/aggregator.md
 # Negative fence stays: the floor belongs to step 9 alone, so a per-path
 # restatement is the regression, not a missing pointer.
 assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
@@ -578,10 +578,12 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # authors), with the Overview classifying probes as structural-vs-leaf through
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
-# lost the leaf info they still needed to actually push fixes. The keep-the-
-# probes half is now carried by the unconditional-probe-rendering marker
-# above (it covers every path); what stays here is the negative fence on the
-# old skip wording plus the stall-lens framing tokens.
+# lost the leaf info they still needed to actually push fixes. The Path 2
+# prose pin is gone; the global unconditional-probe-rendering marker above is
+# the fenced statement of the rule, and Path 2's own restatement is
+# deliberately left unfenced — that is the trade the marker collapse makes,
+# not coverage the marker provides. The negative fence on the old skip
+# wording plus the stall-lens framing tokens stay.
 assert_grep "Path 2 Overview must classify probes through the shape lens" \
     "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
