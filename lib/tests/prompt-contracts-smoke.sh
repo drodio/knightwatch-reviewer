@@ -633,6 +633,17 @@ assert_grep "momentum.md should read reeval-status.md for the live trigger reaso
 assert_grep "aggregator.md should read reeval-status.md to gate the re-eval banner" \
     "reeval-status.md" prompts/aggregator.md
 
+# momentum defers the fixed-vs-persisted classification to the aggregator by
+# naming the owning section. That pointer was stale for two rounds — it named
+# a step number the aggregator no longer had — because nothing pinned either
+# end. Both ends now assert, so a retitle fails loudly instead of orphaning a
+# pointer in a prompt that runs on every re-review.
+echo "  asserting momentum -> aggregator carry-forward ownership pointer..."
+assert_grep "momentum.md must name the aggregator section that owns fixed-vs-persisted classification" \
+    "Re-review handling" prompts/standalone/momentum.md
+assert_grep "aggregator.md must still carry the Re-review handling section momentum points at" \
+    "Re-review handling" prompts/aggregator.md
+
 echo "  asserting T1 LOC-growth trigger is referenced by both the producer and the consumer..."
 assert_grep "loc-trend.sh should emit the deterministic REEVAL-LOC-TRIGGER flag" \
     "REEVAL-LOC-TRIGGER" lib/loc-trend.sh
