@@ -185,25 +185,20 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. Fenced on a stable marker rather than the prose that carries
-# it: the sentences were reworded on nearly every round of this PR, and
-# exact-sentence pins turn each benign edit into a red suite (this file's
-# header disclaims content-pinning for exactly that reason).
-#
-# Scope, stated once for both markers: each asserts only that its marker line
-# is present. Of the two per-path restatements, Path 1 c's route-through
-# clause is genuinely unfenced — re-introducing a strip instruction there
-# passes the suite so long as the markers survive, and that is the trade the
-# collapse makes (buying it back means re-adding the exact-sentence pins the
-# collapse removed). Path 2 a's clause is *incidentally* pinned: the
-# `through the shape lens` token asserted below lives inside it, so deleting
-# the clause reds the suite — but a rewrite that moves the token elsewhere
-# would leave it as unfenced as Path 1 c's.
+# for a round. The two global statements are fenced by marker rather than by
+# their prose, which was reworded on nearly every round of this PR — an
+# exact-sentence pin turns each benign edit into a red suite (this file's
+# header disclaims content-pinning for exactly that reason). Path 1 c's
+# route-through clause keeps a short token pin: `step 6's format` has a
+# unique carrier and survived every rewording here, and it is the one site a
+# re-introduced strip instruction would land on.
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
 assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
     "<!-- kwr-test-fence:verdict-floor -->" prompts/aggregator.md
+assert_grep "Path 1 c must route its 3 structural probes through the shared rendering format" \
+    "step 6's format" prompts/aggregator.md
 # Negative fence stays: the floor belongs to step 9 alone, so a per-path
 # restatement is the regression, not a missing pointer.
 assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
@@ -589,19 +584,20 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
 # lost the leaf info they still needed to actually push fixes. Path 2's prose
-# pin is gone under the marker-collapse trade documented at the
-# unconditional-probe-rendering fence above; the negative fence on the old
+# pin is gone under the marker collapse above; the negative fence on the old
 # skip wording plus the stall-lens framing tokens stay.
-assert_grep "Path 2 item a must keep the shape-lens framing of the rendered Probes block (carrier: the 'renders in full through the shape lens' clause; the Overview template says 'shape-vs-spec lens' and does not carry this token)" \
+assert_grep "Path 2 item a must keep the shape-lens framing of the rendered Probes block" \
     "through the shape lens" prompts/aggregator.md
-# The "through the stall lens" token pins the broad directive but not the
-# Overview's specific job: distinguish the ONE structural-ask probe from
-# the leaf-level patches. The two tokens below pin that distinction by
-# name — without them, an aggregator could write a generic "stall lens"
-# Overview that lists probes without classifying them.
-assert_grep "Path 2 Overview must name the structural-ask probe" \
+# The shape-lens token pins the broad directive but not the Overview's
+# specific job: distinguish the ONE structural-ask probe from the leaf-level
+# patches. The two tokens below keep that vocabulary in the Path 2 block —
+# without them, an aggregator could write a generic stall-lens Overview that
+# lists probes without classifying them. Both tokens appear at more than one
+# site, so these assert the vocabulary survives somewhere in the block, not
+# that the Overview template specifically still carries it.
+assert_grep "Path 2 block must keep the structural-ask vocabulary" \
     "structural ask" prompts/aggregator.md
-assert_grep "Path 2 Overview must call the remaining probes leaf-level" \
+assert_grep "Path 2 block must keep the leaf-level vocabulary" \
     "leaf-level" prompts/aggregator.md
 # Negative fence: the prior contract (PR #66 and earlier) said "Skip the
 # per-angle Probes block entirely this round." A regression to that wording
