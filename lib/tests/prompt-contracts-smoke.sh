@@ -179,6 +179,18 @@ echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
 
+# The rendering contract is UNCONDITIONAL — Path 1 (redirect) and Path 2
+# (re-eval banner) change the Overview framing, the probe count, and the
+# verdict floor, never how a probe renders. Path 1 used to strip the
+# `[severity]` / `[from:]` markers, which silently killed the props/critique
+# calibration loop (nothing to attribute), contradicted the "For AI authors"
+# footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
+# for a round. Both fences guard that regression.
+assert_grep "aggregator.md must state the rendering steps are unconditional across paths" \
+    "Steps 6-9 below are unconditional" prompts/aggregator.md
+assert_no_grep "no path may strip the per-probe severity/attribution markers — that breaks props/critique attribution and the T2 stall count" \
+    "Skip** the per-probe" prompts/aggregator.md
+
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
 # probes. A regression that re-introduces the legacy default token in
@@ -560,11 +572,8 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # that suppression was reversed because authors got the structural callout but
 # lost the leaf info they still needed to actually push fixes.
 #
-# Positive fences pin the two load-bearing wording tokens in the new Path 2
-# fire block: (a) the keep-probes directive, and (b) the stall-lens framing
-# instruction in the Overview.
-assert_grep "Path 2 must render the full Probes block, not skip it" \
-    "Render the full Probes block" prompts/aggregator.md
+assert_grep "Path 2 must render the Probes block in full, not skip it" \
+    "The Probes block still renders in full" prompts/aggregator.md
 assert_grep "Path 2 Overview must classify probes through the shape lens" \
     "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
