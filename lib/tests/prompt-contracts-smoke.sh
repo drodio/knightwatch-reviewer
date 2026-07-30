@@ -620,6 +620,18 @@ echo "  asserting carry-forward source picks past Path 2 pause rounds..."
 assert_grep "Re-review handling should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
     "most recent review that DID have a Probes block" prompts/aggregator.md
 
+# momentum defers the fixed-vs-persisted classification to the aggregator by
+# naming the owning section. That pointer was stale for two rounds — it named
+# a step number the aggregator no longer had — because nothing pinned either
+# end. Both ends now assert. The aggregator side pins the heading form, not
+# the bare title: the title also appears at five incidental cross-references,
+# so a heading-only retitle would otherwise pass green.
+echo "  asserting momentum -> aggregator carry-forward ownership pointer..."
+assert_grep "momentum.md must name the aggregator section that owns fixed-vs-persisted classification" \
+    "Re-review handling" prompts/standalone/momentum.md
+assert_grep "aggregator.md must still carry the Re-review handling section heading momentum points at" \
+    "**Re-review handling — read this before" prompts/aggregator.md
+
 # --- Re-eval banner: T1 (LOC) trigger + fire-once markers + durable note ---
 # The architecture-shape re-eval banner fires on two deterministic triggers
 # (T1 LOC-growth, T2 blocker-stall), each once per PR, and leaves a durable
@@ -632,17 +644,6 @@ assert_grep "momentum.md should read reeval-status.md for the live trigger reaso
     "reeval-status.md" prompts/standalone/momentum.md
 assert_grep "aggregator.md should read reeval-status.md to gate the re-eval banner" \
     "reeval-status.md" prompts/aggregator.md
-
-# momentum defers the fixed-vs-persisted classification to the aggregator by
-# naming the owning section. That pointer was stale for two rounds — it named
-# a step number the aggregator no longer had — because nothing pinned either
-# end. Both ends now assert, so a retitle fails loudly instead of orphaning a
-# pointer in a prompt that runs on every re-review.
-echo "  asserting momentum -> aggregator carry-forward ownership pointer..."
-assert_grep "momentum.md must name the aggregator section that owns fixed-vs-persisted classification" \
-    "Re-review handling" prompts/standalone/momentum.md
-assert_grep "aggregator.md must still carry the Re-review handling section momentum points at" \
-    "Re-review handling" prompts/aggregator.md
 
 echo "  asserting T1 LOC-growth trigger is referenced by both the producer and the consumer..."
 assert_grep "loc-trend.sh should emit the deterministic REEVAL-LOC-TRIGGER flag" \
