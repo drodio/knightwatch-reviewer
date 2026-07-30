@@ -55,8 +55,11 @@ printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
 # fail loud at review time when KWR_CONFIG_REPO is set). Pure text assertion.
 grep -qF 'KWR_CONFIG_DIR: /root/.kwr-config' "$COMPOSE" \
   || fail "x-reviewer-env missing KWR_CONFIG_DIR: /root/.kwr-config (containers can't locate the convention cache)"
-n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE")
-n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE")
+# `|| true` on both: grep exits 1 on zero matches, which under `set -e` would
+# abort at the assignment — losing the labeled `fail` message for exactly the
+# cases these counts exist to catch (no reviewers found, mount missing).
+n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE" || true)
+n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE" || true)
 [ "$n_reviewers" -ge 1 ] || fail "no reviewer-N services found in compose"
 [ "$n_mounts" -eq "$n_reviewers" ] \
   || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
