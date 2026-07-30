@@ -55,8 +55,12 @@ printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
 # fail loud at review time when KWR_CONFIG_REPO is set). Pure text assertion.
 grep -qF 'KWR_CONFIG_DIR: /root/.kwr-config' "$COMPOSE" \
   || fail "x-reviewer-env missing KWR_CONFIG_DIR: /root/.kwr-config (containers can't locate the convention cache)"
-n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE")
-n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE")
+# `|| true` on every count below: grep exits 1 on zero matches, which under
+# `set -e` would abort at the assignment — losing the labeled `fail` message
+# for exactly the cases these counts exist to catch (no reviewers found,
+# mount missing).
+n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE" || true)
+n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE" || true)
 [ "$n_reviewers" -ge 1 ] || fail "no reviewer-N services found in compose"
 [ "$n_mounts" -eq "$n_reviewers" ] \
   || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
@@ -68,7 +72,7 @@ n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE
 # test-scenarios on the ANTHROPIC_API_KEY gate while THIS suite stays green.
 grep -qF 'REPO_ENV_DIR: /root/.kwr/repo-env' "$COMPOSE" \
   || fail "x-reviewer-env missing REPO_ENV_DIR: /root/.kwr/repo-env (per-repo secret seam regressed)"
-n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE")
+n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE" || true)
 [ "$n_repo_env" -eq "$n_reviewers" ] \
   || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
 
@@ -79,6 +83,11 @@ n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPO
 # suite stays green (it never builds the image). Pure text assertion pins the
 # install contract so a Dockerfile edit can't silently drop it. (PR #157.)
 DOCKERFILE="$(cd "$HERE/.." && pwd)/docker/Dockerfile"
+# Unlike the compose reads above — where awk exits 2 and `set -e` aborts with
+# no label at all — `grep -q ... || fail` on a missing file fires the fail
+# with the WRONG message, reporting a content regression for a file that
+# isn't there. Misattribution earns the guard; a bare abort didn't.
+[ -f "$DOCKERFILE" ] || fail "Dockerfile not found at $DOCKERFILE"
 grep -qE '^ARG COMPOSE_VERSION=' "$DOCKERFILE" \
   || fail "Dockerfile missing pinned ARG COMPOSE_VERSION (compose plugin install regressed — PR #157)"
 grep -qF '/usr/local/lib/docker/cli-plugins/docker-compose' "$DOCKERFILE" \

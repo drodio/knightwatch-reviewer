@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Smoke for stage_prior_reviews (lib/run-dir.sh).
 #
-# The aggregator's carry-forward rule (step 38: cited shape at HEAD)
+# The aggregator's carry-forward rule (Re-review handling: cited shape at HEAD)
 # depends entirely on this helper returning the right concatenation of
 # prior aggregator outputs. A bad `find` glob, missing self-exclusion,
 # wrong predicate, or other-PR cross-contamination would silently

@@ -23,7 +23,12 @@
 # Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
 # itself forbids tests that calcify prompt prose; what we fence here is
 # contract integrity (token presence, branch-negative alternative still
-# allowed), not literal wording.
+# allowed), not literal wording. One carve-out: a short rewording-stable
+# fragment of a rule may be pinned to prove the rule itself still exists —
+# a `kwr-test-fence:` marker alone goes green over a deleted rule, and an
+# unmarked rule has nothing else to anchor on. Aim such a pin at the clause
+# that encodes the contract, not at the sentence framing it, and keep it free
+# of step ordinals, which renumber on unrelated edits.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -178,6 +183,32 @@ assert_grep "common-header.md must pin cut-positive Q polarity — without it a 
 echo "  asserting [from: <specialist>] attribution token in aggregator.md..."
 assert_grep "aggregator.md should describe per-line specialist attribution" \
     "[from: <specialist>]" prompts/aggregator.md
+
+# The rendering contract is UNCONDITIONAL — Path 1 (redirect) and Path 2
+# (re-eval banner) change the Overview framing, the probe count, and the
+# verdict floor, never how a probe renders. Path 1 used to strip the
+# `[severity]` / `[from:]` markers, which silently killed the props/critique
+# calibration loop (nothing to attribute), contradicted the "For AI authors"
+# footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
+# for a round. Three rules are fenced below, per the header's pin carve-out:
+# the two global statements are marker-anchored, so each gets a marker
+# assertion plus a token proving the rule under it still exists; Path 1 c is
+# unmarked and pinned by token alone.
+echo "  asserting unconditional-rendering + verdict-floor contract markers..."
+assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
+    "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
+assert_grep "the unconditional-rendering statement must survive under its marker" \
+    "never change how a probe is rendered" prompts/aggregator.md
+assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
+    "<!-- kwr-test-fence:verdict-floor -->" prompts/aggregator.md
+assert_grep "the verdict-floor override must survive under its marker" \
+    "regardless of probe severity" prompts/aggregator.md
+assert_grep "Path 1 c must route its 3 structural probes through the shared rendering format" \
+    "like any other probe" prompts/aggregator.md
+# Negative fence stays: the floor belongs to step 9 alone, so a per-path
+# restatement is the regression, not a missing pointer.
+assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
+    "Verdict stays \`COMMENT\`" prompts/aggregator.md
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
@@ -488,7 +519,7 @@ assert_grep "architecture-refined.md should anchor on the inferred-intent scratc
 # Section 4: elegant-convergence rule fences (PR #70)
 # ====================================================================
 # Three competing "is this probe alive?" mechanisms (K-decay in critic,
-# carry-forward in aggregator step 38, BCR in aggregator step 4a) collapsed
+# carry-forward in aggregator Re-review handling, BCR in aggregator step 4a) collapsed
 # into ONE rule: a probe persists iff its cited shape is still present at
 # HEAD. Two competing "is the PR converging?" signals (loc-trend trichotomy,
 # BCR-fired-N-rounds counter) collapsed into ONE: when the carried-forward
@@ -504,10 +535,10 @@ assert_grep "aggregator carry-forward should cite \`Files:\` field" \
     "\`Files:\` shape" prompts/aggregator.md
 assert_grep "aggregator carry-forward should compare against HEAD" \
     "at HEAD" prompts/aggregator.md
-# Negative fence: the legacy step 38 said "decide: still active given this
+# Negative fence: the legacy Re-review handling rule said "decide: still active given this
 # round's diff" — implicit, deferred to LLM judgment. The new rule is a
 # concrete cited-shape grep.
-assert_no_grep "aggregator step 38 must not regress to 'decide: still active' wording — cited-shape-at-HEAD is the test, not implicit LLM judgment" \
+assert_no_grep "aggregator Re-review handling must not regress to 'decide: still active' wording — cited-shape-at-HEAD is the test, not implicit LLM judgment" \
     "decide: still active" prompts/aggregator.md
 
 echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
@@ -516,7 +547,7 @@ echo "  asserting Bug-Class-Recurrence is fully deleted from aggregator.md..."
 # were remediated. PR #584 round 13 cited prior probes by run-id as
 # evidence of recurrence while round 10's text acknowledged the original
 # concerns were resolved.
-assert_no_grep "aggregator must not re-introduce Bug-Class-Recurrence — carry-forward (step 38) covers persistence without the counter" \
+assert_no_grep "aggregator must not re-introduce Bug-Class-Recurrence — carry-forward (Re-review handling) covers persistence without the counter" \
     "Bug-Class-Recurrence" prompts/aggregator.md
 
 echo "  asserting Path 2 trigger uses HEAD-anchored strict-decrease + skips pause rounds..."
@@ -558,23 +589,21 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # authors), with the Overview classifying probes as structural-vs-leaf through
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
-# lost the leaf info they still needed to actually push fixes.
-#
-# Positive fences pin the two load-bearing wording tokens in the new Path 2
-# fire block: (a) the keep-probes directive, and (b) the stall-lens framing
-# instruction in the Overview.
-assert_grep "Path 2 must render the full Probes block, not skip it" \
-    "Render the full Probes block" prompts/aggregator.md
-assert_grep "Path 2 Overview must classify probes through the shape lens" \
+# lost the leaf info they still needed to actually push fixes. Path 2's prose
+# pin is gone under the marker collapse above; the negative fence on the old
+# skip wording plus the stall-lens framing tokens stay.
+assert_grep "Path 2 item a must keep the shape-lens framing of the rendered Probes block" \
     "through the shape lens" prompts/aggregator.md
-# The "through the stall lens" token pins the broad directive but not the
-# Overview's specific job: distinguish the ONE structural-ask probe from
-# the leaf-level patches. The two tokens below pin that distinction by
-# name — without them, an aggregator could write a generic "stall lens"
-# Overview that lists probes without classifying them.
-assert_grep "Path 2 Overview must name the structural-ask probe" \
+# The shape-lens token pins the broad directive but not the Overview's
+# specific job: distinguish the ONE structural-ask probe from the leaf-level
+# patches. The two tokens below keep that vocabulary in the Path 2 block —
+# without them, an aggregator could write a generic stall-lens Overview that
+# lists probes without classifying them. Both tokens appear at more than one
+# site, so these assert the vocabulary survives somewhere in the block, not
+# that the Overview template specifically still carries it.
+assert_grep "Path 2 block must keep the structural-ask vocabulary" \
     "structural ask" prompts/aggregator.md
-assert_grep "Path 2 Overview must call the remaining probes leaf-level" \
+assert_grep "Path 2 block must keep the leaf-level vocabulary" \
     "leaf-level" prompts/aggregator.md
 # Negative fence: the prior contract (PR #66 and earlier) said "Skip the
 # per-angle Probes block entirely this round." A regression to that wording
@@ -584,12 +613,24 @@ assert_no_grep "Path 2 must not regress to 'Skip the per-angle Probes block' wor
     "Skip the per-angle Probes block" prompts/aggregator.md
 
 echo "  asserting carry-forward source picks past Path 2 pause rounds..."
-# Step 38 must walk back to the most recent review WITH a Probes block
+# Re-review handling must walk back to the most recent review WITH a Probes block
 # when previous-review.md is itself a Path 2 pause round. Without this,
 # the next round sees zero probes to carry forward and falsely signals
 # convergence.
-assert_grep "step 38 should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
+assert_grep "Re-review handling should walk back to the most recent review with a Probes block when previous-review.md is a Path 2 pause" \
     "most recent review that DID have a Probes block" prompts/aggregator.md
+
+# momentum defers the fixed-vs-persisted classification to the aggregator by
+# naming the owning section. That pointer was stale for two rounds — it named
+# a step number the aggregator no longer had — because nothing pinned either
+# end. Both ends now assert. The aggregator side pins the heading form, not
+# the bare title: the title also appears at five incidental cross-references,
+# so a heading-only retitle would otherwise pass green.
+echo "  asserting momentum -> aggregator carry-forward ownership pointer..."
+assert_grep "momentum.md must name the aggregator section that owns fixed-vs-persisted classification" \
+    "Re-review handling" prompts/standalone/momentum.md
+assert_grep "aggregator.md must still carry the Re-review handling section heading momentum points at" \
+    "**Re-review handling — read this before" prompts/aggregator.md
 
 # --- Re-eval banner: T1 (LOC) trigger + fire-once markers + durable note ---
 # The architecture-shape re-eval banner fires on two deterministic triggers
@@ -641,10 +682,10 @@ done
 echo "  asserting K-decay is fully deleted from critic.md..."
 # Negative fence: K-decay measured author engagement (commits/comments
 # touching cited files) as a proxy for "is the probe still alive?". The
-# aggregator's tightened carry-forward (step 38) asks the question
+# aggregator's tightened carry-forward (Re-review handling) asks the question
 # directly via cited shape at HEAD; K-decay's behavioral proxy is
 # redundant.
-assert_no_grep "critic.md must not re-introduce K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator step 38) is the single resolution rule" \
+assert_no_grep "critic.md must not re-introduce K-decay — engagement-as-resolution-proxy was deleted; cited-shape-at-HEAD (aggregator Re-review handling) is the single resolution rule" \
     "K-decay" prompts/critic.md
 
 echo "  asserting LoC-trend trichotomy tags are gone from momentum.md..."

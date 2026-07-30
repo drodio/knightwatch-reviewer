@@ -1296,7 +1296,7 @@ write_scratch "$REPO_DIR" "probe-schema.md" "$(cat "$PROBE_SCHEMA_PATH")"
 write_scratch "$REPO_DIR" "review-task.md" "$REVIEW_TASK"
 
 # Stage prior aggregator outputs for this PR (every preserved run dir
-# except the current one) so the aggregator's carry-forward rule (step 38)
+# except the current one) so the aggregator's carry-forward rule (Re-review handling)
 # can check whether prior probes' cited shapes still exist at HEAD. Empty /
 # absent on the first review of a PR. Logic lives in
 # lib/run-dir.sh::stage_prior_reviews so the smoke test exercises the same
