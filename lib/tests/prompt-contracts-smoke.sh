@@ -38,6 +38,18 @@ assert_no_grep() {
     grep -qF -- "$pattern" "$file" && { echo "FAIL: $label"; exit 1; } || true
 }
 
+# For contracts that require N copies of a token (e.g. a back-reference each
+# of two sibling sections must carry). assert_grep passes on the FIRST match,
+# so it cannot express "both sites still have it" — three consecutive review
+# rounds caught a comment claiming exactly that coverage from a presence-only
+# assert. Counting makes the claim mechanically true instead of prose.
+assert_grep_count() {
+    local label="$1" pattern="$2" file="$3" want="$4"
+    local got
+    got=$(grep -cF -- "$pattern" "$file")
+    [ "$got" -ge "$want" ] || { echo "FAIL: $label (found $got, want >= $want)"; exit 1; }
+}
+
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
@@ -186,30 +198,35 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
 # for a round. Two positive fences: the global unconditional-steps statement,
-# plus Path 1's own route-through clause. Both are prose pins, which this
-# file's header cautions against — but the alternative (a negative fence on
-# skip-wording) is worse here: `assert_no_grep` is file-scoped, and Path 2's
-# legitimate "Skip legacy Path 2 pause rounds" makes any file-wide skip
-# pattern either false-positive or narrow enough to be over-fitted itself.
+# plus Path 1's own route-through clause. Those two sites are the ONLY places
+# the rendering contract is stated — the step-back items scope themselves to
+# Overview framing and say nothing about rendering, so there is no third copy
+# to drift. Both fences are prose pins, which this file's header cautions
+# against, but the alternative (a negative fence on skip-wording) is worse
+# here: `assert_no_grep` is file-scoped, and Path 2's legitimate "Skip legacy
+# Path 2 pause rounds" makes any file-wide skip pattern either a false
+# positive or narrow enough to be over-fitted itself.
 assert_grep "aggregator.md must state the rendering steps are unconditional across paths" \
     "Steps 6-9 below are unconditional" prompts/aggregator.md
 assert_grep "Path 1 must route its probes through the shared rendering format, not strip severity/attribution" \
     "They render through step 6's format" prompts/aggregator.md
 
 # The COMMENT floor for both step-back paths lives ONLY in step 9; Path 1 d
-# and Path 2 c back-reference it. Three fences cover the three ways that
+# and Path 2 c each back-reference it. Three fences cover the three ways that
 # contract breaks: the override being dropped or reworded, the floor being
 # re-stated per-path (back to three copies, three drift points), and either
 # back-reference being deleted — which would leave step 9 intact but strand
-# a path with no verdict constraint visible where the model reads it.
+# a path with no verdict constraint visible where the model reads it. That
+# last one needs a COUNT, not a presence check: assert_grep passes on the
+# first match, so it green-lights one deleted pointer.
 # Without the override a born-large redirect carrying 3 `low` probes reads
 # APPROVE, the one verdict a redirect must never emit.
 assert_grep "aggregator.md must pin COMMENT as the verdict floor when either step-back path fires" \
     "the verdict is \`COMMENT\` regardless of probe severity" prompts/aggregator.md
 assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
     "Verdict stays \`COMMENT\`" prompts/aggregator.md
-assert_grep "both step-back paths must back-reference the step 9 verdict floor" \
-    "(Verdict floor: step 9.)" prompts/aggregator.md
+assert_grep_count "both step-back paths must back-reference the step 9 verdict floor" \
+    "The verdict floor is \`COMMENT\` (step 9)." prompts/aggregator.md 2
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
