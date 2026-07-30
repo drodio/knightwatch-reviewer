@@ -23,11 +23,12 @@
 # Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
 # itself forbids tests that calcify prompt prose; what we fence here is
 # contract integrity (token presence, branch-negative alternative still
-# allowed), not literal wording. One carve-out: where a contract is anchored
-# by a `kwr-test-fence:` marker, a short (3-4 word) rewording-stable fragment
-# of the rule may be pinned alongside it — without one, deleting the rule
-# while leaving the marker passes green. Keep such pins free of step
-# ordinals, which renumber on unrelated edits.
+# allowed), not literal wording. One carve-out: a short rewording-stable
+# fragment of a rule may be pinned to prove the rule itself still exists —
+# a `kwr-test-fence:` marker alone goes green over a deleted rule, and an
+# unmarked rule has nothing else to anchor on. Aim such a pin at the clause
+# that encodes the contract, not at the sentence framing it, and keep it free
+# of step ordinals, which renumber on unrelated edits.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -199,7 +200,7 @@ echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
 assert_grep "the unconditional-rendering statement must survive under its marker" \
-    "whichever path fired" prompts/aggregator.md
+    "never change how a probe is rendered" prompts/aggregator.md
 assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
     "<!-- kwr-test-fence:verdict-floor -->" prompts/aggregator.md
 assert_grep "the verdict-floor override must survive under its marker" \
