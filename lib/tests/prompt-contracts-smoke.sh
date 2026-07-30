@@ -197,12 +197,19 @@ assert_grep "Path 1 must route its probes through the shared rendering format, n
     "They render through step 6's format" prompts/aggregator.md
 
 # The COMMENT floor for both step-back paths lives ONLY in step 9; Path 1 d
-# and Path 2 c back-reference it. This fence stops a regression that re-states
-# the floor per-path (three copies, three drift points) or drops the override
-# entirely — without it a born-large redirect carrying 3 `low` probes reads
-# APPROVE, which is the one verdict a redirect must never emit.
+# and Path 2 c back-reference it. Three fences cover the three ways that
+# contract breaks: the override being dropped or reworded, the floor being
+# re-stated per-path (back to three copies, three drift points), and either
+# back-reference being deleted — which would leave step 9 intact but strand
+# a path with no verdict constraint visible where the model reads it.
+# Without the override a born-large redirect carrying 3 `low` probes reads
+# APPROVE, the one verdict a redirect must never emit.
 assert_grep "aggregator.md must pin COMMENT as the verdict floor when either step-back path fires" \
     "the verdict is \`COMMENT\` regardless of probe severity" prompts/aggregator.md
+assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
+    "Verdict stays \`COMMENT\`" prompts/aggregator.md
+assert_grep "both step-back paths must back-reference the step 9 verdict floor" \
+    "(Verdict floor: step 9.)" prompts/aggregator.md
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
