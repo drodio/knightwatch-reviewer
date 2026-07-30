@@ -23,7 +23,11 @@
 # Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
 # itself forbids tests that calcify prompt prose; what we fence here is
 # contract integrity (token presence, branch-negative alternative still
-# allowed), not literal wording.
+# allowed), not literal wording. One carve-out: where a contract is anchored
+# by a `kwr-test-fence:` marker, a short (3-4 word) rewording-stable fragment
+# of the rule may be pinned alongside it — without one, deleting the rule
+# while leaving the marker passes green. Keep such pins free of step
+# ordinals, which renumber on unrelated edits.
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
