@@ -185,20 +185,23 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. The two global statements are fenced by marker rather than by
-# their prose, which was reworded on nearly every round of this PR — an
-# exact-sentence pin turns each benign edit into a red suite (this file's
-# header disclaims content-pinning for exactly that reason). Path 1 c's
-# route-through clause keeps a short token pin: `step 6's format` has a
-# unique carrier and survived every rewording here, and it is the one site a
-# re-introduced strip instruction would land on.
+# for a round. Each of the three sites gets a marker (stable across any
+# rewording) plus a short token from its own statement, so an orphaned marker
+# over a deleted rule reds the suite. The tokens are deliberately 3-4 words
+# and carry no step ordinals: aggregator.md renumbers its steps as the list
+# grows, and a pin like `step 6's format` would red on a renumbering that
+# touches nothing about this contract.
 echo "  asserting unconditional-rendering + verdict-floor contract markers..."
 assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
     "<!-- kwr-test-fence:unconditional-probe-rendering -->" prompts/aggregator.md
+assert_grep "the unconditional-rendering statement must survive under its marker" \
+    "whichever path fired" prompts/aggregator.md
 assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
     "<!-- kwr-test-fence:verdict-floor -->" prompts/aggregator.md
+assert_grep "the verdict-floor override must survive under its marker" \
+    "regardless of probe severity" prompts/aggregator.md
 assert_grep "Path 1 c must route its 3 structural probes through the shared rendering format" \
-    "step 6's format" prompts/aggregator.md
+    "like any other probe" prompts/aggregator.md
 # Negative fence stays: the floor belongs to step 9 alone, so a per-path
 # restatement is the regression, not a missing pointer.
 assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
