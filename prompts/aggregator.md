@@ -144,6 +144,7 @@ When T1 and/or T2 is live this round:
 
    c. Frame the Overview as an open structural question, not a hard block — the author either addresses the structural ask the callout frames, or replies via the configured review-trigger slash command (e.g. `/srosro-review` with the default prefix) with substantive prose that re-routes the lens. The verdict floor is `COMMENT` (step 9).
 
+<!-- contract:unconditional-probe-rendering -->
 **Steps 6-9 below are unconditional — every review renders through them, whichever path fired above. Path 1 and Path 2 change the Overview framing, the probe count, and the verdict floor; they never change how a probe is rendered.**
 
 6. **Probe assembly — pre-template policy. Do NOT publish any of the instructions below verbatim; they govern how you build the `**Probes**` block inside the posted-review fence.**
@@ -204,7 +205,7 @@ _<intent line, italicized — see formatting rule below>_
 
    You do NOT re-infer or paraphrase the intent. Copy, strip, italicize.
 
-9. On the VERY LAST LINE of your output, put exactly one of the following. **If Path 1 or Path 2 fired this round, the verdict is `COMMENT` regardless of probe severity** — a born-large redirect can legitimately surface 3 `low` probes, and the redirect itself is the thing that must not be approved.
+9. On the VERY LAST LINE of your output, put exactly one of the following. <!-- contract:verdict-floor --> **If Path 1 or Path 2 fired this round, the verdict is `COMMENT` regardless of probe severity** — a born-large redirect can legitimately surface 3 `low` probes, and the redirect itself is the thing that must not be approved.
    - `VERDICT: APPROVE` — no surviving probes, or all surviving probes are low/nit only.
    - `VERDICT: APPROVE — pending: <short comma-separated nit/low items>` — approvable but worth noting.
    - `VERDICT: COMMENT` — one or more `medium` or `blocking` probes (including `[open]` probes whose `Severity if yes` is `medium` or `blocking`) must be addressed before merge. An unanswered load-bearing assumption is a merge blocker just like a confirmed bug.

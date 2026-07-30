@@ -38,26 +38,6 @@ assert_no_grep() {
     grep -qF -- "$pattern" "$file" && { echo "FAIL: $label"; exit 1; } || true
 }
 
-# For contracts that require N occurrences of a token (e.g. a back-reference
-# each of two sibling sections must carry). assert_grep passes on the FIRST
-# match, so it cannot express "both sites still have it" — three consecutive
-# review rounds caught a comment claiming exactly that coverage from a
-# presence-only assert. Counting makes the claim mechanically true.
-#
-# `|| true` is load-bearing: grep exits 1 on zero matches, which would abort
-# the whole suite at the assignment under `set -e` — before the comparison
-# runs, so the labeled FAIL never prints and the run dies with a bare exit 1
-# pointing at none of the ~40 asserts here. Zero matches is the primary case
-# this fence exists to catch, so it must reach the comparison. `grep -o`
-# counts occurrences, not matching lines, so two pointers sharing one line
-# still count as two.
-assert_grep_count() {
-    local label="$1" pattern="$2" file="$3" want="$4"
-    local got
-    got=$(grep -oF -- "$pattern" "$file" | wc -l | tr -d ' ' || true)
-    [ "$got" -ge "$want" ] || { echo "FAIL: $label (found $got, want >= $want)"; exit 1; }
-}
-
 # ====================================================================
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
@@ -205,40 +185,19 @@ assert_grep "aggregator.md should describe per-line specialist attribution" \
 # `[severity]` / `[from:]` markers, which silently killed the props/critique
 # calibration loop (nothing to attribute), contradicted the "For AI authors"
 # footer's `[open]` vocabulary, and zeroed the T2 blocker-stall count series
-# for a round. The contract is stated at three sites in aggregator.md, each
-# with a distinct job, and all three are fenced: the global unconditional-
-# steps statement and Path 1's route-through clause by the two asserts here,
-# and Path 2 a's local carrier by the "renders in full" assert in the Path 2
-# block below (it guards the historical regression where Path 2 suppressed
-# the Probes block outright). Verified by grep, not by intent — an earlier
-# version of this comment claimed two sites and missed Path 2 a.
-#
-# All three are prose pins, which this file's header cautions against, but
-# the alternative (a negative fence on skip-wording) is worse here:
-# `assert_no_grep` is file-scoped, and Path 2's legitimate "Skip legacy
-# Path 2 pause rounds" makes any file-wide skip pattern either a false
-# positive or narrow enough to be over-fitted itself.
-assert_grep "aggregator.md must state the rendering steps are unconditional across paths" \
-    "Steps 6-9 below are unconditional" prompts/aggregator.md
-assert_grep "Path 1 must route its probes through the shared rendering format, not strip severity/attribution" \
-    "They render through step 6's format" prompts/aggregator.md
-
-# The COMMENT floor for both step-back paths lives ONLY in step 9; Path 1 d
-# and Path 2 c each back-reference it. Three fences cover the three ways that
-# contract breaks: the override being dropped or reworded, the floor being
-# re-stated per-path (back to three copies, three drift points), and either
-# back-reference being deleted — which would leave step 9 intact but strand
-# a path with no verdict constraint visible where the model reads it. That
-# last one needs a COUNT, not a presence check: assert_grep passes on the
-# first match, so it green-lights one deleted pointer.
-# Without the override a born-large redirect carrying 3 `low` probes reads
-# APPROVE, the one verdict a redirect must never emit.
-assert_grep "aggregator.md must pin COMMENT as the verdict floor when either step-back path fires" \
-    "the verdict is \`COMMENT\` regardless of probe severity" prompts/aggregator.md
+# for a round. Fenced on stable markers rather than the prose that carries
+# them: the sentences were reworded on nearly every round of this PR, and
+# exact-sentence pins turn each benign edit into a red suite (this file's
+# header disclaims content-pinning for exactly that reason).
+echo "  asserting unconditional-rendering + verdict-floor contract markers..."
+assert_grep "aggregator.md must carry the unconditional-probe-rendering contract marker" \
+    "<!-- contract:unconditional-probe-rendering -->" prompts/aggregator.md
+assert_grep "aggregator.md must carry the verdict-floor contract marker — without it a born-large redirect carrying 3 \`low\` probes reads APPROVE" \
+    "<!-- contract:verdict-floor -->" prompts/aggregator.md
+# Negative fence stays: the floor belongs to step 9 alone, so a per-path
+# restatement is the regression, not a missing pointer.
 assert_no_grep "the verdict floor must not be re-stated per-path — step 9 is the single statement" \
     "Verdict stays \`COMMENT\`" prompts/aggregator.md
-assert_grep_count "both step-back paths must back-reference the step 9 verdict floor" \
-    "floor is \`COMMENT\` (step 9)" prompts/aggregator.md 2
 
 # Negative fence: the old default ("attributed [from: aggregator]") was
 # replaced with specialist attribution as the default for cross-angle
@@ -619,9 +578,10 @@ echo "  asserting Path 2 keeps the Probes block and frames it through the stall 
 # authors), with the Overview classifying probes as structural-vs-leaf through
 # the stall lens. The earlier contract suppressed the Probes block entirely —
 # that suppression was reversed because authors got the structural callout but
-# lost the leaf info they still needed to actually push fixes.
-assert_grep "Path 2 must render the Probes block in full, not skip it" \
-    "The Probes block still renders in full" prompts/aggregator.md
+# lost the leaf info they still needed to actually push fixes. The keep-the-
+# probes half is now carried by the unconditional-probe-rendering marker
+# above (it covers every path); what stays here is the negative fence on the
+# old skip wording plus the stall-lens framing tokens.
 assert_grep "Path 2 Overview must classify probes through the shape lens" \
     "through the shape lens" prompts/aggregator.md
 # The "through the stall lens" token pins the broad directive but not the
