@@ -140,6 +140,10 @@ fi
 # ...and the org default when absent.
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
 got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || { echo "FAIL: resolve_review_md default rc"; exit 1; }
+# The classification predicate must agree with what resolve actually returned,
+# on both paths — that coupling is what a reworded default used to break.
+review_md_is_default "$WORK" "$SEED_SHA" || { echo "FAIL: absent REVIEW.md should classify as default"; exit 1; }
+! review_md_is_default "$WORK" "$MAIN_SHA" || { echo "FAIL: committed REVIEW.md should not classify as default"; exit 1; }
 printf '%s' "$got_default" | grep -qF 'org default' \
     || { echo "FAIL: expected the org-default body when REVIEW.md is absent"; exit 1; }
 

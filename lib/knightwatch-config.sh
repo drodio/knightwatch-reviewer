@@ -136,12 +136,11 @@ individual finding can be correct while the sequence never terminates.
 
 ### Severity floor for prose
 
-This rule only ever narrows. Where the rest of your instructions already drop
-editorial findings on prose, they stay dropped — nothing here authorizes them.
-Where a repo's own policy re-opens them, they are the lowest severity you emit,
-never medium or higher, and worth at most one line in the summary. That covers
-wording, phrasing, parallelism, sentence shape, line reflow, and list
-construction in `.md` files.
+This rule only ever narrows: it never authorizes an editorial finding your other
+instructions drop. When such a finding is emitted at all, it is the lowest
+severity you emit, never medium or higher, and worth at most one line in the
+summary. That covers wording, phrasing, parallelism, sentence shape, line
+reflow, and list construction in `.md` files.
 
 A factual claim in a doc that contradicts the code it describes is a normal
 finding at normal severity: this floor covers style, not truth.
@@ -158,6 +157,24 @@ SHARED_EOF
 # ABSENT (default substituted); returns 2 WITHOUT output on a git/ref ERROR so
 # each caller keeps its own abort cleanup (production logs + rm -rf the
 # checkout; replay just exits).
+# Whether resolve_review_md would substitute the org default, owned by the same
+# file as the rule it encodes (PRESENT-but-empty counts as no policy). Callers
+# that report which happened — replay's "⚙️ No REVIEW.md" note — ask this rather
+# than inferring it from the returned body: every attempt to re-derive the
+# classification at the call site (ls-tree at head, ls-tree at base, matching a
+# sentinel string) closed one divergence class by opening another. resolve
+# itself can't hand the flag back through a variable, since callers read it via
+# command substitution and the assignment would die in the subshell.
+# rc: 0 — the org default would be used
+#     1 — the repo's own REVIEW.md would be used
+#     2 — ERROR (same hard-abort contract as read_repo_file)
+review_md_is_default() {
+    local content rc
+    content=$(read_repo_file "$1" "$2" "REVIEW.md") && rc=0 || rc=$?
+    [ "$rc" = 2 ] && return 2
+    [ -z "$content" ]
+}
+
 resolve_review_md() {
     local repo_dir="$1" base_ref="$2" content rc
     content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") && rc=0 || rc=$?

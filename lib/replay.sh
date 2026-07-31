@@ -181,14 +181,17 @@ REEVAL_EOF
 REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") \
     || { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
-# Derive the presence flag from what was STAGED, not from a second read of the
-# tree: resolve_review_md treats a committed-but-empty REVIEW.md as no-policy
-# and substitutes the org default, so an ls-tree check would report "present"
-# on a run that actually used defaults.
-case "$REVIEW_MD" in
-    *"org default — no per-repo REVIEW.md configured"*) KNIGHTWATCH_PRESENT=0 ;;
-    *) KNIGHTWATCH_PRESENT=1 ;;
-esac
+# Read the classification the resolver reports, rather than inferring it from
+# the returned body: only resolve_review_md knows which branch it took, and
+# every attempt to re-derive it (ls-tree at head, ls-tree at base, sentinel
+# string) closed one divergence class by opening another.
+if review_md_is_default "$REPO_DIR" "origin/$BASE_REF"; then
+    KNIGHTWATCH_PRESENT=0
+else
+    rc=$?
+    [ "$rc" = 2 ] && { echo "replay: error classifying REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
+    KNIGHTWATCH_PRESENT=1
+fi
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
 # SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
