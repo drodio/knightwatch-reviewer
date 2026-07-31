@@ -761,6 +761,15 @@ assert_grep "pr-reviewer-bakeoff.service should rewalk a 12h window for edit ref
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
 
+# The live path must DISCLOSE an org-default fallback. Structural fence, because
+# the omission it guards was real and silent: for the whole life of this repo the
+# live path never emitted the note while replay did, and replay-smoke can't catch
+# a regression here — it drives prepend_review_header with hand-built note arrays,
+# so deleting the append below leaves every suite green.
+echo "  asserting live path appends the no-REVIEW.md note on the org-default branch..."
+assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
+    '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
+
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
 
