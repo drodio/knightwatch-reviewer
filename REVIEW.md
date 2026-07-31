@@ -1,8 +1,10 @@
 # Review instructions — knightwatch-reviewer
 
 Reviewer-facing policy for this repo. Read it before any other input: it carries
-the operating point, the voice posture, and the review-loop rules every finding
-must satisfy.
+the operating point and the voice posture every finding must satisfy. The
+review-loop rules are org policy and are appended by each reviewer from its own
+copy — `resolve_review_md` in `lib/knightwatch-config.sh` for knightwatch,
+`_src_rubric` in claude-config for roborev — so they are not in this file.
 
 This file is the single source for both reviewers, and this repo is the one that
 implements the knightwatch half — `resolve_review_md` in

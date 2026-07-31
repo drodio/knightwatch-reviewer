@@ -181,6 +181,14 @@ REEVAL_EOF
 REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") \
     || { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
+# Derive the presence flag from what was STAGED, not from a second read of the
+# tree: resolve_review_md treats a committed-but-empty REVIEW.md as no-policy
+# and substitutes the org default, so an ls-tree check would report "present"
+# on a run that actually used defaults.
+case "$REVIEW_MD" in
+    *"org default — no per-repo REVIEW.md configured"*) KNIGHTWATCH_PRESENT=0 ;;
+    *) KNIGHTWATCH_PRESENT=1 ;;
+esac
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
 # SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
@@ -276,17 +284,6 @@ fi
 if ! grep -q '^VERDICT:' "$AGG_OUT_FILE"; then
     echo "replay: aggregator output missing VERDICT: line — malformed review (see $AGG_OUT_FILE)" >&2
     exit 1
-fi
-
-# Detect REVIEW.md presence at the SAME ref the staging above read
-# (origin/$BASE_REF), not the replayed PR head — otherwise an onboarding PR
-# that ADDS REVIEW.md reports "present" while the review actually ran on
-# default_review_md. ls-tree exits 0 regardless of presence/absence; empty
-# stdout → absent.
-if git -C "$REPO_DIR" ls-tree "origin/$BASE_REF" REVIEW.md 2>/dev/null | grep -q .; then
-    KNIGHTWATCH_PRESENT=1
-else
-    KNIGHTWATCH_PRESENT=0
 fi
 
 REVIEW_NOTES=()

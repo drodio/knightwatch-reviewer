@@ -157,6 +157,13 @@ for heading in "Re-review convergence" "Recurring-file escalation" "Severity flo
     printf '%s' "$per_repo_block" | grep -qF "$heading" \
         || { echo "FAIL: shared block missing loop rule: $heading"; exit 1; }
 done
+# Exactly ONE copy on each path. Equality alone can't see a doubled block (a
+# repo whose REVIEW.md still carries its copy, or a re-add to
+# default_review_md) because the sed range captures only the first.
+for label_and_body in "per-repo:$got" "default:$got_default"; do
+    n=$(printf '%s' "${label_and_body#*:}" | grep -c '<!-- shared: review-loop -->')
+    [ "$n" = 1 ] || { echo "FAIL: ${label_and_body%%:*} path has $n copies of the shared block, want 1"; exit 1; }
+done
 
 # Feature-branch-only addition must NOT take effect when reading
 # against the base SHA (locks down the same invariant the bot enforces:
