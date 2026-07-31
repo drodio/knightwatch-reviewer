@@ -11,8 +11,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Scenario 1: .knightwatch/-absent → note appears in aggregator output.
-echo "  scenario 1: .knightwatch/-absent — note appears in aggregator output..."
+# Scenario 1: REVIEW.md-absent → note appears in aggregator output.
+echo "  scenario 1: REVIEW.md-absent — note appears in aggregator output..."
 (
     set +u
     . "$REPO_ROOT/lib/run-dir.sh"
@@ -20,17 +20,17 @@ echo "  scenario 1: .knightwatch/-absent — note appears in aggregator output..
     SYNTHETIC_BODY="$(printf '%s\nSome review content.\n' "$MARKER")"
     REVIEW_NOTES=()
     REVIEW_NOTES+=("🎬 Replay of \`abc1234\` (\`gh pr view --repo owner/repo 7\`)")
-    REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
+    REVIEW_NOTES+=("⚙️ No REVIEW.md (review using org defaults)")
     STITCHED=$(prepend_review_header "$SYNTHETIC_BODY" "${REVIEW_NOTES[@]}")
     printf '%s\n' "$STITCHED" > "$TMPDIR/absent-out.md"
 )
-grep -qF "⚙️ No .knightwatch/ config (review using defaults)" "$TMPDIR/absent-out.md" \
+grep -qF "⚙️ No REVIEW.md (review using org defaults)" "$TMPDIR/absent-out.md" \
     || { echo "FAIL scenario 1: absent-note not found in output"; cat "$TMPDIR/absent-out.md"; exit 1; }
 grep -qF "🎬 Replay of" "$TMPDIR/absent-out.md" \
     || { echo "FAIL scenario 1: replay scope note not found in output"; exit 1; }
 
-# Scenario 2: .knightwatch/-present → absent note must NOT appear.
-echo "  scenario 2: .knightwatch/-present — absent note not in aggregator output..."
+# Scenario 2: REVIEW.md-present → absent note must NOT appear.
+echo "  scenario 2: REVIEW.md-present — absent note not in aggregator output..."
 (
     set +u
     . "$REPO_ROOT/lib/run-dir.sh"
@@ -42,8 +42,8 @@ echo "  scenario 2: .knightwatch/-present — absent note not in aggregator outp
     STITCHED=$(prepend_review_header "$SYNTHETIC_BODY" "${REVIEW_NOTES[@]}")
     printf '%s\n' "$STITCHED" > "$TMPDIR/present-out.md"
 )
-if grep -qF "⚙️ No .knightwatch/ config" "$TMPDIR/present-out.md"; then
-    echo "FAIL scenario 2: absent-note should not appear when .knightwatch/ is present"
+if grep -qF "⚙️ No REVIEW.md" "$TMPDIR/present-out.md"; then
+    echo "FAIL scenario 2: absent-note should not appear when REVIEW.md is present"
     cat "$TMPDIR/present-out.md"
     exit 1
 fi

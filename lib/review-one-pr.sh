@@ -1308,52 +1308,20 @@ if [ -n "$PRIOR_REVIEWS" ]; then
     write_scratch "$REPO_DIR" "prior-reviews.md" "$PRIOR_REVIEWS"
 fi
 
-# Product context from .knightwatch/product-context.md (per-repo,
-# committed to the base branch). PRESENT-empty and ABSENT both mean
-# "no per-repo product context" — in which case we inject the org
-# default operating point below. Most repos here are pre-PMF with a
-# handful of users; absent a per-repo override, reviewers assume that
-# and optimize for iteration speed rather than silently reviewing for
-# scale (the recurring over-engineering failure). A repo genuinely at
-# scale overrides this by committing its own file.
-# resolve_product_context (lib/knightwatch-config.sh) is the shared
+# Reviewer policy from REVIEW.md at the repo root (per-repo, committed to
+# the base branch — PR-head edits don't take effect until merged). It carries
+# the operating point, the voice posture, and the review-loop rules; the
+# .knightwatch/ prose files it replaces are gone. PRESENT-empty and ABSENT
+# both mean "no per-repo policy", in which case resolve_review_md injects the
+# org default (pre-PMF, handful of users) rather than silently reviewing for
+# scale — the recurring over-engineering failure.
+# resolve_review_md (lib/knightwatch-config.sh) is the shared
 # read+classify+default seam — same one lib/replay.sh uses, so the two
 # staging paths can't drift. rc=2 (git/ref error) → abort with our own
-# cleanup; PRESENT/ABSENT both yield usable content (org default substituted).
-PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "$BASE_REF_SHA") \
-    || { log "$PR_ID: knightwatch-config error reading product-context.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
-write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
-
-# review-priority.md — per-repo operating point + voice posture
-# (Broken-Glass Test in standards.md cites this file by name).
-# Tri-state: PRESENT use file; ABSENT use embedded default; ERROR abort.
-REVIEW_PRIORITY=""
-REVIEW_PRIORITY=$(read_knightwatch_file "$REPO_DIR" "$BASE_REF_SHA" "review-priority.md")
-case $? in
-    0) : ;;  # PRESENT: use as-is
-    1)
-        # ABSENT: emit a short pointer at the canonical universal policy
-        # in standards.md instead of carrying a second policy source
-        # here (drift hazard with the per-repo .knightwatch/review-priority.md).
-        # The universal Broken-Glass posture lives in standards.md
-        # § Broken-Glass Test; cold-start operators get reasonable
-        # behavior without us shadowing the canonical text.
-        REVIEW_PRIORITY=$(cat <<'PRIORITY_EOF'
-# Review priority (default — no per-repo file configured)
-
-This repo has no `.knightwatch/review-priority.md` committed. Default behavior:
-- Apply `standards.md` § Broken-Glass Test on all findings (universal Broken-Glass policy).
-- Treat the repo's `.knightwatch/product-context.md` (if present) as the operating-point source.
-- No repo-specific contrast pairs. The universal contrast pairs in `standards.md` apply.
-
-If this repo needs a different operating point, commit `.knightwatch/review-priority.md` to the base branch.
-PRIORITY_EOF
-)
-        log "$PR_ID: review-priority.md ABSENT in $BASE_REF_SHA — using default content"
-        ;;
-    *) log "$PR_ID: knightwatch-config error reading review-priority.md — aborting"; rm -rf "$REPO_DIR"; exit 1 ;;
-esac
-write_scratch "$REPO_DIR" "review-priority.md" "$REVIEW_PRIORITY"
+# cleanup; PRESENT/ABSENT both yield usable content.
+REVIEW_MD=$(resolve_review_md "$REPO_DIR" "$BASE_REF_SHA") \
+    || { log "$PR_ID: knightwatch-config error reading REVIEW.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
+write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
 
 # convention.md (if any) was detected + staged earlier from the trusted
 # BASE_REF_SHA (see the convention-detection block above), alongside the

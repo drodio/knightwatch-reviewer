@@ -257,7 +257,7 @@ assert_grep "aggregator.md should reference momentum specialist output" \
 # test" (Anti-Bloat: companion tests for unreachable scenarios). Pin
 # the rule title as a structural token on both surfaces — critic.md
 # owns the rule, aggregator.md inherits it via its existing critic.md
-# cross-reference. Per `.knightwatch/review-priority.md:12`, do not
+# cross-reference. Per this repo's `REVIEW.md` § Review priority, do not
 # pin the rule's rationale prose — token-level fences only.
 echo "  asserting Hypothetical-future-regression decline rule in critic.md..."
 assert_grep "critic.md should carry the Hypothetical-future-regression decline rule" \
@@ -314,7 +314,7 @@ assert_grep "specialists/contract-drift.md should carry the fence-narrower-than-
 
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
-# work to look thorough. Token-level pin only per review-priority.md
+# work to look thorough. Token-level pin only per `REVIEW.md` § Review priority
 # (do not pin rationale prose).
 echo "  asserting Silence-is-golden anti-emission stance in aggregator.md..."
 assert_grep "aggregator.md should carry the Silence-is-golden anti-emission stance" \
