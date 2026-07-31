@@ -167,14 +167,13 @@ assert_resolve "bad ref"                 "origin/does-not-exist" 2 "--"
 # the rc=2 abort nor the rc=1 absent branch, and the empty body would be
 # substituted with org defaults plus a false "No REVIEW.md" disclosure.
 git -C "$SOURCE" checkout -q main
+git -C "$SOURCE" rm -qf REVIEW.md
 git -C "$SOURCE" update-index --add \
-    --cacheinfo 160000,0000000000000000000000000000000000000001,unreachable-sub
-git -C "$SOURCE" commit -qm "main: gitlink at an unreachable commit"
+    --cacheinfo 160000,0000000000000000000000000000000000000001,REVIEW.md
+git -C "$SOURCE" commit -qm "main: REVIEW.md as a gitlink at an unreachable commit"
 git -C "$WORK" fetch -q origin main
 GITLINK_SHA=$(git -C "$WORK" rev-parse origin/main)
-GLRC=0; GLOUT=$(read_repo_file "$WORK" "$GITLINK_SHA" "unreachable-sub" 2>/dev/null) || GLRC=$?
-[ "$GLRC" = 2 ] || { echo "FAIL: unreadable content must return rc 2 (ERROR), got $GLRC"; exit 1; }
-[ -z "$GLOUT" ] || { echo "FAIL: the ERROR path must emit no content"; exit 1; }
+assert_resolve "unreadable REVIEW.md" "$GITLINK_SHA" 2 "--"
 
 # The shared loop rules come from ONE copy (shared_review_loop_rules) appended
 # to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
