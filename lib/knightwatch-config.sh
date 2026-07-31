@@ -136,9 +136,12 @@ individual finding can be correct while the sequence never terminates.
 
 ### Severity floor for prose
 
-In `.md` files, findings about wording, phrasing, parallelism, sentence shape,
-line reflow, and list construction are the lowest severity you emit — never
-medium or higher — and are worth at most one line in the summary.
+This rule only ever narrows. Where the rest of your instructions already drop
+editorial findings on prose, they stay dropped — nothing here authorizes them.
+Where a repo's own policy re-opens them, they are the lowest severity you emit,
+never medium or higher, and worth at most one line in the summary. That covers
+wording, phrasing, parallelism, sentence shape, line reflow, and list
+construction in `.md` files.
 
 A factual claim in a doc that contradicts the code it describes is a normal
 finding at normal severity: this floor covers style, not truth.
