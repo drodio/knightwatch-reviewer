@@ -184,7 +184,11 @@ resolve_review_md() {
     if [ "$rc" = 0 ]; then
         default_review_md
     else
-        content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md")
+        # rc=1 (ABSENT) cannot reach this arm, so any failure here is ERROR.
+        # Unchecked, an error would emit an empty body and still return 0 —
+        # staging loop rules with no reviewer policy, i.e. reviewing at an
+        # unstated operating point, which is what the rc=2 contract prevents.
+        content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") || return 2
         printf '%s\n' "$content"
     fi
     shared_review_loop_rules

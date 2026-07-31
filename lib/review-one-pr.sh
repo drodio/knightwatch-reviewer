@@ -1310,8 +1310,9 @@ fi
 
 # Reviewer policy from REVIEW.md at the repo root (per-repo, committed to
 # the base branch — PR-head edits don't take effect until merged). It carries
-# the operating point, the voice posture, and the review-loop rules; the
-# .knightwatch/ prose files it replaces are gone. PRESENT-empty and ABSENT
+# the operating point and the voice posture; the universal review-loop rules
+# are appended by resolve_review_md from shared_review_loop_rules, so no repo
+# carries them. The .knightwatch/ prose files it replaces are gone. PRESENT-empty and ABSENT
 # both mean "no per-repo policy", in which case resolve_review_md injects the
 # org default (pre-PMF, handful of users) rather than silently reviewing for
 # scale — the recurring over-engineering failure.
