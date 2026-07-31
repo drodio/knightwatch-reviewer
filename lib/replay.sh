@@ -278,9 +278,12 @@ if ! grep -q '^VERDICT:' "$AGG_OUT_FILE"; then
     exit 1
 fi
 
-# Detect REVIEW.md presence at the replayed SHA. ls-tree exits 0
-# regardless of presence/absence; empty stdout → absent.
-if git -C "$REPO_DIR" ls-tree "$SHA" REVIEW.md 2>/dev/null | grep -q .; then
+# Detect REVIEW.md presence at the SAME ref the staging above read
+# (origin/$BASE_REF), not the replayed PR head — otherwise an onboarding PR
+# that ADDS REVIEW.md reports "present" while the review actually ran on
+# default_review_md. ls-tree exits 0 regardless of presence/absence; empty
+# stdout → absent.
+if git -C "$REPO_DIR" ls-tree "origin/$BASE_REF" REVIEW.md 2>/dev/null | grep -q .; then
     KNIGHTWATCH_PRESENT=1
 else
     KNIGHTWATCH_PRESENT=0

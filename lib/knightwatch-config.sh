@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Per-repo config seam. Reads .knightwatch/<file> from the repo's base
-# branch via `git show`. Trust model: base branch only — PR head edits
-# don't take effect until merged.
+# Per-repo config seam. Reads a path from the repo's base branch via
+# `git show`. Trust model: base branch only — PR head edits don't take
+# effect until merged.
 #
-# Each per-repo concern (sibling allowlist, product context, review
-# priority, dead-code command, strict-typing command) gets its own
+# Reviewer *policy* (product context, operating point, voice posture) lives in
+# one repo-root REVIEW.md — see resolve_review_md. Per-repo *mechanics*
+# (sibling allowlist, dead-code command, strict-typing command) keep their own
 # file under .knightwatch/ with the natural format for that concern
-# (line-oriented, markdown, bash). No central manifest, no parser
-# dependency.
+# (line-oriented, bash). No central manifest, no parser dependency.
 #
 # The helper reports presence/content/failure; callers decide policy.
 # Each call site documents its own PRESENT-empty and ABSENT semantics.
@@ -69,10 +69,8 @@ read_knightwatch_file() {
 # the two paths can't drift — a reworded default reaches both at once. A repo
 # with a different operating point overrides this by committing REVIEW.md.
 #
-# This carries the shared review-loop block verbatim, so a repo that hasn't
-# migrated yet still gets the convergence, recurrence, and prose-severity
-# rules. Keep it byte-identical to the block in the tracked repos' REVIEW.md
-# (grep for `shared: review-loop`).
+# The shared review-loop rules are NOT here — resolve_review_md appends them to
+# per-repo and default content alike, so both paths get them from one copy.
 default_review_md() {
     cat <<'REVIEW_MD_EOF'
 # Review instructions (org default — no per-repo REVIEW.md configured)
@@ -92,6 +90,16 @@ No `REVIEW.md` is committed for this repo, so assume the org default operating p
 - No repo-specific contrast pairs. The universal contrast pairs in `standards.md` apply.
 
 If this repo needs a different operating point, commit `REVIEW.md` to the base branch.
+REVIEW_MD_EOF
+}
+
+# The review-loop rules — org policy, identical for every repo, so they live
+# HERE rather than being copied into 38 REVIEW.md files. resolve_review_md
+# appends them to whatever per-repo content it resolves, which means a repo's
+# REVIEW.md carries only what is actually repo-specific. roborev gets the same
+# rules from claude-config's _src_rubric, its own single copy.
+shared_review_loop_rules() {
+    cat <<'SHARED_EOF'
 
 <!-- shared: review-loop -->
 ## Review-loop rules
@@ -135,7 +143,7 @@ medium or higher — and are worth at most one line in the summary.
 A factual claim in a doc that contradicts the code it describes is a normal
 finding at normal severity: this floor covers style, not truth.
 <!-- /shared -->
-REVIEW_MD_EOF
+SHARED_EOF
 }
 
 # Resolve the reviewer-policy input for a review: the per-repo REVIEW.md at
@@ -151,7 +159,8 @@ resolve_review_md() {
     local repo_dir="$1" base_ref="$2" content rc
     content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") && rc=0 || rc=$?
     [ "$rc" = 2 ] && return 2
-    [ -n "$content" ] && printf '%s' "$content" || default_review_md
+    [ -n "$content" ] && printf '%s\n' "$content" || default_review_md
+    shared_review_loop_rules
 }
 
 # Convention detection/staging (formerly is_seed_repo/seed_test_summary, which

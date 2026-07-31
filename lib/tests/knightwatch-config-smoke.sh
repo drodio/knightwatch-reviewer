@@ -32,7 +32,6 @@ git -C "$SOURCE" commit -qm "seed"
 # Add .knightwatch/ files on main
 mkdir -p "$SOURCE/.knightwatch"
 echo "cncorp/plow-content" > "$SOURCE/.knightwatch/siblings"
-printf '# Product context\n\nThe thing does the thing.\n' > "$SOURCE/.knightwatch/product-context.md"
 git -C "$SOURCE" add .knightwatch
 git -C "$SOURCE" commit -qm "main: add .knightwatch/"
 
@@ -138,19 +137,26 @@ if ! printf '%s' "$got" | grep -q 'review-md test content'; then
     exit 1
 fi
 
-# ...and the org default (carrying the shared loop block) when absent.
+# ...and the org default when absent.
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
-got=$(resolve_review_md "$WORK" "$SEED_SHA") || { echo "FAIL: resolve_review_md default rc"; exit 1; }
+got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || { echo "FAIL: resolve_review_md default rc"; exit 1; }
+printf '%s' "$got_default" | grep -qF 'org default' \
+    || { echo "FAIL: expected the org-default body when REVIEW.md is absent"; exit 1; }
+
+# The shared loop rules come from ONE copy (shared_review_loop_rules) appended
+# to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
+# per-repo. Assert the appended text is byte-identical in both cases.
+per_repo_block=$(printf '%s' "$got" | sed -n '/shared: review-loop/,/\/shared/p')
+default_block=$(printf '%s' "$got_default" | sed -n '/shared: review-loop/,/\/shared/p')
+[ -n "$per_repo_block" ] || { echo "FAIL: per-repo path did not get the shared loop block"; exit 1; }
+[ "$per_repo_block" = "$default_block" ] \
+    || { echo "FAIL: shared loop block differs between the per-repo and default paths"; exit 1; }
+[ "$per_repo_block" = "$(shared_review_loop_rules | sed -n '/shared: review-loop/,/\/shared/p')" ] \
+    || { echo "FAIL: appended block is not the one shared_review_loop_rules emits"; exit 1; }
 for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose"; do
-    if ! printf '%s' "$got" | grep -qF "$heading"; then
-        echo "FAIL: org default missing shared loop rule: $heading"
-        exit 1
-    fi
+    printf '%s' "$per_repo_block" | grep -qF "$heading" \
+        || { echo "FAIL: shared block missing loop rule: $heading"; exit 1; }
 done
-if ! printf '%s' "$got" | grep -qF 'shared: review-loop'; then
-    echo "FAIL: org default missing the shared-block marker the sweep greps for"
-    exit 1
-fi
 
 # Feature-branch-only addition must NOT take effect when reading
 # against the base SHA (locks down the same invariant the bot enforces:
@@ -172,9 +178,8 @@ fi
 # returns rc=0 with empty stdout — distinct from rc=1 (ABSENT) and
 # rc=2 (ERROR). What PRESENT-empty MEANS is a per-caller decision
 # documented at each call site (e.g. search-roots.sh treats it as
-# "no siblings"; review-one-pr.sh's product-context block substitutes
-# the org-default operating point); this scenario only fences the helper's
-# mechanism, not caller policy.
+# "no siblings"; resolve_review_md substitutes the org-default operating
+# point); this scenario only fences the helper's mechanism, not caller policy.
 echo "  scenario 4: present but empty → exit 0 + empty content..."
 git -C "$SOURCE" checkout -q main
 echo > "$SOURCE/.knightwatch/empty-file.sh"
