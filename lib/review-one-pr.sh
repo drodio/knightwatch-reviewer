@@ -1312,10 +1312,11 @@ fi
 # the base branch — PR-head edits don't take effect until merged). It carries
 # the operating point and the voice posture; the universal review-loop rules
 # are appended by resolve_review_md from shared_review_loop_rules, so no repo
-# carries them. The .knightwatch/ prose files it replaces are gone. PRESENT-empty and ABSENT
-# both mean "no per-repo policy", in which case resolve_review_md injects the
-# org default (pre-PMF, handful of users) rather than silently reviewing for
-# scale — the recurring over-engineering failure.
+# carries them. The .knightwatch/ prose files it replaces are gone.
+# PRESENT-empty and ABSENT both mean "no per-repo policy", in which case
+# resolve_review_md injects the org default (pre-PMF, handful of users)
+# rather than silently reviewing for scale — the recurring over-engineering
+# failure.
 # resolve_review_md (lib/knightwatch-config.sh) is the shared
 # read+classify+default seam — same one lib/replay.sh uses, so the two
 # staging paths can't drift. rc=2 (git/ref error) → abort with our own
