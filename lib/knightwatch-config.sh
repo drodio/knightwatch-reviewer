@@ -51,7 +51,14 @@ read_repo_file() {
         return 2
     fi
     [ -z "$listing" ] && return 1
-    git -C "$repo_dir" show "${base_ref}:${target}" 2>/dev/null
+    # ls-tree found it, so a failed content read is an ERROR, never absence.
+    # Forwarding git's raw status (128, …) would satisfy neither caller's
+    # `rc = 2` abort nor the `rc = 1` absent branch, and the empty output would
+    # be silently substituted with org defaults plus a false no-policy notice.
+    git -C "$repo_dir" show "${base_ref}:${target}" 2>/dev/null || {
+        echo "knightwatch-config: show failed for $base_ref ($target)" >&2
+        return 2
+    }
 }
 
 # Same contract, scoped to the .knightwatch/ mechanics files (siblings,

@@ -23,9 +23,11 @@
 # `git pull` on the deployed checkout is sufficient only when no KID_PATHS key
 # was added. (Whole-org repos via ORGS need no REPOS/maps entry at all.)
 #
-# Per-repo policy (sibling allowlist, product context, review priority,
-# dead-code command, strict-typing command) lives in
-# <each-repo>/.knightwatch/, NOT here. See lib/knightwatch-config.sh.
+# Per-repo reviewer POLICY (product context, operating point, voice posture)
+# lives in <each-repo>/REVIEW.md at the repo root; per-repo pipeline MECHANICS
+# (sibling allowlist, dead-code command, strict-typing command) live in
+# <each-repo>/.knightwatch/. Neither belongs here. A repo with no REVIEW.md
+# gets the org default. See lib/knightwatch-config.sh.
 #
 # KID_PATHS does double duty:
 #   - lib/review-one-pr.sh consults it for kid-prior-art lookups
