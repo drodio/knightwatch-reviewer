@@ -151,7 +151,7 @@ finding at normal severity: this floor covers style, not truth.
 Markdown docs, agent/skill files, and the shell snippets embedded in them are
 operator aids on a pre-launch prototype, not shipped product code. Report a
 finding in them only when it would cause data loss, leak a secret, execute
-attacker-controlled or unquoted input, make a documented recovery path actively
+attacker-controlled input, make a documented recovery path actively
 wrong, or state something the code contradicts (the truth carve-out above
 survives this bar). Ordinary correctness lapses in an example command — an
 unguarded comparison, a missing `2>/dev/null` case, a whitespace-sensitive

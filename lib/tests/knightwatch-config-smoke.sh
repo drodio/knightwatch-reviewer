@@ -171,7 +171,8 @@ default_block=$(printf '%s' "$got_default" | sed -n '/shared: review-loop/,/\/sh
     || { echo "FAIL: shared loop block differs between the per-repo and default paths"; exit 1; }
 [ "$per_repo_block" = "$(shared_review_loop_rules | sed -n '/shared: review-loop/,/\/shared/p')" ] \
     || { echo "FAIL: appended block is not the one shared_review_loop_rules emits"; exit 1; }
-for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose"; do
+for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose" \
+                "Lower bar for docs, skills, and diagnostic snippets"; do
     printf '%s' "$per_repo_block" | grep -qF "$heading" \
         || { echo "FAIL: shared block missing loop rule: $heading"; exit 1; }
 done
