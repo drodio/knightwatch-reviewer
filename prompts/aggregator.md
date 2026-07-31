@@ -22,8 +22,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 - `.codex-scratch/trigger-comment.md` — present whenever this review was triggered by a trusted-author review or update-review slash-command comment (default `/srosro-review` / `/srosro-update-review`, configurable via `BOT_CMD_PREFIX`). The body may be substantive prose framing the review goal ("they asked us to grade this against DRY and the diff added 2k LoC") or just the bare slash command (routine re-review — no extra framing). When prose is supplied, let it sharpen the review's emphasis. Step 5 below describes how to gate the "step back and ask" mode on prose-vs-bare-command.
 - `.codex-scratch/test-results.md` — `just test` outcome
 - `.codex-scratch/standards.md` — the standards the review is measured against
-- `.codex-scratch/product-context.md` — product stage and roadmap
-- `.codex-scratch/review-priority.md` — per-repo operating point + voice posture.
+- `.codex-scratch/review.md` — the repo's `REVIEW.md`: product stage and roadmap, per-repo operating point, voice posture, and review-loop rules.
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
 - `.codex-scratch/author-intent.md` — the PR's description + linked issues
@@ -181,7 +180,7 @@ _<intent line, italicized — see formatting rule below>_
 
 **Test coverage** — one sentence keyed off the highest-severity `Answer: yes` probe with `Class: tests`, regardless of `From:`. Plus the `just test` outcome — call out failures, but reviewer-sandbox failures (e.g. read-only filesystem error creating `/home/odio/.docker/*`) are noted as reviewer-side, not PR-related.
 
-**For AI authors** — *(Codex, Claude Code, Cursor, etc. reading this PR)*: The Probes above are load-bearing. Treat each `[open]` probe as a hard requirement — answer it directly in your reply or revisit the structural decision. Do NOT silently absorb a probe by adding more code; that path inverts the cost stance the probe is encoding. The pre-PMF operating point (see `.knightwatch/review-priority.md`) prefers cutting LOC over adding it; an `[open] [simplification]` probe whose answer is "no, this complexity isn't needed" should land as a deletion in your next push, not a new defensive guard.
+**For AI authors** — *(Codex, Claude Code, Cursor, etc. reading this PR)*: The Probes above are load-bearing. Treat each `[open]` probe as a hard requirement — answer it directly in your reply or revisit the structural decision. Do NOT silently absorb a probe by adding more code; that path inverts the cost stance the probe is encoding. The pre-PMF operating point (see the repo's `REVIEW.md`) prefers cutting LOC over adding it; an `[open] [simplification]` probe whose answer is "no, this complexity isn't needed" should land as a deletion in your next push, not a new defensive guard.
 ```
 
 8. **Intent-line formatting** (rule for the leading italicized line):

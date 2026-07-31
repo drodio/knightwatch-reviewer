@@ -16,7 +16,7 @@ If a probe doesn't cite TWO files (the PR-changed one AND the file that holds th
 **FIRST, read:**
 - `.codex-scratch/diff.patch` — what changed.
 - `.codex-scratch/inferred-intent.md` — the spirit of the change.
-- `.codex-scratch/product-context.md` — what's deployed and how.
+- `.codex-scratch/review.md` — the repo's `REVIEW.md`: what's deployed and how, plus the operating point.
 
 **THEN, grep beyond the diff** for system invariants this PR might have implicitly violated. The drift surfaces below are real sources of past bugs in this codebase — each one has fired a blocking architecture probe that landed.
 

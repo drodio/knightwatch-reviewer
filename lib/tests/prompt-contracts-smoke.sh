@@ -257,7 +257,7 @@ assert_grep "aggregator.md should reference momentum specialist output" \
 # test" (Anti-Bloat: companion tests for unreachable scenarios). Pin
 # the rule title as a structural token on both surfaces — critic.md
 # owns the rule, aggregator.md inherits it via its existing critic.md
-# cross-reference. Per `.knightwatch/review-priority.md:12`, do not
+# cross-reference. Per this repo's `REVIEW.md` § Review priority, do not
 # pin the rule's rationale prose — token-level fences only.
 echo "  asserting Hypothetical-future-regression decline rule in critic.md..."
 assert_grep "critic.md should carry the Hypothetical-future-regression decline rule" \
@@ -314,7 +314,7 @@ assert_grep "specialists/contract-drift.md should carry the fence-narrower-than-
 
 # Token fence: aggregator.md must carry the Silence-is-golden
 # anti-emission stance — counters the LLM default to surface more
-# work to look thorough. Token-level pin only per review-priority.md
+# work to look thorough. Token-level pin only per `REVIEW.md` § Review priority
 # (do not pin rationale prose).
 echo "  asserting Silence-is-golden anti-emission stance in aggregator.md..."
 assert_grep "aggregator.md should carry the Silence-is-golden anti-emission stance" \
@@ -760,6 +760,15 @@ assert_grep "pr-reviewer-bakeoff.service should rewalk a 12h window for edit ref
     "Environment=REWALK_HOURS=12" systemd/pr-reviewer-bakeoff.service
 assert_grep "pr-reviewer-bakeoff.timer should not be Persistent (matches repo timer shape)" \
     "Persistent=false" systemd/pr-reviewer-bakeoff.timer
+
+# The live path must DISCLOSE an org-default fallback. Structural fence, because
+# the omission it guards was real and silent: for the whole life of this repo the
+# live path never emitted the note while replay did, and replay-smoke can't catch
+# a regression here — it drives prepend_review_header with hand-built note arrays,
+# so deleting the append below leaves every suite green.
+echo "  asserting live path appends the no-REVIEW.md note on the org-default branch..."
+assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
+    '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
 
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)

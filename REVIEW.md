@@ -1,4 +1,23 @@
-# knightwatch-reviewer — Product Context
+# Review instructions — knightwatch-reviewer
+
+Reviewer-facing policy for this repo. Read it before any other input: it carries
+the operating point and the voice posture every finding must satisfy. The
+review-loop rules are org policy and are appended by each reviewer from its own
+copy — `resolve_review_md` in `lib/knightwatch-config.sh` for knightwatch,
+`_src_rubric` in claude-config for roborev — so they are not in this file.
+
+This file is the single source for both reviewers, and this repo is the one that
+implements the knightwatch half — `resolve_review_md` in
+`lib/knightwatch-config.sh` stages it from the base branch. roborev cannot open
+files a config merely points at, so its copy is inlined into `.roborev.toml`'s
+`review_guidelines` by `just sync-review-config` — a recipe in the
+`claude-config` repo, not this one. **An edit here does not reach roborev until
+that sync is re-run from there.**
+
+`standards.md` references below resolve inside the knightwatch bundle; roborev
+cannot see that file.
+
+## Product context
 
 **Stage:** The reviewer reviewing itself. Single-operator tool used by one engineer (srosro). The review loop runs as a containerized multi-account deployment (docker-compose: per-account `reviewer`+`dind` units, a shared `claims` volume for PR-claim/`runs/` state, per-container `LOCAL_STATE_DIR` locks) — the **only** review path. The legacy single-account systemd-timer-on-one-host reviewer has been **retired** (units deleted). Auxiliary timers (learn, org-sync, poll — merged /srosro-approve + re-request — kid-refresh, bakeoff) still run on the host. Not a product, not a distribution target.
 
@@ -29,3 +48,16 @@
 - Safety-critical: anything touching `gh pr comment`, `gh pr review`, or the auto-commit/push loops in `learn-from-replies.sh` can spam real PRs. A PR that changes those paths without a dry-run story is worth flagging.
 
 **Update cadence:** Edit this file when the tool's scope changes (new tracked repo, new feedback loop, new deployment story). Otherwise it's static.
+
+## Review priority
+
+**Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance. The universal Broken-Glass posture lives in `standards.md` § Broken-Glass Test — apply that here, including the worked PR#47→#50 substrate-replacement example.
+
+**Repo-specific contrast pairs:** beyond the universal set in `standards.md`:
+
+| Architecture bloat — DON'T (in this repo) | Bugfix — DO |
+|---|---|
+| Add a new specialist whose remedy could land in `common-header.md` Rule 8 or `critic.md` REMEDY-BLOAT instead. Each new specialist is ~$0.50/PR. | Add a specialist when there's a finding class no existing specialist owns. |
+| Pin literal prompt prose in a smoke test ("Rule 8 says exactly X"). Rule 8 itself forbids tests that calcify prose. | Token-level smoke that fences the contract surface (presence of a named bucket, a status token, a file path) without pinning wording. |
+| Defensive guards in shell that handle `set -u` with no observed unbound-var failure. | Handle real failure modes: codex non-zero exits, missing scratch files, race between `gh pr comment` and `state_set`. |
+| Continue iterating with additive remedies on a refactor PR whose cumulative additive LOC across rounds has crossed +100 (probe-as-unit PR#47 dynamic). | Surface the substrate-replacement move that retires the recurring bug class — net-LOC-down beats five rounds of net-LOC-up parser fixes. |

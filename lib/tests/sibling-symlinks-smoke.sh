@@ -74,8 +74,8 @@ EOF
     # review 1 finding 2). Tracked dotdir content MUST appear in the
     # materialized tree — only gitignored content is filtered out.
     mkdir -p "$dir/.knightwatch"
-    echo "tracked-hidden" > "$dir/.knightwatch/product-context.md"
-    git -C "$dir" add main.py pkg/util.py run.sh .gitignore .knightwatch/product-context.md
+    echo "tracked-hidden" > "$dir/.knightwatch/siblings"
+    git -C "$dir" add main.py pkg/util.py run.sh .gitignore .knightwatch/siblings
     git -C "$dir" commit -qm "seed"
     # Plant local-only artifacts AFTER commit. None should appear in
     # the materialized tree.
@@ -233,7 +233,7 @@ materialize_sibling_symlinks "$WORKDIR" SOURCE_PATHS "acme/foo" "acme/bar"
 # gets filtered. cncorp/plow#37 review 1 finding 2 (low).
 assert_tracked_file_copy "scenario 6: tracked main.py"     "acme/foo" "main.py"     "$TMPDIR/foo/main.py"
 assert_tracked_file_copy "scenario 6: tracked pkg/util.py" "acme/foo" "pkg/util.py" "$TMPDIR/foo/pkg/util.py"
-assert_tracked_file_copy "scenario 6: tracked .knightwatch/" "acme/foo" ".knightwatch/product-context.md" "$TMPDIR/foo/.knightwatch/product-context.md"
+assert_tracked_file_copy "scenario 6: tracked .knightwatch/" "acme/foo" ".knightwatch/siblings" "$TMPDIR/foo/.knightwatch/siblings"
 # 100755 mode arm — fence the mode filter so a future "drop the
 # 100755 case" change can't silently hide executable scripts from
 # sibling greps.

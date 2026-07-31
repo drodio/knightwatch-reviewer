@@ -32,7 +32,6 @@ git -C "$SOURCE" commit -qm "seed"
 # Add .knightwatch/ files on main
 mkdir -p "$SOURCE/.knightwatch"
 echo "cncorp/plow-content" > "$SOURCE/.knightwatch/siblings"
-printf '# Product context\n\nThe thing does the thing.\n' > "$SOURCE/.knightwatch/product-context.md"
 git -C "$SOURCE" add .knightwatch
 git -C "$SOURCE" commit -qm "main: add .knightwatch/"
 
@@ -90,57 +89,127 @@ if [ -n "$got" ]; then
     exit 1
 fi
 
-# --- scenario 3: read product-context.md → markdown content --------
-echo "  scenario 3: product-context.md → markdown content..."
-got=$(read_knightwatch_file "$WORK" "origin/main" "product-context.md")
-if ! printf '%s' "$got" | grep -q '^# Product context$'; then
-    echo "FAIL: expected markdown header"
+# --- scenario 3: read a .knightwatch/ mechanics file → content -----
+# .knightwatch/ still carries the pipeline mechanics (siblings,
+# dead-code.sh, strict-typing.sh); reviewer prose moved to REVIEW.md.
+echo "  scenario 3: .knightwatch/ mechanics file → content..."
+got=$(read_knightwatch_file "$WORK" "origin/main" "siblings")
+if ! printf '%s' "$got" | grep -q 'cncorp/plow-content'; then
+    echo "FAIL: expected siblings content"
     echo "  got: $got"
     exit 1
 fi
 
-# --- scenario 3b: review-priority.md round-trips with same trust model.
-# Parallel to scenario 3 (product-context). Adds a review-priority.md
-# on main, asserts PRESENT (rc 0 + content match) when reading against
-# main's SHA, and asserts ABSENT (rc 1) when the file exists ONLY on a
-# feature branch — same base-branch-source-of-truth invariant.
-echo "  scenario 3b: review-priority.md round-trip + base-branch trust..."
+# --- scenario 3b: REVIEW.md round-trips with the same trust model.
+# Adds REVIEW.md at the repo ROOT on main, asserts PRESENT (rc 0 +
+# content match) when reading against main's SHA, and asserts ABSENT
+# (rc 1) when the file exists ONLY on a feature branch — same
+# base-branch-source-of-truth invariant the .knightwatch/ files had.
+echo "  scenario 3b: REVIEW.md round-trip + base-branch trust..."
 git -C "$SOURCE" checkout -q main
-printf '# Review priority\n\nreview-priority test content\n' > "$SOURCE/.knightwatch/review-priority.md"
-git -C "$SOURCE" add .knightwatch/review-priority.md
-git -C "$SOURCE" commit -qm "main: add review-priority.md"
+printf '# Review instructions\n\nreview-md test content\n' > "$SOURCE/REVIEW.md"
+git -C "$SOURCE" add REVIEW.md
+git -C "$SOURCE" commit -qm "main: add REVIEW.md"
 git -C "$WORK" fetch -q origin main
 git -C "$WORK" checkout -q -B main origin/main
 MAIN_SHA=$(git -C "$WORK" rev-parse origin/main)
 exit_code=0
-got=$(read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority.md") || exit_code=$?
+got=$(read_repo_file "$WORK" "$MAIN_SHA" "REVIEW.md") || exit_code=$?
 if [ "$exit_code" -ne 0 ]; then
-    echo "FAIL: review-priority.md from main expected exit 0, got $exit_code"
+    echo "FAIL: REVIEW.md from main expected exit 0, got $exit_code"
     exit 1
 fi
-if ! printf '%s' "$got" | grep -q '^# Review priority$'; then
-    echo "FAIL: expected review-priority markdown header"
+if ! printf '%s' "$got" | grep -q '^# Review instructions$'; then
+    echo "FAIL: expected REVIEW.md markdown header"
     echo "  got: $got"
     exit 1
 fi
-if ! printf '%s' "$got" | grep -q 'review-priority test content'; then
-    echo "FAIL: review-priority.md content mismatch"
+if ! printf '%s' "$got" | grep -q 'review-md test content'; then
+    echo "FAIL: REVIEW.md content mismatch"
     echo "  got: $got"
     exit 1
 fi
+
+# Captured only to feed the shared-block comparison below; body and rc for
+# every input are owned by the assert_resolve table.
+got=$(resolve_review_md "$WORK" "$MAIN_SHA") || { echo "FAIL: resolve_review_md rc on per-repo path"; exit 1; }
+SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
+got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || true
+
+git -C "$SOURCE" checkout -q main
+: > "$SOURCE/REVIEW.md"
+git -C "$SOURCE" add REVIEW.md
+git -C "$SOURCE" commit -qm "main: empty REVIEW.md"
+git -C "$WORK" fetch -q origin main
+EMPTY_SHA=$(git -C "$WORK" rev-parse origin/main)
+
+# The status IS the classification, so body and rc are checked from ONE call
+# on every input. rc is asserted exactly: a bare success/failure test would let
+# rc=2 (ERROR) pass as "fell back to default", and that arm is a hard abort for
+# both callers. A committed-but-EMPTY REVIEW.md is the input that separates
+# "no file" from "no policy", so it gets the same treatment.
+assert_resolve() { # assert_resolve <label> <ref> <want-rc> <want-substring|-->
+    local label="$1" ref="$2" want_rc="$3" want="$4" body rc=0
+    body=$(resolve_review_md "$WORK" "$ref") || rc=$?
+    [ "$rc" = "$want_rc" ] || { echo "FAIL: $label expected rc $want_rc, got $rc"; exit 1; }
+    [ "$want" = "--" ] && { [ -z "$body" ] || { echo "FAIL: $label expected no output"; exit 1; }; return 0; }
+    printf '%s' "$body" | grep -qF "$want" \
+        || { echo "FAIL: $label body missing '$want'; got: $(printf '%s' "$body" | head -1)"; exit 1; }
+}
+assert_resolve "committed REVIEW.md"     "$MAIN_SHA"             0 "review-md test content"
+assert_resolve "no REVIEW.md at ref"     "$SEED_SHA"             1 "org default"
+assert_resolve "empty REVIEW.md"         "$EMPTY_SHA"            1 "org default"
+assert_resolve "bad ref"                 "origin/does-not-exist" 2 "--"
+
+# ls-tree finds the entry but the content read fails. A gitlink pointing at an
+# unreachable commit induces exactly that: listed in the tree, unreadable by
+# `git show`. Must be ERROR — forwarding git's raw status would satisfy neither
+# the rc=2 abort nor the rc=1 absent branch, and the empty body would be
+# substituted with org defaults plus a false "No REVIEW.md" disclosure.
+git -C "$SOURCE" checkout -q main
+git -C "$SOURCE" rm -qf REVIEW.md
+git -C "$SOURCE" update-index --add \
+    --cacheinfo 160000,0000000000000000000000000000000000000001,REVIEW.md
+git -C "$SOURCE" commit -qm "main: REVIEW.md as a gitlink at an unreachable commit"
+git -C "$WORK" fetch -q origin main
+GITLINK_SHA=$(git -C "$WORK" rev-parse origin/main)
+assert_resolve "unreadable REVIEW.md" "$GITLINK_SHA" 2 "--"
+
+# The shared loop rules come from ONE copy (shared_review_loop_rules) appended
+# to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
+# per-repo. Assert the appended text is byte-identical in both cases.
+per_repo_block=$(printf '%s' "$got" | sed -n '/shared: review-loop/,/\/shared/p')
+default_block=$(printf '%s' "$got_default" | sed -n '/shared: review-loop/,/\/shared/p')
+[ -n "$per_repo_block" ] || { echo "FAIL: per-repo path did not get the shared loop block"; exit 1; }
+[ "$per_repo_block" = "$default_block" ] \
+    || { echo "FAIL: shared loop block differs between the per-repo and default paths"; exit 1; }
+[ "$per_repo_block" = "$(shared_review_loop_rules | sed -n '/shared: review-loop/,/\/shared/p')" ] \
+    || { echo "FAIL: appended block is not the one shared_review_loop_rules emits"; exit 1; }
+for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose" \
+                "Lower bar for docs, skills, and diagnostic snippets"; do
+    printf '%s' "$per_repo_block" | grep -qF "$heading" \
+        || { echo "FAIL: shared block missing loop rule: $heading"; exit 1; }
+done
+# Exactly ONE copy on each path. Equality alone can't see a doubled block (a
+# repo whose REVIEW.md still carries its copy, or a re-add to
+# default_review_md) because the sed range captures only the first.
+for label_and_body in "per-repo:$got" "default:$got_default"; do
+    n=$(printf '%s' "${label_and_body#*:}" | grep -c '<!-- shared: review-loop -->')
+    [ "$n" = 1 ] || { echo "FAIL: ${label_and_body%%:*} path has $n copies of the shared block, want 1"; exit 1; }
+done
 
 # Feature-branch-only addition must NOT take effect when reading
 # against the base SHA (locks down the same invariant the bot enforces:
 # PR-head edits to .knightwatch/<file> don't take effect until merged).
 git -C "$SOURCE" checkout -q feature
-printf '# Review priority\n\nfeature-branch-only override\n' > "$SOURCE/.knightwatch/review-priority-feat.md"
-git -C "$SOURCE" add .knightwatch/review-priority-feat.md
-git -C "$SOURCE" commit -qm "feature: add review-priority-feat.md (PR-only)"
+printf '# Review instructions\n\nfeature-branch-only override\n' > "$SOURCE/REVIEW-feat.md"
+git -C "$SOURCE" add REVIEW-feat.md
+git -C "$SOURCE" commit -qm "feature: add REVIEW-feat.md (PR-only)"
 git -C "$WORK" fetch -q origin feature
 exit_code=0
-read_knightwatch_file "$WORK" "$MAIN_SHA" "review-priority-feat.md" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
+read_repo_file "$WORK" "$MAIN_SHA" "REVIEW-feat.md" > "$TMPDIR/out.txt" 2>/dev/null || exit_code=$?
 if [ "$exit_code" -ne 1 ]; then
-    echo "FAIL: review-priority-feat.md (feature-only) expected rc 1 (ABSENT) against main SHA, got $exit_code"
+    echo "FAIL: REVIEW-feat.md (feature-only) expected rc 1 (ABSENT) against main SHA, got $exit_code"
     exit 1
 fi
 
@@ -149,9 +218,8 @@ fi
 # returns rc=0 with empty stdout — distinct from rc=1 (ABSENT) and
 # rc=2 (ERROR). What PRESENT-empty MEANS is a per-caller decision
 # documented at each call site (e.g. search-roots.sh treats it as
-# "no siblings"; review-one-pr.sh's product-context block substitutes
-# the org-default operating point); this scenario only fences the helper's
-# mechanism, not caller policy.
+# "no siblings"; resolve_review_md substitutes the org-default operating
+# point); this scenario only fences the helper's mechanism, not caller policy.
 echo "  scenario 4: present but empty → exit 0 + empty content..."
 git -C "$SOURCE" checkout -q main
 echo > "$SOURCE/.knightwatch/empty-file.sh"
@@ -242,32 +310,7 @@ if [ "$exit_code" -ne 1 ]; then
     exit 1
 fi
 
-# --- resolve_product_context: present / absent-default / bad-ref ----
-# The single read+classify+default seam shared by production
-# (lib/review-one-pr.sh) and replay (lib/replay.sh). These three cases are
-# the present/absent/error contract that drifted between those two call
-# sites twice (PR #106) when each open-coded its own tri-state. One red bar
-# here now covers both.
-echo "  resolve: present file → file content..."
-got=$(resolve_product_context "$WORK" "origin/main")
-printf '%s' "$got" | grep -q "The thing does the thing" \
-    || { echo "FAIL: resolve present → expected committed file content, got: $got"; exit 1; }
-
-echo "  resolve: absent file → org default..."
-NOPC="$TMPDIR/no-pc"
-git init -q -b main "$NOPC"
-git -C "$NOPC" config user.email t@t; git -C "$NOPC" config user.name t; git -C "$NOPC" config commit.gpgsign false
-echo x > "$NOPC/f"; git -C "$NOPC" add f; git -C "$NOPC" commit -qm seed
-got=$(resolve_product_context "$NOPC" "main")
-printf '%s' "$got" | grep -q "org default" \
-    || { echo "FAIL: resolve absent → expected org default text, got: $got"; exit 1; }
-
-echo "  resolve: bad ref → rc 2, no output (caller aborts, not silent default)..."
-out=$(resolve_product_context "$WORK" "origin/does-not-exist") && rc=0 || rc=$?
-[ "$rc" = 2 ] || { echo "FAIL: resolve bad-ref → expected rc 2, got rc=$rc"; exit 1; }
-[ -z "$out" ] || { echo "FAIL: resolve bad-ref → expected no output, got: $out"; exit 1; }
-
 # Convention detection (formerly is_seed_repo, generalized into the operator's
 # kwr-config bindings) now has its own coverage in lib/tests/conventions-smoke.sh.
 
-echo "  PASS (8 read_knightwatch_file scenarios + 3 resolve_product_context: present, absent-default, bad-ref)"
+echo "  PASS (8 read_repo_file/read_knightwatch_file scenarios + 4 resolve_review_md: per-repo, absent, empty, bad-ref)"

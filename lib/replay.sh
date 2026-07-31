@@ -134,7 +134,7 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 # context). Stage those with explicit "(replay: not staged …)" markers
 # so downstream prompts can fail-soft and the operator sees the gap.
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
-for f in review-priority.md pr-comments.md loc-trend.md \
+for f in pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md \
          file-history.md commits.md author-intent.md search-roots.md \
          test-results.md; do
@@ -170,17 +170,19 @@ REEVAL-STALL-FIRED: no
 REEVAL_EOF
 )"
 
-# product-context.md mirrors production staging via the SAME shared seam
-# (resolve_product_context, lib/knightwatch-config.sh): per-repo file from the
+# review.md mirrors production staging via the SAME shared seam
+# (resolve_review_md, lib/knightwatch-config.sh): the repo's REVIEW.md from the
 # base ref if committed, else the org default. Using the one resolver — not a
 # replay-local copy of the present/absent/error tri-state — is what keeps
 # replay from drifting from production (it did, twice). architecture-refined
 # and the other specialists rely on this input always carrying the operating
 # point. rc=2 (bad base ref / git error) aborts rather than silently scoring
 # as "absent context".
-PRODUCT_CONTEXT=$(resolve_product_context "$REPO_DIR" "origin/$BASE_REF") \
-    || { echo "replay: error reading product-context.md from origin/$BASE_REF — aborting" >&2; exit 1; }
-write_scratch "$REPO_DIR" "product-context.md" "$PRODUCT_CONTEXT"
+REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") && REVIEW_MD_RC=0 || REVIEW_MD_RC=$?
+[ "$REVIEW_MD_RC" = 2 ] \
+    && { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
+write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
+
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
 # SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
@@ -278,18 +280,11 @@ if ! grep -q '^VERDICT:' "$AGG_OUT_FILE"; then
     exit 1
 fi
 
-# Detect .knightwatch/ presence at the replayed SHA. ls-tree exits 0
-# regardless of presence/absence; empty stdout → absent.
-if git -C "$REPO_DIR" ls-tree "$SHA" .knightwatch/ 2>/dev/null | grep -q .; then
-    KNIGHTWATCH_PRESENT=1
-else
-    KNIGHTWATCH_PRESENT=0
-fi
-
 REVIEW_NOTES=()
 REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
-if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
-    REVIEW_NOTES+=("⚙️ No .knightwatch/ config (review using defaults)")
+# rc=1 from resolve_review_md above means the org default was substituted.
+if [ "$REVIEW_MD_RC" = 1 ]; then
+    REVIEW_NOTES+=("⚙️ No REVIEW.md (review using org defaults)")
 fi
 # Same partial-review disclosure as the live worker (shared helper), so a
 # replayed run whose specialists timed out doesn't read as full coverage.
