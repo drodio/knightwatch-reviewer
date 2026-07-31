@@ -148,50 +148,36 @@ finding at normal severity: this floor covers style, not truth.
 SHARED_EOF
 }
 
-# Whether resolve_review_md would substitute the org default. This is the ONE
-# place the "no per-repo policy" rule lives (PRESENT-but-empty counts as none),
-# and resolve_review_md branches on it rather than re-testing the content — two
-# copies of that test, five lines apart, could be taught different things about
-# e.g. whitespace-only files. Callers that report which happened (replay's
-# "⚙️ No REVIEW.md" note) ask this rather than inferring it from the returned
-# body: every attempt to re-derive the classification at the call site (ls-tree
-# at head, ls-tree at base, matching a sentinel string) closed one divergence
-# class by opening another. resolve can't hand the flag back through a variable
-# because callers read it via command substitution, where the assignment dies
-# in the subshell.
-# rc: 0 — the org default would be used
-#     1 — the repo's own REVIEW.md would be used
-#     2 — ERROR (same hard-abort contract as read_repo_file)
-review_md_is_default() {
-    local content rc
-    content=$(read_repo_file "$1" "$2" "REVIEW.md") && rc=0 || rc=$?
-    [ "$rc" = 2 ] && return 2
-    [ -z "$content" ]
-}
-
 # Resolve the reviewer-policy input for a review: the per-repo REVIEW.md at
 # base_ref if committed and non-empty, else the org default — with the shared
 # review-loop rules appended either way. Both production (lib/review-one-pr.sh)
 # and operator-bench replay (lib/replay.sh) call it, so the present/absent/error
 # contract can't drift between them (it did, twice, when each open-coded its own
-# tri-state). Echoes the resolved content and returns 0 on PRESENT or ABSENT;
-# returns 2 WITHOUT output on a git/ref ERROR so each caller keeps its own abort
-# cleanup (production logs + rm -rf the checkout; replay just exits).
+# tri-state).
+#
+# The status IS the classification, so callers never re-derive it. Every earlier
+# attempt to recover "did this fall back?" outside this function diverged from
+# what was actually staged — ls-tree at the PR head, ls-tree at the base ref,
+# matching a sentinel string, and a companion predicate that re-read the tree.
+# A return code survives command substitution where a variable assignment would
+# die in the subshell, which is what makes one read enough.
+#
+# rc: 0 — the repo's own REVIEW.md was used
+#     1 — the org default was substituted (caller should disclose this)
+#     2 — ERROR, no output; every caller MUST treat this as a hard abort
 resolve_review_md() {
-    local repo_dir="$1" base_ref="$2" content rc
-    review_md_is_default "$repo_dir" "$base_ref" && rc=0 || rc=$?
+    local repo_dir="$1" base_ref="$2" content rc status
+    content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") && rc=0 || rc=$?
     [ "$rc" = 2 ] && return 2
-    if [ "$rc" = 0 ]; then
-        default_review_md
-    else
-        # rc=1 (ABSENT) cannot reach this arm, so any failure here is ERROR.
-        # Unchecked, an error would emit an empty body and still return 0 —
-        # staging loop rules with no reviewer policy, i.e. reviewing at an
-        # unstated operating point, which is what the rc=2 contract prevents.
-        content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") || return 2
+    if [ -n "$content" ]; then
         printf '%s\n' "$content"
+        status=0
+    else
+        default_review_md
+        status=1
     fi
     shared_review_loop_rules
+    return "$status"
 }
 
 # Convention detection/staging (formerly is_seed_repo/seed_test_summary, which

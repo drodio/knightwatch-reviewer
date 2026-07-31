@@ -178,20 +178,11 @@ REEVAL_EOF
 # and the other specialists rely on this input always carrying the operating
 # point. rc=2 (bad base ref / git error) aborts rather than silently scoring
 # as "absent context".
-REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") \
-    || { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
+REVIEW_MD=$(resolve_review_md "$REPO_DIR" "origin/$BASE_REF") && REVIEW_MD_RC=0 || REVIEW_MD_RC=$?
+[ "$REVIEW_MD_RC" = 2 ] \
+    && { echo "replay: error reading REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
-# Read the classification the resolver reports, rather than inferring it from
-# the returned body: only resolve_review_md knows which branch it took, and
-# every attempt to re-derive it (ls-tree at head, ls-tree at base, sentinel
-# string) closed one divergence class by opening another.
-if review_md_is_default "$REPO_DIR" "origin/$BASE_REF"; then
-    KNIGHTWATCH_PRESENT=0
-else
-    rc=$?
-    [ "$rc" = 2 ] && { echo "replay: error classifying REVIEW.md from origin/$BASE_REF — aborting" >&2; exit 1; }
-    KNIGHTWATCH_PRESENT=1
-fi
+
 
 # Convention detection + staging mirrors production (review-one-pr.sh) via the
 # SAME shared resolver (resolve_binding/stage_convention, lib/conventions.sh) — no
@@ -291,7 +282,8 @@ fi
 
 REVIEW_NOTES=()
 REVIEW_NOTES+=("🎬 Replay of \`$SHA\` (\`gh pr view --repo $REPO $PR\`)")
-if [ "$KNIGHTWATCH_PRESENT" = "0" ]; then
+# rc=1 from resolve_review_md above means the org default was substituted.
+if [ "$REVIEW_MD_RC" = 1 ]; then
     REVIEW_NOTES+=("⚙️ No REVIEW.md (review using org defaults)")
 fi
 # Same partial-review disclosure as the live worker (shared helper), so a

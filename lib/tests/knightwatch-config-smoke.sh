@@ -130,39 +130,40 @@ if ! printf '%s' "$got" | grep -q 'review-md test content'; then
     exit 1
 fi
 
-# resolve_review_md returns the committed file when present...
-got=$(resolve_review_md "$WORK" "$MAIN_SHA") || { echo "FAIL: resolve_review_md rc"; exit 1; }
+# Captured for the shared-block assertions further down.
+got=$(resolve_review_md "$WORK" "$MAIN_SHA") || { echo "FAIL: resolve_review_md rc on per-repo path"; exit 1; }
 if ! printf '%s' "$got" | grep -q 'review-md test content'; then
     echo "FAIL: resolve_review_md should return the per-repo file"
     exit 1
 fi
 
-# ...and the org default when absent.
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
-got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || { echo "FAIL: resolve_review_md default rc"; exit 1; }
-# The classification predicate must agree with what resolve actually returned,
-# on all three inputs — and assert the rc EXACTLY, since a bare negation would
-# accept rc=2 (ERROR), which is the arm lib/replay.sh branches on to abort.
-rc=0; review_md_is_default "$WORK" "$SEED_SHA" || rc=$?
-[ "$rc" = 0 ] || { echo "FAIL: absent REVIEW.md should classify as default (rc 0), got $rc"; exit 1; }
-rc=0; review_md_is_default "$WORK" "$MAIN_SHA" || rc=$?
-[ "$rc" = 1 ] || { echo "FAIL: committed REVIEW.md should classify as per-repo (rc 1), got $rc"; exit 1; }
-rc=0; review_md_is_default "$WORK" "origin/does-not-exist" || rc=$?
-[ "$rc" = 2 ] || { echo "FAIL: bad ref should classify as ERROR (rc 2), got $rc"; exit 1; }
-
-# A committed-but-EMPTY REVIEW.md is the ONLY input that can tell the predicate
-# and resolve apart, so it is the case that fences them against drifting.
+got_default=$(resolve_review_md "$WORK" "$SEED_SHA") && rc=0 || rc=$?
+[ "$rc" = 1 ] || { echo "FAIL: absent REVIEW.md should return rc 1 (default), got $rc"; exit 1; }
+# The status IS the classification, so body and rc are checked from ONE call
+# on every input. rc is asserted exactly: a bare success/failure test would let
+# rc=2 (ERROR) pass as "fell back to default", and that arm is a hard abort for
+# both callers. A committed-but-EMPTY REVIEW.md is the input that separates
+# "no file" from "no policy", so it gets the same treatment.
 git -C "$SOURCE" checkout -q main
 : > "$SOURCE/REVIEW.md"
 git -C "$SOURCE" add REVIEW.md
 git -C "$SOURCE" commit -qm "main: empty REVIEW.md"
 git -C "$WORK" fetch -q origin main
 EMPTY_SHA=$(git -C "$WORK" rev-parse origin/main)
-rc=0; review_md_is_default "$WORK" "$EMPTY_SHA" || rc=$?
-[ "$rc" = 0 ] || { echo "FAIL: empty REVIEW.md should classify as default (rc 0), got $rc"; exit 1; }
-EMPTY_BODY=$(resolve_review_md "$WORK" "$EMPTY_SHA") || { echo "FAIL: resolve rc on empty REVIEW.md"; exit 1; }
-printf '%s' "$EMPTY_BODY" | grep -qF 'org default' \
-    || { echo "FAIL: empty REVIEW.md should resolve to the org-default body; got: $(printf '%s' "$EMPTY_BODY" | head -2)"; exit 1; }
+
+assert_resolve() { # assert_resolve <label> <ref> <want-rc> <want-substring|-->
+    local label="$1" ref="$2" want_rc="$3" want="$4" body rc=0
+    body=$(resolve_review_md "$WORK" "$ref") || rc=$?
+    [ "$rc" = "$want_rc" ] || { echo "FAIL: $label expected rc $want_rc, got $rc"; exit 1; }
+    [ "$want" = "--" ] && { [ -z "$body" ] || { echo "FAIL: $label expected no output"; exit 1; }; return 0; }
+    printf '%s' "$body" | grep -qF "$want" \
+        || { echo "FAIL: $label body missing '$want'; got: $(printf '%s' "$body" | head -1)"; exit 1; }
+}
+assert_resolve "committed REVIEW.md"     "$MAIN_SHA"             0 "review-md test content"
+assert_resolve "no REVIEW.md at ref"     "$SEED_SHA"             1 "org default"
+assert_resolve "empty REVIEW.md"         "$EMPTY_SHA"            1 "org default"
+assert_resolve "bad ref"                 "origin/does-not-exist" 2 "--"
 printf '%s' "$got_default" | grep -qF 'org default' \
     || { echo "FAIL: expected the org-default body when REVIEW.md is absent"; exit 1; }
 
@@ -300,32 +301,7 @@ if [ "$exit_code" -ne 1 ]; then
     exit 1
 fi
 
-# --- resolve_review_md: present / absent-default / bad-ref ---------
-# The single read+classify+default seam shared by production
-# (lib/review-one-pr.sh) and replay (lib/replay.sh). These three cases are
-# the present/absent/error contract that drifted between those two call
-# sites twice (PR #106) when each open-coded its own tri-state. One red bar
-# here now covers both.
-echo "  resolve: present file → file content..."
-got=$(resolve_review_md "$WORK" "$MAIN_SHA")
-printf '%s' "$got" | grep -q "review-md test content" \
-    || { echo "FAIL: resolve present → expected committed file content, got: $got"; exit 1; }
-
-echo "  resolve: absent file → org default..."
-NOPC="$TMPDIR/no-pc"
-git init -q -b main "$NOPC"
-git -C "$NOPC" config user.email t@t; git -C "$NOPC" config user.name t; git -C "$NOPC" config commit.gpgsign false
-echo x > "$NOPC/f"; git -C "$NOPC" add f; git -C "$NOPC" commit -qm seed
-got=$(resolve_review_md "$NOPC" "main")
-printf '%s' "$got" | grep -q "org default" \
-    || { echo "FAIL: resolve absent → expected org default text, got: $got"; exit 1; }
-
-echo "  resolve: bad ref → rc 2, no output (caller aborts, not silent default)..."
-out=$(resolve_review_md "$WORK" "origin/does-not-exist") && rc=0 || rc=$?
-[ "$rc" = 2 ] || { echo "FAIL: resolve bad-ref → expected rc 2, got rc=$rc"; exit 1; }
-[ -z "$out" ] || { echo "FAIL: resolve bad-ref → expected no output, got: $out"; exit 1; }
-
 # Convention detection (formerly is_seed_repo, generalized into the operator's
 # kwr-config bindings) now has its own coverage in lib/tests/conventions-smoke.sh.
 
-echo "  PASS (8 read_repo_file/read_knightwatch_file scenarios + 3 resolve_review_md: present, absent-default, bad-ref)"
+echo "  PASS (8 read_repo_file/read_knightwatch_file scenarios + 4 resolve_review_md: per-repo, absent, empty, bad-ref)"

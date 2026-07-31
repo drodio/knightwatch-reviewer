@@ -1321,9 +1321,15 @@ fi
 # read+classify+default seam — same one lib/replay.sh uses, so the two
 # staging paths can't drift. rc=2 (git/ref error) → abort with our own
 # cleanup; PRESENT/ABSENT both yield usable content.
-REVIEW_MD=$(resolve_review_md "$REPO_DIR" "$BASE_REF_SHA") \
-    || { log "$PR_ID: knightwatch-config error reading REVIEW.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
+REVIEW_MD=$(resolve_review_md "$REPO_DIR" "$BASE_REF_SHA") && REVIEW_MD_RC=0 || REVIEW_MD_RC=$?
+[ "$REVIEW_MD_RC" = 2 ] \
+    && { log "$PR_ID: knightwatch-config error reading REVIEW.md — aborting"; rm -rf "$REPO_DIR"; exit 1; }
 write_scratch "$REPO_DIR" "review.md" "$REVIEW_MD"
+# rc=1 → org default substituted. Disclosed in REVIEW_NOTES below, because the
+# posted review's AI-author footer points readers at "the repo's REVIEW.md" and
+# there isn't one; silently reviewing at an unstated operating point is the
+# thing the note exists to prevent.
+[ "$REVIEW_MD_RC" = 1 ] && log "$PR_ID: no REVIEW.md in $BASE_REF_SHA — using org default"
 
 # convention.md (if any) was detected + staged earlier from the trusted
 # BASE_REF_SHA (see the convention-detection block above), alongside the
@@ -1645,6 +1651,7 @@ if ! SCOPE_NOTE=$(format_review_scope "$REVIEW_SCOPE" "$REVIEWED_SHA"); then
     exit 1
 fi
 REVIEW_NOTES+=("$SCOPE_NOTE")
+[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=("⚙️ No REVIEW.md (review using org defaults)")
 [ -n "$CURRENT_HEAD" ] && [ "$CURRENT_HEAD" != "$REVIEWED_SHA" ] && \
     REVIEW_NOTES+=("⚠️ Stale: head moved from \`${REVIEWED_SHA:0:7}\` to \`${CURRENT_HEAD:0:7}\` mid-run — see commands below to re-run")
 # Specialist timeouts and per-call model-capacity bounces no longer abort —
