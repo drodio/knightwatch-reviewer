@@ -144,6 +144,19 @@ reflow, and list construction in `.md` files.
 
 A factual claim in a doc that contradicts the code it describes is a normal
 finding at normal severity: this floor covers style, not truth.
+
+### Lower bar for docs, skills, and diagnostic snippets
+
+Markdown docs, agent/skill files, and the shell snippets embedded in them are
+operator aids on a pre-launch prototype, not shipped product code. Report a
+finding in them only when it would cause data loss, leak a secret, or make a
+documented recovery path actively wrong. Ordinary correctness lapses in an
+example command — an unguarded comparison, a missing `2>/dev/null` case, a
+whitespace-sensitive check — are not worth a review round here.
+
+If the same snippet has already been rewritten once in response to review, stop:
+say the snippet is churning and suggest deleting or simplifying it instead of
+correcting it again.
 <!-- /shared -->
 SHARED_EOF
 }
