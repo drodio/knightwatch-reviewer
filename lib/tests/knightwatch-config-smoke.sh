@@ -135,11 +135,7 @@ fi
 got=$(resolve_review_md "$WORK" "$MAIN_SHA") || { echo "FAIL: resolve_review_md rc on per-repo path"; exit 1; }
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
 got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || true
-# The status IS the classification, so body and rc are checked from ONE call
-# on every input. rc is asserted exactly: a bare success/failure test would let
-# rc=2 (ERROR) pass as "fell back to default", and that arm is a hard abort for
-# both callers. A committed-but-EMPTY REVIEW.md is the input that separates
-# "no file" from "no policy", so it gets the same treatment.
+
 git -C "$SOURCE" checkout -q main
 : > "$SOURCE/REVIEW.md"
 git -C "$SOURCE" add REVIEW.md
@@ -147,6 +143,11 @@ git -C "$SOURCE" commit -qm "main: empty REVIEW.md"
 git -C "$WORK" fetch -q origin main
 EMPTY_SHA=$(git -C "$WORK" rev-parse origin/main)
 
+# The status IS the classification, so body and rc are checked from ONE call
+# on every input. rc is asserted exactly: a bare success/failure test would let
+# rc=2 (ERROR) pass as "fell back to default", and that arm is a hard abort for
+# both callers. A committed-but-EMPTY REVIEW.md is the input that separates
+# "no file" from "no policy", so it gets the same treatment.
 assert_resolve() { # assert_resolve <label> <ref> <want-rc> <want-substring|-->
     local label="$1" ref="$2" want_rc="$3" want="$4" body rc=0
     body=$(resolve_review_md "$WORK" "$ref") || rc=$?
@@ -159,6 +160,7 @@ assert_resolve "committed REVIEW.md"     "$MAIN_SHA"             0 "review-md te
 assert_resolve "no REVIEW.md at ref"     "$SEED_SHA"             1 "org default"
 assert_resolve "empty REVIEW.md"         "$EMPTY_SHA"            1 "org default"
 assert_resolve "bad ref"                 "origin/does-not-exist" 2 "--"
+
 # The shared loop rules come from ONE copy (shared_review_loop_rules) appended
 # to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
 # per-repo. Assert the appended text is byte-identical in both cases.
