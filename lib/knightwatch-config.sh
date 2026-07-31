@@ -104,14 +104,15 @@ shared_review_loop_rules() {
 <!-- shared: review-loop -->
 ## Review-loop rules
 
-**Scope.** The two rules immediately below — re-review convergence and
-recurring-file escalation — govern *repeat* review only: they apply when your
-context already contains prior reviews covering the lines you are re-examining.
-Code that is new in what you are reviewing is always in scope, and neither rule
-may suppress a finding on it. When you cannot tell whether a prior review
-covered a line, report normally. They exist to stop a loop that will not
-terminate, never to let a review pass without looking. The severity floor at
-the end is not scoped this way — it always applies.
+**Scope.** Three rules below govern *repeat* review only — re-review
+convergence, recurring-file escalation, and the snippet-churn clause of the
+docs/skills bar. They apply when your context already contains prior reviews
+covering the lines you are re-examining. Code that is new in what you are
+reviewing is always in scope, and none of them may suppress a finding on it.
+When you cannot tell whether a prior review covered a line, report normally.
+They exist to stop a loop that will not terminate, never to let a review pass
+without looking. § Severity floor for prose, and the rest of the docs/skills
+bar, are not scoped this way — they always apply.
 
 ### Re-review convergence
 
@@ -149,14 +150,20 @@ finding at normal severity: this floor covers style, not truth.
 
 Markdown docs, agent/skill files, and the shell snippets embedded in them are
 operator aids on a pre-launch prototype, not shipped product code. Report a
-finding in them only when it would cause data loss, leak a secret, or make a
-documented recovery path actively wrong. Ordinary correctness lapses in an
-example command — an unguarded comparison, a missing `2>/dev/null` case, a
-whitespace-sensitive check — are not worth a review round here.
+finding in them only when it would cause data loss, leak a secret, execute
+attacker-controlled or unquoted input, make a documented recovery path actively
+wrong, or state something the code contradicts (the truth carve-out above
+survives this bar). Ordinary correctness lapses in an example command — an
+unguarded comparison, a missing `2>/dev/null` case, a whitespace-sensitive
+check — are not worth a review round here.
 
-If the same snippet has already been rewritten once in response to review, stop:
-say the snippet is churning and suggest deleting or simplifying it instead of
-correcting it again.
+Snippets in skill files are *executed* by agents and routinely interpolate
+PR-controlled values, so an unquoted expansion or an `eval` over PR metadata is
+a real finding, not an example-code nit.
+
+If the prior reviews in your context show the same snippet already rewritten in
+response to review, stop: say it is churning and suggest deleting or simplifying
+it instead of correcting it again.
 <!-- /shared -->
 SHARED_EOF
 }
