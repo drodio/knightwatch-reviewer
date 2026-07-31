@@ -130,16 +130,11 @@ if ! printf '%s' "$got" | grep -q 'review-md test content'; then
     exit 1
 fi
 
-# Captured for the shared-block assertions further down.
+# Captured only to feed the shared-block comparison below; body and rc for
+# every input are owned by the assert_resolve table.
 got=$(resolve_review_md "$WORK" "$MAIN_SHA") || { echo "FAIL: resolve_review_md rc on per-repo path"; exit 1; }
-if ! printf '%s' "$got" | grep -q 'review-md test content'; then
-    echo "FAIL: resolve_review_md should return the per-repo file"
-    exit 1
-fi
-
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
-got_default=$(resolve_review_md "$WORK" "$SEED_SHA") && rc=0 || rc=$?
-[ "$rc" = 1 ] || { echo "FAIL: absent REVIEW.md should return rc 1 (default), got $rc"; exit 1; }
+got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || true
 # The status IS the classification, so body and rc are checked from ONE call
 # on every input. rc is asserted exactly: a bare success/failure test would let
 # rc=2 (ERROR) pass as "fell back to default", and that arm is a hard abort for
@@ -164,9 +159,6 @@ assert_resolve "committed REVIEW.md"     "$MAIN_SHA"             0 "review-md te
 assert_resolve "no REVIEW.md at ref"     "$SEED_SHA"             1 "org default"
 assert_resolve "empty REVIEW.md"         "$EMPTY_SHA"            1 "org default"
 assert_resolve "bad ref"                 "origin/does-not-exist" 2 "--"
-printf '%s' "$got_default" | grep -qF 'org default' \
-    || { echo "FAIL: expected the org-default body when REVIEW.md is absent"; exit 1; }
-
 # The shared loop rules come from ONE copy (shared_review_loop_rules) appended
 # to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
 # per-repo. Assert the appended text is byte-identical in both cases.

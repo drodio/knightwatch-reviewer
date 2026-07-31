@@ -38,7 +38,7 @@ echo "  scenario 2: REVIEW.md-present — absent note not in aggregator output..
     SYNTHETIC_BODY="$(printf '%s\nSome review content.\n' "$MARKER")"
     REVIEW_NOTES=()
     REVIEW_NOTES+=("🎬 Replay of \`abc1234\` (\`gh pr view --repo owner/repo 7\`)")
-    # KNIGHTWATCH_PRESENT=1 → no absent note added
+    # resolve_review_md rc=0 (per-repo REVIEW.md) → no absent note added
     STITCHED=$(prepend_review_header "$SYNTHETIC_BODY" "${REVIEW_NOTES[@]}")
     printf '%s\n' "$STITCHED" > "$TMPDIR/present-out.md"
 )
