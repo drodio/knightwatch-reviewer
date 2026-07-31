@@ -148,23 +148,17 @@ finding at normal severity: this floor covers style, not truth.
 SHARED_EOF
 }
 
-# Resolve the reviewer-policy input for a review: the per-repo REVIEW.md at
-# base_ref if committed and non-empty, else the org default. This is the SINGLE
-# read+classify+default seam — both production (lib/review-one-pr.sh) and
-# operator-bench replay (lib/replay.sh) call it, so the present/absent/error
-# contract can't drift between them (it did, twice, when each open-coded its
-# own tri-state). Echoes the resolved content and returns 0 on PRESENT or
-# ABSENT (default substituted); returns 2 WITHOUT output on a git/ref ERROR so
-# each caller keeps its own abort cleanup (production logs + rm -rf the
-# checkout; replay just exits).
-# Whether resolve_review_md would substitute the org default, owned by the same
-# file as the rule it encodes (PRESENT-but-empty counts as no policy). Callers
-# that report which happened — replay's "⚙️ No REVIEW.md" note — ask this rather
-# than inferring it from the returned body: every attempt to re-derive the
-# classification at the call site (ls-tree at head, ls-tree at base, matching a
-# sentinel string) closed one divergence class by opening another. resolve
-# itself can't hand the flag back through a variable, since callers read it via
-# command substitution and the assignment would die in the subshell.
+# Whether resolve_review_md would substitute the org default. This is the ONE
+# place the "no per-repo policy" rule lives (PRESENT-but-empty counts as none),
+# and resolve_review_md branches on it rather than re-testing the content — two
+# copies of that test, five lines apart, could be taught different things about
+# e.g. whitespace-only files. Callers that report which happened (replay's
+# "⚙️ No REVIEW.md" note) ask this rather than inferring it from the returned
+# body: every attempt to re-derive the classification at the call site (ls-tree
+# at head, ls-tree at base, matching a sentinel string) closed one divergence
+# class by opening another. resolve can't hand the flag back through a variable
+# because callers read it via command substitution, where the assignment dies
+# in the subshell.
 # rc: 0 — the org default would be used
 #     1 — the repo's own REVIEW.md would be used
 #     2 — ERROR (same hard-abort contract as read_repo_file)
@@ -175,11 +169,24 @@ review_md_is_default() {
     [ -z "$content" ]
 }
 
+# Resolve the reviewer-policy input for a review: the per-repo REVIEW.md at
+# base_ref if committed and non-empty, else the org default — with the shared
+# review-loop rules appended either way. Both production (lib/review-one-pr.sh)
+# and operator-bench replay (lib/replay.sh) call it, so the present/absent/error
+# contract can't drift between them (it did, twice, when each open-coded its own
+# tri-state). Echoes the resolved content and returns 0 on PRESENT or ABSENT;
+# returns 2 WITHOUT output on a git/ref ERROR so each caller keeps its own abort
+# cleanup (production logs + rm -rf the checkout; replay just exits).
 resolve_review_md() {
     local repo_dir="$1" base_ref="$2" content rc
-    content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md") && rc=0 || rc=$?
+    review_md_is_default "$repo_dir" "$base_ref" && rc=0 || rc=$?
     [ "$rc" = 2 ] && return 2
-    [ -n "$content" ] && printf '%s\n' "$content" || default_review_md
+    if [ "$rc" = 0 ]; then
+        default_review_md
+    else
+        content=$(read_repo_file "$repo_dir" "$base_ref" "REVIEW.md")
+        printf '%s\n' "$content"
+    fi
     shared_review_loop_rules
 }
 

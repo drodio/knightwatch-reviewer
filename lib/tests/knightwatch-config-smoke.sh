@@ -141,9 +141,28 @@ fi
 SEED_SHA=$(git -C "$WORK" rev-list --max-parents=0 origin/main)
 got_default=$(resolve_review_md "$WORK" "$SEED_SHA") || { echo "FAIL: resolve_review_md default rc"; exit 1; }
 # The classification predicate must agree with what resolve actually returned,
-# on both paths — that coupling is what a reworded default used to break.
-review_md_is_default "$WORK" "$SEED_SHA" || { echo "FAIL: absent REVIEW.md should classify as default"; exit 1; }
-! review_md_is_default "$WORK" "$MAIN_SHA" || { echo "FAIL: committed REVIEW.md should not classify as default"; exit 1; }
+# on all three inputs — and assert the rc EXACTLY, since a bare negation would
+# accept rc=2 (ERROR), which is the arm lib/replay.sh branches on to abort.
+rc=0; review_md_is_default "$WORK" "$SEED_SHA" || rc=$?
+[ "$rc" = 0 ] || { echo "FAIL: absent REVIEW.md should classify as default (rc 0), got $rc"; exit 1; }
+rc=0; review_md_is_default "$WORK" "$MAIN_SHA" || rc=$?
+[ "$rc" = 1 ] || { echo "FAIL: committed REVIEW.md should classify as per-repo (rc 1), got $rc"; exit 1; }
+rc=0; review_md_is_default "$WORK" "origin/does-not-exist" || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: bad ref should classify as ERROR (rc 2), got $rc"; exit 1; }
+
+# A committed-but-EMPTY REVIEW.md is the ONLY input that can tell the predicate
+# and resolve apart, so it is the case that fences them against drifting.
+git -C "$SOURCE" checkout -q main
+: > "$SOURCE/REVIEW.md"
+git -C "$SOURCE" add REVIEW.md
+git -C "$SOURCE" commit -qm "main: empty REVIEW.md"
+git -C "$WORK" fetch -q origin main
+EMPTY_SHA=$(git -C "$WORK" rev-parse origin/main)
+rc=0; review_md_is_default "$WORK" "$EMPTY_SHA" || rc=$?
+[ "$rc" = 0 ] || { echo "FAIL: empty REVIEW.md should classify as default (rc 0), got $rc"; exit 1; }
+EMPTY_BODY=$(resolve_review_md "$WORK" "$EMPTY_SHA") || { echo "FAIL: resolve rc on empty REVIEW.md"; exit 1; }
+printf '%s' "$EMPTY_BODY" | grep -qF 'org default' \
+    || { echo "FAIL: empty REVIEW.md should resolve to the org-default body; got: $(printf '%s' "$EMPTY_BODY" | head -2)"; exit 1; }
 printf '%s' "$got_default" | grep -qF 'org default' \
     || { echo "FAIL: expected the org-default body when REVIEW.md is absent"; exit 1; }
 
