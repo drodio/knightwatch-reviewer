@@ -238,8 +238,8 @@ done
 
 # Privacy: linked-issue staging must NOT fetch issue body or title from
 # `gh issue view` — they may be private and would leak into the public PR
-# comment via author-intent.md → specialists. Keep only owner/repo#num +
-# URL. Fixed-string match catches any executable form (regex variants
+# comment via author-intent.md → specialists. Keep only owner/repo#num.
+# Fixed-string match catches any executable form (regex variants
 # missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
 if grep -nF 'gh issue view' lib/review-one-pr.sh; then
@@ -527,12 +527,18 @@ assert_grep "intent.md must carry its staged-inputs-only fence" \
 assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/intent.md
 
-echo "  asserting author-intent.md stages no clickable linked-issue URL..."
-# The privacy contract is enforced at the source, not by four consumer
-# policies: review-one-pr.sh stages bare owner/repo#num, so there is no URL
-# for any prompt to follow. Pin the source rather than the prohibitions.
+echo "  asserting the linked-issue privacy contract holds at source AND consumer..."
+# Two halves, both load-bearing. Source: stage no clickable URL. Consumer:
+# the bare `owner/repo#num` is itself sufficient to run `gh issue view`, so
+# dropping the URL does NOT retire the prohibition — every prompt that can
+# run tools must still be told never to resolve the reference. intent.md is
+# excluded on purpose: its staged-inputs-only fence grants it no tools.
 assert_no_grep "review-one-pr.sh must not stage a clickable linked-issue URL" \
     'https://github.com/$IS_OWNER' lib/review-one-pr.sh
+for f in prompts/common-header.md prompts/critic.md prompts/aggregator.md; do
+    assert_grep "$f should forbid resolving linked-issue references" \
+        "Never **resolve** those references" "$f"
+done
 
 echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
 # Cross-file: architecture-refined.md must reference the scratch artifact

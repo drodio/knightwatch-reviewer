@@ -1427,43 +1427,44 @@ write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}
 # snapshot so the prompt header and author-intent.md can't disagree. Falls
 # back to the original PR_DATA if the refetch fails (transient gh error);
 # stale rationale beats an aborted review.
-PR_DATA_FRESH=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
-PR_TITLE_FRESH=$(printf '%s' "$PR_DATA_FRESH" | jq -r '.title // empty' 2>/dev/null | tr '\000-\037\177' ' ')
+# Bind a SEPARATE variable rather than rebinding PR_DATA: the refetch asks for
+# a narrower field set (no baseRefName/author), so overwriting PR_DATA would
+# leave a blob that no longer matches its declaration at the top of this file
+# and would silently break any future consumer that reads those fields here.
+PR_INTENT_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
+PR_TITLE_FRESH=$(printf '%s' "$PR_INTENT_DATA" | jq -r '.title // empty' 2>/dev/null | tr '\000-\037\177' ' ')
 if [ -n "$PR_TITLE_FRESH" ]; then
-    PR_DATA="$PR_DATA_FRESH"
     PR_TITLE="$PR_TITLE_FRESH"
+else
+    # Transient gh failure — fall back to the pre-setup snapshot rather than
+    # blanking the rationale this refresh exists to keep current.
+    PR_INTENT_DATA="$PR_DATA"
 fi
 AUTHOR_INTENT="## PR Title
-$(printf '%s' "$PR_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
+$(printf '%s' "$PR_INTENT_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
 
 ## PR Description (author's own explanation)
 
-$(printf '%s' "$PR_DATA" | jq -r '.body // "(no description provided)"')
+$(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // "(no description provided)"')
 "
 ISSUE_COUNT=0
 while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
     [ -z "$IS_NUM" ] && continue
     [ "$ISSUE_COUNT" -ge 5 ] && break
-    # Data-minimization: stage ONLY title + URL, never body. Linked-issue
-    # bodies may be private to consumers other than the public PR (the
-    # bot's GitHub identity has read access the PR author may not). A
-    # specialist or critic that quoted/paraphrased a private body would
-    # leak it into the public PR comment via the aggregator render path.
-    # Title + repo+number is metadata the PR author can already see; the
-    # body is fetched and discarded. Replaces R8/R9's instruction-based
-    # privacy guard with a hard data-minimization fix at the source.
-    # R10 F#3: drop title too — titles can leak from private repos /
-    # private issues whose titles the public PR audience cannot read.
-    # Stage only owner/repo#num, which is metadata GitHub already exposes
-    # via `closingIssuesReferences` to anyone who can see the PR. The
-    # clickable URL is deliberately NOT staged: every consumer would only
-    # be told not to follow it, and one omission at the source beats the
-    # same prohibition restated in four prompts.
+    # Data-minimization: stage ONLY `owner/repo#num` — never the issue's
+    # body, title, or URL. The bot's GitHub identity can read issues the
+    # public PR audience cannot, so any of those leaks into the posted
+    # review via the aggregator render path. The bare reference is metadata
+    # GitHub already exposes through `closingIssuesReferences` to anyone who
+    # can see the PR. Minimizing here does NOT retire the consumer-side
+    # prohibition: the bare reference is itself enough to retrieve the issue,
+    # so the tool-capable prompts (common-header, critic, aggregator) must
+    # also be told never to resolve it.
     [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
     AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM
 "
     ISSUE_COUNT=$((ISSUE_COUNT+1))
-done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
+done < <(printf '%s' "$PR_INTENT_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
 write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
 
 # Commits narrative for AUTHOR_INTENT — sourced from the local

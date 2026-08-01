@@ -145,14 +145,21 @@ done
 # sentinel here would silently strip the author's rationale from every replay,
 # making replayed intent diverge from production for the one input the intent
 # pre-pass anchors on.
-REPLAY_PR_META=$(gh pr view "$PR" --repo "$REPO" --json title,body)
-write_scratch "$REPO_DIR" "author-intent.md" "## PR Title
+# Same field set and same layout as production (lib/review-one-pr.sh), linked
+# issues included — a replay missing the "## Linked issues" section would
+# diverge on exactly the file this staging exists to make faithful.
+REPLAY_PR_META=$(gh pr view "$PR" --repo "$REPO" --json title,body,closingIssuesReferences)
+REPLAY_AUTHOR_INTENT="## PR Title
 $(printf '%s' "$REPLAY_PR_META" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
 
 ## PR Description (author's own explanation)
 
 $(printf '%s' "$REPLAY_PR_META" | jq -r '.body // "(no description provided)"')
 "
+REPLAY_ISSUES=$(printf '%s' "$REPLAY_PR_META" \
+    | jq -r '.closingIssuesReferences[]? | "- \(.owner.login)/\(.repo.name)#\(.number)"' 2>/dev/null | head -5)
+[ -n "$REPLAY_ISSUES" ] && REPLAY_AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'"$REPLAY_ISSUES"$'\n'
+write_scratch "$REPO_DIR" "author-intent.md" "$REPLAY_AUTHOR_INTENT"
 # Memory surfaces stage EMPTY, not sentinel prose: a non-empty
 # previous-review.md flips pipeline.py's has_prev and the aggregator's
 # carry-forward into re-review mode over placeholder text. Empty is the
