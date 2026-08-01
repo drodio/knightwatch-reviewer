@@ -136,10 +136,23 @@ mkdir -p "$REPO_DIR/.codex-scratch"
 write_scratch "$REPO_DIR" "diff.patch" "$(cat "$OUT/diff.patch")"
 for f in pr-comments.md loc-trend.md \
          prior-art.md dead-code-static.md \
-         file-history.md commits.md author-intent.md search-roots.md \
+         file-history.md commits.md search-roots.md \
          test-results.md; do
     write_scratch "$REPO_DIR" "$f" "(replay: not staged — upstream pipeline stage skipped)"
 done
+# author-intent.md is NOT an upstream-pipeline artifact — it is public PR
+# metadata replay can fetch itself, and intent.md now requires it. Staging the
+# sentinel here would silently strip the author's rationale from every replay,
+# making replayed intent diverge from production for the one input the intent
+# pre-pass anchors on.
+REPLAY_PR_META=$(gh pr view "$PR" --repo "$REPO" --json title,body)
+write_scratch "$REPO_DIR" "author-intent.md" "## PR Title
+$(printf '%s' "$REPLAY_PR_META" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
+
+## PR Description (author's own explanation)
+
+$(printf '%s' "$REPLAY_PR_META" | jq -r '.body // "(no description provided)"')
+"
 # Memory surfaces stage EMPTY, not sentinel prose: a non-empty
 # previous-review.md flips pipeline.py's has_prev and the aggregator's
 # carry-forward into re-review mode over placeholder text. Empty is the

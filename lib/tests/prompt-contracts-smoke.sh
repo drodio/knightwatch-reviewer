@@ -527,15 +527,12 @@ assert_grep "intent.md must carry its staged-inputs-only fence" \
 assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/intent.md
 
-echo "  asserting every author-intent.md consumer forbids following linked-issue URLs..."
-# Linked issues stage as bare owner/repo#num + URL; the bot's identity can read
-# issues the PR's audience cannot, so no surface may resolve those URLs.
-for f in prompts/standalone/intent.md prompts/critic.md prompts/aggregator.md prompts/common-header.md; do
-    # The negation is the contract — a bare "follow the linked-issue URLs"
-    # substring is equally satisfied by "you may follow the linked-issue URLs".
-    assert_grep "$f should forbid following linked-issue URLs" \
-        "never follow the linked-issue URLs" "$f"
-done
+echo "  asserting author-intent.md stages no clickable linked-issue URL..."
+# The privacy contract is enforced at the source, not by four consumer
+# policies: review-one-pr.sh stages bare owner/repo#num, so there is no URL
+# for any prompt to follow. Pin the source rather than the prohibitions.
+assert_no_grep "review-one-pr.sh must not stage a clickable linked-issue URL" \
+    'https://github.com/$IS_OWNER' lib/review-one-pr.sh
 
 echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
 # Cross-file: architecture-refined.md must reference the scratch artifact

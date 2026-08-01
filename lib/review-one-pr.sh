@@ -1419,8 +1419,20 @@ while IFS= read -r f; do
 done < <(printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
-# PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
-# trust gate could see the author. Reuse them here.
+# PR_DATA was fetched before setup so the trust gate could see the author;
+# setup (clone, canonical fetch, tests) can run for tens of minutes, and an
+# author editing the title or description in that window would otherwise be
+# graded against the pre-setup snapshot. Refresh the author-facing fields —
+# they now anchor the intent pre-pass — and re-point PR_TITLE at the same
+# snapshot so the prompt header and author-intent.md can't disagree. Falls
+# back to the original PR_DATA if the refetch fails (transient gh error);
+# stale rationale beats an aborted review.
+PR_DATA_FRESH=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
+PR_TITLE_FRESH=$(printf '%s' "$PR_DATA_FRESH" | jq -r '.title // empty' 2>/dev/null | tr '\000-\037\177' ' ')
+if [ -n "$PR_TITLE_FRESH" ]; then
+    PR_DATA="$PR_DATA_FRESH"
+    PR_TITLE="$PR_TITLE_FRESH"
+fi
 AUTHOR_INTENT="## PR Title
 $(printf '%s' "$PR_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
 
@@ -1442,10 +1454,13 @@ while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
     # privacy guard with a hard data-minimization fix at the source.
     # R10 F#3: drop title too — titles can leak from private repos /
     # private issues whose titles the public PR audience cannot read.
-    # Stage only owner/repo#num + URL, which is metadata GitHub already
-    # exposes via `closingIssuesReferences` to anyone who can see the PR.
+    # Stage only owner/repo#num, which is metadata GitHub already exposes
+    # via `closingIssuesReferences` to anyone who can see the PR. The
+    # clickable URL is deliberately NOT staged: every consumer would only
+    # be told not to follow it, and one omission at the source beats the
+    # same prohibition restated in four prompts.
     [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
+    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM
 "
     ISSUE_COUNT=$((ISSUE_COUNT+1))
 done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
