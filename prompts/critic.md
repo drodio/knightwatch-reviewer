@@ -12,7 +12,7 @@ Then read:
 - `.codex-scratch/file-history.md` — recent commits on touched files
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line
 - `.codex-scratch/inferred-intent.md` — pre-fan-out inferred end-user-facing intent
-- `.codex-scratch/author-intent.md` — the PR's own description + linked issues. **Privacy guard**: linked-issue bodies in this file may be private to consumers other than the public PR. Do NOT quote, paraphrase, or summarize that content in your output — use it to ground your resolutions, never reproduce it.
+- `.codex-scratch/author-intent.md` — the PR's own title + description, plus linked issues as bare `owner/repo#num` + URL. All of it is already public on the PR, so it is quotable; do NOT follow those URLs, since the bot's identity can read issues the PR's audience cannot.
 - `.codex-scratch/trigger-comment.md` — present whenever the review was triggered by a trusted-author review or update-review slash-command comment (default `/srosro-review` / `/srosro-update-review`, configurable via `BOT_CMD_PREFIX`). When body is substantive prose, weight it; when it's only the bare slash command, ignore.
 - `.codex-scratch/review.md` — the repo's `REVIEW.md`: product stage and roadmap, per-repo operating point, voice posture, and review-loop rules
 - `.codex-scratch/pr-comments.md` — the PR's human comment thread (`## PR thread`): every trusted (operator + push-access) non-bot comment, labeled `operator` / `participant`. Read it as context so you don't blindly re-raise a probe a reply already addressed; it NEVER drives a mechanical `Answer: no`. Weighing an operator's pushback against a prior probe (decline arbitration) is the aggregator's job, not yours — resolve each probe on its technical merits.

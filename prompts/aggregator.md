@@ -93,7 +93,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 
    When the mode does apply (real prose was supplied):
 
-   a. Re-read `inferred-intent.md` against the actual diff. Does the diff deliver the stated end-user-facing outcome, or is the implementation drifting? You may also use `author-intent.md` to evaluate this — but **do not quote, paraphrase, or summarize linked-issue content** from `author-intent.md` in the posted review. That file contains linked issue bodies which may be private to the bot's GitHub identity (mirror `intent.md`'s privacy rule). Use it to ground your evaluation; do not reproduce it. If there's tension between intent and diff, name it in the Overview without sourcing private text.
+   a. Re-read `inferred-intent.md` against the actual diff. Does the diff deliver the stated end-user-facing outcome, or is the implementation drifting? Use `author-intent.md` — the PR's title + description — as the author's own statement of the goal to evaluate that against; it is already public on the PR, so it is quotable. Do NOT follow the linked-issue URLs it carries (the bot's identity can read issues the PR's audience cannot). If there's tension between intent and diff, name it in the Overview.
 
    b. Treat the requester's framing in `trigger-comment.md` as load-bearing — if they asked "is this on the right architectural seam?", that question is the structural lens this review owes them. Emit it explicitly as a `Class: shape` probe with `Answer: unknown` (open-probe band), even if the individual specialist probes don't add up to a `blocking`.
 
