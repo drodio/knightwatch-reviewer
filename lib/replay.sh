@@ -115,8 +115,15 @@ git clone "https://github.com/$REPO.git" "$WORK/repo"
 # labelling it another — and a fetch nested in a command substitution had
 # its failure masked by the enclosing builder's exit status. Bare assignment
 # so a failed fetch aborts under `set -e`.
-REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences)"
-BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r .baseRefName)"
+REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS")"
+BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
+REPLAY_PR_AUTHOR="$REPLAY_PR_AUTHOR"
+# Fail loud on a metadata blank, mirroring production's guard: an empty
+# BASE_REF otherwise surfaces as an obscure `git fetch origin ""`.
+[ -n "$BASE_REF" ] && [ -n "$REPLAY_PR_AUTHOR" ] || {
+    echo "replay: gh pr view $PR returned no baseRefName / author — aborting" >&2
+    exit 1
+}
 ( cd "$WORK/repo" && git fetch origin "$BASE_REF" )
 git -C "$WORK/repo" diff "origin/$BASE_REF...$SHA" > "$OUT/diff.patch"
 

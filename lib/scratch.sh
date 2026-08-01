@@ -13,6 +13,13 @@
 # .codex-scratch to discover what was staged, and `find -type f` can't see a
 # symlink. See docs/specs/2026-05-04-python-migration-design.md for the
 # incident that established this.
+# The fields build_author_intent reads. Lives next to the builder so its INPUT
+# contract has one owner, the way its output shape does — a caller fetching a
+# stale field list yields a silently degraded author-intent.md, not an error.
+# Callers needing more (e.g. baseRefName/author for a trust gate) append their
+# own: --json "baseRefName,author,$AUTHOR_INTENT_FIELDS".
+AUTHOR_INTENT_FIELDS='title,body,closingIssuesReferences'
+
 # build_author_intent <pr_json>
 #   stdout: the author-intent.md body — the PR's title + description, plus any
 #   linked issues as bare `owner/repo#num`.

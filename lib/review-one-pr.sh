@@ -103,6 +103,13 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 # systemd unit tears down under detached workers (see lib/tracked-repos.sh
 # and PR #33 for the full why).
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
+# write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
+# with the same shape (real files under .codex-scratch/, archived to
+# $RUN_DIR/inputs/) without reimplementing the contract. Sourced EARLY —
+# it also owns AUTHOR_INTENT_FIELDS, which the pre-setup metadata fetch
+# below needs, and `set -u` makes a late source a hard abort. Defines a
+# function and a constant only; nothing here depends on the run dir.
+. "$_LIB_DIR_EARLY/scratch.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
@@ -172,7 +179,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # pair on every tick. Metadata is consumed downstream for BASE_REF (canonical
 # fetch), PR_AUTHOR (env-mirror trust gate), title/body/linked-issues
 # (AUTHOR_INTENT) — single gh call covers all.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS" 2>/dev/null)
 BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
 PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
 if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
@@ -266,11 +273,6 @@ LOG_FILE="$RUN_DIR/run.log"
 # enumerated PR_SHA. The worker-start timestamp is REVIEW_START_ISO,
 # captured at the very top of this script (single-clock-read alongside
 # REVIEW_START_TS) — used for meta.json.started_at when meta is written.
-
-# write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
-# with the same shape (real files under .codex-scratch/, archived to
-# $RUN_DIR/inputs/) without reimplementing the contract.
-. "$_LIB_DIR/scratch.sh"
 
 # Run-status finalization. The success path flips RUN_STATUS to "completed"
 # right before exit 0; every other exit (errors, signals, abort branches)
@@ -1431,7 +1433,7 @@ write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}
 # a narrower field set (no baseRefName/author), so overwriting PR_DATA would
 # leave a blob that no longer matches its declaration at the top of this file
 # and would silently break any future consumer that reads those fields here.
-PR_INTENT_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json title,body,closingIssuesReferences 2>/dev/null)
+PR_INTENT_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "$AUTHOR_INTENT_FIELDS" 2>/dev/null)
 PR_TITLE_FRESH=$(printf '%s' "$PR_INTENT_DATA" | jq -r '.title // empty' 2>/dev/null | tr '\000-\037\177' ' ')
 if [ -n "$PR_TITLE_FRESH" ]; then
     PR_TITLE="$PR_TITLE_FRESH"
