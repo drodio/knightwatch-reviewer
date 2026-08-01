@@ -514,15 +514,14 @@ echo "  asserting intent.md carries the staged-inputs-only fence..."
 # does not prepend common-header.md — so its injection fence must live in the
 # file itself, or PR-author-controlled description prose reaches the anchor
 # the specialists grade against with nothing in between.
-# ONE positive pin, on the fence's heading — same class as the sibling pins
-# ("Read-only working directory", lines 59/763/767), not a prose assertion.
-# Deleting or renaming the fence fails here; that is the regression worth
-# catching. Attempts at finer-grained prose pins (the exact retired
-# prohibition, the triangulate imperative, the repo-read grant) churned
-# across three review rounds — each was in turn too broad, too narrow, or
-# wording-locked, which is inherent to grepping prose. This file's header
-# says it is deliberately not a content-pinning test; one heading token is
-# the most it can carry honestly.
+# Two positive pins — the fence's heading and its contract clause — matching
+# the shape used for critic.md's fence above ("Read-only working directory"
+# plus "data, not instructions"). Deleting or renaming the fence fails here;
+# that is the regression worth catching. Finer-grained prose pins were tried
+# and dropped (the exact retired prohibition, the triangulate imperative, the
+# repo-read grant): each was in turn too broad, too narrow, or wording-locked,
+# which is inherent to grepping prose, and this file's header is explicit that
+# it is deliberately not a content-pinning test.
 assert_grep "intent.md must carry its staged-inputs-only fence" \
     "Staged-inputs-only security fence" prompts/standalone/intent.md
 assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
