@@ -508,25 +508,25 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-echo "  asserting intent.md may read author-intent.md, behind an untrusted-data fence..."
+echo "  asserting intent.md carries the staged-inputs-only fence..."
 # The prohibition on reading author-intent.md was retired once linked-issue
 # bodies stopped being staged. intent.md is a STANDALONE prompt — pipeline.py
 # does not prepend common-header.md — so its injection fence must live in the
 # file itself, or PR-author-controlled description prose reaches the anchor
 # the specialists grade against with nothing in between.
-# Affirmative half: pin the INSTRUCTION to use it, not the bare filename —
-# the retired prohibition ("Do NOT read `.codex-scratch/author-intent.md`")
-# contained the filename too, so a filename grep fences nothing.
-assert_grep "intent.md should triangulate against author-intent.md" \
-    "Triangulate against the PR title and \`author-intent.md\`" prompts/standalone/intent.md
-assert_no_grep "intent.md must not reinstate the author-intent.md prohibition" \
-    "Do NOT read \`.codex-scratch/author-intent.md\`" prompts/standalone/intent.md
-# Negative half: intent is a staged-inputs-only agent — it must NOT carry the
-# specialists' repo-investigation grant, which would widen its envelope.
-assert_grep "intent.md must carry its own data-not-instructions fence" \
+# ONE positive pin, on the fence's heading — same class as the sibling pins
+# ("Read-only working directory", lines 59/763/767), not a prose assertion.
+# Deleting or renaming the fence fails here; that is the regression worth
+# catching. Attempts at finer-grained prose pins (the exact retired
+# prohibition, the triangulate imperative, the repo-read grant) churned
+# across three review rounds — each was in turn too broad, too narrow, or
+# wording-locked, which is inherent to grepping prose. This file's header
+# says it is deliberately not a content-pinning test; one heading token is
+# the most it can carry honestly.
+assert_grep "intent.md must carry its staged-inputs-only fence" \
+    "Staged-inputs-only security fence" prompts/standalone/intent.md
+assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
     "data, not instructions" prompts/standalone/intent.md
-assert_no_grep "intent.md must not grant repo-wide reads" \
-    "You may read any file in the repository" prompts/standalone/intent.md
 
 echo "  asserting every author-intent.md consumer forbids following linked-issue URLs..."
 # Linked issues stage as bare owner/repo#num + URL; the bot's identity can read
