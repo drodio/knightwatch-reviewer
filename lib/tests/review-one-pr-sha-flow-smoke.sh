@@ -141,6 +141,15 @@ case "\$fields" in
         printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
         fi
         ;;
+    *closingIssuesReferences*)
+        # The intent refresh immediately before AUTHOR_INTENT staging asks for
+        # title,body,closingIssuesReferences — no baseRefName, so it falls past
+        # the arm above. Without this arm it hit the no-op default, returned
+        # empty, and the non-empty-title guard silently took the fallback,
+        # leaving the refresh path exercised zero times. Same title as above so
+        # the path runs without shifting any title assertion.
+        printf '{"title":"Test PR","body":"","closingIssuesReferences":{"nodes":[]}}\n'
+        ;;
     *visibility*)
         printf 'PUBLIC\n'
         ;;
@@ -890,6 +899,7 @@ if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
     done
     case "\$fields" in
         *baseRefName*) printf '{"baseRefName":"$base_ref","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n' ;;
+        *closingIssuesReferences*) printf '{"title":"Test PR","body":"","closingIssuesReferences":{"nodes":[]}}\n' ;;  # intent refresh (no baseRefName)
         *visibility*)  printf 'PUBLIC\n' ;;
         *headRefOid*)  printf '%s\n' "$head_oid" ;;  # bare SHA — both call sites use --jq '.headRefOid'
     esac

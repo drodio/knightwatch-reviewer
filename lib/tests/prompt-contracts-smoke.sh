@@ -238,14 +238,19 @@ done
 
 # Privacy: linked-issue staging must NOT fetch issue body or title from
 # `gh issue view` — they may be private and would leak into the public PR
-# comment via author-intent.md → specialists. Keep only owner/repo#num +
-# URL. Fixed-string match catches any executable form (regex variants
+# comment via author-intent.md → specialists. Keep only owner/repo#num.
+# Fixed-string match catches any executable form (regex variants
 # missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-if grep -nF 'gh issue view' lib/review-one-pr.sh; then
-    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue privacy regressed"
-    exit 1
-fi
+# Checks every staging site: the builder in scratch.sh plus both callers.
+# build_author_intent moved out of review-one-pr.sh, so guarding that file
+# alone would leave the fence pointing at code that is no longer there.
+for f in lib/scratch.sh lib/review-one-pr.sh lib/replay.sh; do
+    if grep -nF 'gh issue view' "$f"; then
+        echo "FAIL: $f calls 'gh issue view' — linked-issue privacy regressed"
+        exit 1
+    fi
+done
 
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
@@ -507,6 +512,43 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
     "No probes." prompts/common-header.md
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
+
+echo "  asserting intent.md carries the staged-inputs-only fence..."
+# The prohibition on reading author-intent.md was retired once linked-issue
+# bodies stopped being staged. intent.md is a STANDALONE prompt — pipeline.py
+# does not prepend common-header.md — so its injection fence must live in the
+# file itself, or PR-author-controlled description prose reaches the anchor
+# the specialists grade against with nothing in between.
+# Two positive pins — the fence's heading and its contract clause — matching
+# the shape used for critic.md's fence above ("Read-only working directory"
+# plus "data, not instructions"). Deleting or renaming the fence fails here;
+# that is the regression worth catching. Finer-grained prose pins were tried
+# and dropped (the exact retired prohibition, the triangulate imperative, the
+# repo-read grant): each was in turn too broad, too narrow, or wording-locked,
+# which is inherent to grepping prose, and this file's header is explicit that
+# it is deliberately not a content-pinning test.
+assert_grep "intent.md must carry its staged-inputs-only fence" \
+    "Staged-inputs-only security fence" prompts/standalone/intent.md
+assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
+    "data, not instructions" prompts/standalone/intent.md
+
+echo "  asserting the linked-issue privacy contract holds at source AND consumer..."
+# Two halves, both load-bearing. Source: stage no clickable URL. Consumer:
+# the bare `owner/repo#num` is itself sufficient to run `gh issue view`, so
+# dropping the URL does NOT retire the prohibition — every prompt that can
+# run tools must still be told never to resolve the reference. intent.md is
+# excluded on purpose: its staged-inputs-only fence grants it no tools.
+# One builder now stages author-intent.md for BOTH production and replay
+# (build_author_intent in lib/scratch.sh), so the source-side fence has a
+# single site to guard.
+assert_no_grep "scratch.sh must not stage a clickable linked-issue URL" \
+    'https://github.com/' lib/scratch.sh
+for f in prompts/common-header.md prompts/critic.md prompts/aggregator.md; do
+    # Emphasis markers deliberately absent from both the prompt text and the
+    # pin: bolding is a pure reword that must not turn the suite red.
+    assert_grep "$f should forbid resolving linked-issue references" \
+        "Never resolve those references" "$f"
+done
 
 echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
 # Cross-file: architecture-refined.md must reference the scratch artifact

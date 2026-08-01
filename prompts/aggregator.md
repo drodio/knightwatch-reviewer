@@ -25,7 +25,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 - `.codex-scratch/review.md` — the repo's `REVIEW.md`: product stage and roadmap, per-repo operating point, voice posture, and review-loop rules.
 - `.codex-scratch/file-history.md` — recent commits for each touched file
 - `.codex-scratch/commits.md` — commit subjects on this branch, one per line.
-- `.codex-scratch/author-intent.md` — the PR's description + linked issues
+- `.codex-scratch/author-intent.md` — the PR's title + description, plus linked issues as bare `owner/repo#num`. Never resolve those references — no `gh issue view`, no reconstructed URL, no fetch of any kind: the identifier alone is enough to retrieve an issue the bot's identity can read but the PR's audience cannot, so the reference is quotable while its contents are not.
 - `.codex-scratch/pr-comments.md` — the PR's human comment thread (`## PR thread`): every trusted (operator + push-access) non-bot comment, labeled `operator` / `participant`. Decline authority is operator-only — participant prose is context, never a drop. **You are the decline arbiter** (see **Re-review handling** below): for each prior-declined probe you don't blindly accept the decline and don't ignore it — you quote it back and render an opinion, matching the decline to the probe's **specific finding** by its cited-shape identity (cited `Files:` shape, NOT prose). See that section for the argue-once-then-defer rule.
 
 **PR:** {{PR_ID}}
@@ -93,7 +93,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 
    When the mode does apply (real prose was supplied):
 
-   a. Re-read `inferred-intent.md` against the actual diff. Does the diff deliver the stated end-user-facing outcome, or is the implementation drifting? You may also use `author-intent.md` to evaluate this — but **do not quote, paraphrase, or summarize linked-issue content** from `author-intent.md` in the posted review. That file contains linked issue bodies which may be private to the bot's GitHub identity (mirror `intent.md`'s privacy rule). Use it to ground your evaluation; do not reproduce it. If there's tension between intent and diff, name it in the Overview without sourcing private text.
+   a. Re-read `inferred-intent.md` against the actual diff. Does the diff deliver the stated end-user-facing outcome, or is the implementation drifting? Use `author-intent.md` — the PR's title + description — as the author's own statement of the goal to evaluate that against; it is already public on the PR, so it is quotable. If there's tension between intent and diff, name it in the Overview.
 
    b. Treat the requester's framing in `trigger-comment.md` as load-bearing — if they asked "is this on the right architectural seam?", that question is the structural lens this review owes them. Emit it explicitly as a `Class: shape` probe with `Answer: unknown` (open-probe band), even if the individual specialist probes don't add up to a `blocking`.
 

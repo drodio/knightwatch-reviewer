@@ -103,6 +103,13 @@ WORKDIRS_DIR="${WORKDIRS_DIR:-$STATE_DIR/workdirs}"
 # systemd unit tears down under detached workers (see lib/tracked-repos.sh
 # and PR #33 for the full why).
 . "$_LIB_DIR_EARLY/tracked-repos.sh"
+# write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
+# with the same shape (real files under .codex-scratch/, archived to
+# $RUN_DIR/inputs/) without reimplementing the contract. Sourced EARLY —
+# it also owns AUTHOR_INTENT_FIELDS, which the pre-setup metadata fetch
+# below needs, and `set -u` makes a late source a hard abort. Defines a
+# function and a constant only; nothing here depends on the run dir.
+. "$_LIB_DIR_EARLY/scratch.sh"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
@@ -172,7 +179,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # pair on every tick. Metadata is consumed downstream for BASE_REF (canonical
 # fetch), PR_AUTHOR (env-mirror trust gate), title/body/linked-issues
 # (AUTHOR_INTENT) — single gh call covers all.
-PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences 2>/dev/null)
+PR_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS" 2>/dev/null)
 BASE_REF=$(printf '%s' "$PR_DATA" | jq -r '.baseRefName // empty')
 PR_AUTHOR=$(printf '%s' "$PR_DATA" | jq -r '.author.login // empty')
 if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
@@ -266,11 +273,6 @@ LOG_FILE="$RUN_DIR/run.log"
 # enumerated PR_SHA. The worker-start timestamp is REVIEW_START_ISO,
 # captured at the very top of this script (single-clock-read alongside
 # REVIEW_START_TS) — used for meta.json.started_at when meta is written.
-
-# write_scratch lives in lib/scratch.sh so lib/replay.sh can stage scratch
-# with the same shape (real files under .codex-scratch/, archived to
-# $RUN_DIR/inputs/) without reimplementing the contract.
-. "$_LIB_DIR/scratch.sh"
 
 # Run-status finalization. The success path flips RUN_STATUS to "completed"
 # right before exit 0; every other exit (errors, signals, abort branches)
@@ -1419,37 +1421,28 @@ while IFS= read -r f; do
 done < <(printf '%s' "$KID_INPUT_DIFF" | extract_touched_files_both_sides | head -30)
 write_scratch "$REPO_DIR" "file-history.md" "${FILE_HISTORY:-(no touched files)}"
 
-# PR_DATA + PR_AUTHOR were fetched earlier (above the env mirror) so the
-# trust gate could see the author. Reuse them here.
-AUTHOR_INTENT="## PR Title
-$(printf '%s' "$PR_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
-
-## PR Description (author's own explanation)
-
-$(printf '%s' "$PR_DATA" | jq -r '.body // "(no description provided)"')
-"
-ISSUE_COUNT=0
-while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
-    [ -z "$IS_NUM" ] && continue
-    [ "$ISSUE_COUNT" -ge 5 ] && break
-    # Data-minimization: stage ONLY title + URL, never body. Linked-issue
-    # bodies may be private to consumers other than the public PR (the
-    # bot's GitHub identity has read access the PR author may not). A
-    # specialist or critic that quoted/paraphrased a private body would
-    # leak it into the public PR comment via the aggregator render path.
-    # Title + repo+number is metadata the PR author can already see; the
-    # body is fetched and discarded. Replaces R8/R9's instruction-based
-    # privacy guard with a hard data-minimization fix at the source.
-    # R10 F#3: drop title too — titles can leak from private repos /
-    # private issues whose titles the public PR audience cannot read.
-    # Stage only owner/repo#num + URL, which is metadata GitHub already
-    # exposes via `closingIssuesReferences` to anyone who can see the PR.
-    [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM (https://github.com/$IS_OWNER/$IS_NAME/issues/$IS_NUM)
-"
-    ISSUE_COUNT=$((ISSUE_COUNT+1))
-done < <(printf '%s' "$PR_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
-write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
+# PR_DATA was fetched before setup so the trust gate could see the author;
+# setup (clone, canonical fetch, tests) can run for tens of minutes, and an
+# author editing the title or description in that window would otherwise be
+# graded against the pre-setup snapshot. Refresh the author-facing fields —
+# they now anchor the intent pre-pass — and re-point PR_TITLE at the same
+# snapshot so the prompt header and author-intent.md can't disagree. Falls
+# back to the original PR_DATA if the refetch fails (transient gh error);
+# stale rationale beats an aborted review.
+# Bind a SEPARATE variable rather than rebinding PR_DATA: the refetch asks for
+# a narrower field set (no baseRefName/author), so overwriting PR_DATA would
+# leave a blob that no longer matches its declaration at the top of this file
+# and would silently break any future consumer that reads those fields here.
+PR_INTENT_DATA=$(gh pr view "$PR_NUM" --repo "$REPO" --json "$AUTHOR_INTENT_FIELDS" 2>/dev/null)
+PR_TITLE_FRESH=$(printf '%s' "$PR_INTENT_DATA" | jq -r '.title // empty' 2>/dev/null | tr '\000-\037\177' ' ')
+if [ -n "$PR_TITLE_FRESH" ]; then
+    PR_TITLE="$PR_TITLE_FRESH"
+else
+    # Transient gh failure — fall back to the pre-setup snapshot rather than
+    # blanking the rationale this refresh exists to keep current.
+    PR_INTENT_DATA="$PR_DATA"
+fi
+write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
 # Commits narrative for AUTHOR_INTENT — sourced from the local
 # checkout (BASE_REF_SHA..REVIEWED_SHA) rather than PR_DATA.commits.
