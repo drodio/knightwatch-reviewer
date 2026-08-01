@@ -514,8 +514,14 @@ echo "  asserting intent.md may read author-intent.md, behind an untrusted-data 
 # does not prepend common-header.md — so its injection fence must live in the
 # file itself, or PR-author-controlled description prose reaches the anchor
 # the specialists grade against with nothing in between.
-assert_grep "intent.md should read author-intent.md" \
-    "author-intent.md" prompts/standalone/intent.md
+# Assert the PROHIBITION is gone, not that the filename appears — the retired
+# line ("Do NOT read `.codex-scratch/author-intent.md`") also contained the
+# filename, so a bare filename grep passes on the pre-fix file and fences
+# nothing.
+assert_no_grep "intent.md must not reinstate the author-intent.md prohibition" \
+    "Do NOT read" prompts/standalone/intent.md
+assert_grep "intent.md must carry the read-only sandbox fence" \
+    "read-only commands only" prompts/standalone/intent.md
 assert_grep "intent.md must carry its own data-not-instructions fence" \
     "data, not instructions" prompts/standalone/intent.md
 
@@ -523,8 +529,10 @@ echo "  asserting every author-intent.md consumer forbids following linked-issue
 # Linked issues stage as bare owner/repo#num + URL; the bot's identity can read
 # issues the PR's audience cannot, so no surface may resolve those URLs.
 for f in prompts/standalone/intent.md prompts/critic.md prompts/aggregator.md prompts/common-header.md; do
+    # Pin the hazard token, not the imperative wording — this suite is
+    # deliberately not a prose test.
     assert_grep "$f should forbid following linked-issue URLs" \
-        "never follow the linked-issue URLs" "$f"
+        "follow the linked-issue URLs" "$f"
 done
 
 echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
