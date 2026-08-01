@@ -242,10 +242,15 @@ done
 # Fixed-string match catches any executable form (regex variants
 # missed lowercase assignments + interpolated `$(...)` quoting).
 echo "  asserting linked-issue staging does NOT call 'gh issue view'..."
-if grep -nF 'gh issue view' lib/review-one-pr.sh; then
-    echo "FAIL: lib/review-one-pr.sh calls 'gh issue view' — linked-issue privacy regressed"
-    exit 1
-fi
+# Checks every staging site: the builder in scratch.sh plus both callers.
+# build_author_intent moved out of review-one-pr.sh, so guarding that file
+# alone would leave the fence pointing at code that is no longer there.
+for f in lib/scratch.sh lib/review-one-pr.sh lib/replay.sh; do
+    if grep -nF 'gh issue view' "$f"; then
+        echo "FAIL: $f calls 'gh issue view' — linked-issue privacy regressed"
+        exit 1
+    fi
+done
 
 echo "  asserting re-review loop-breaker (Path 2) in aggregator.md..."
 assert_grep "aggregator.md should reference momentum specialist output" \
