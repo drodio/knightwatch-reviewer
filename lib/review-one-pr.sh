@@ -1440,32 +1440,7 @@ else
     # blanking the rationale this refresh exists to keep current.
     PR_INTENT_DATA="$PR_DATA"
 fi
-AUTHOR_INTENT="## PR Title
-$(printf '%s' "$PR_INTENT_DATA" | jq -r '.title // empty' | tr '\000-\037\177' ' ')
-
-## PR Description (author's own explanation)
-
-$(printf '%s' "$PR_INTENT_DATA" | jq -r '.body // "(no description provided)"')
-"
-ISSUE_COUNT=0
-while IFS=$'\t' read -r IS_OWNER IS_NAME IS_NUM; do
-    [ -z "$IS_NUM" ] && continue
-    [ "$ISSUE_COUNT" -ge 5 ] && break
-    # Data-minimization: stage ONLY `owner/repo#num` — never the issue's
-    # body, title, or URL. The bot's GitHub identity can read issues the
-    # public PR audience cannot, so any of those leaks into the posted
-    # review via the aggregator render path. The bare reference is metadata
-    # GitHub already exposes through `closingIssuesReferences` to anyone who
-    # can see the PR. Minimizing here does NOT retire the consumer-side
-    # prohibition: the bare reference is itself enough to retrieve the issue,
-    # so the tool-capable prompts (common-header, critic, aggregator) must
-    # also be told never to resolve it.
-    [ "$ISSUE_COUNT" -eq 0 ] && AUTHOR_INTENT+=$'\n## Linked issues (this PR closes)\n\n'
-    AUTHOR_INTENT+="- $IS_OWNER/$IS_NAME#$IS_NUM
-"
-    ISSUE_COUNT=$((ISSUE_COUNT+1))
-done < <(printf '%s' "$PR_INTENT_DATA" | jq -r '.closingIssuesReferences[]? | [.owner.login, .repo.name, (.number|tostring)] | @tsv' 2>/dev/null)
-write_scratch "$REPO_DIR" "author-intent.md" "$AUTHOR_INTENT"
+write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$PR_INTENT_DATA")"
 
 # Commits narrative for AUTHOR_INTENT — sourced from the local
 # checkout (BASE_REF_SHA..REVIEWED_SHA) rather than PR_DATA.commits.

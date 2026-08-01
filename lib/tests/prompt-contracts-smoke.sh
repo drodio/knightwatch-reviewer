@@ -533,11 +533,16 @@ echo "  asserting the linked-issue privacy contract holds at source AND consumer
 # dropping the URL does NOT retire the prohibition — every prompt that can
 # run tools must still be told never to resolve the reference. intent.md is
 # excluded on purpose: its staged-inputs-only fence grants it no tools.
-assert_no_grep "review-one-pr.sh must not stage a clickable linked-issue URL" \
-    'https://github.com/$IS_OWNER' lib/review-one-pr.sh
+# One builder now stages author-intent.md for BOTH production and replay
+# (build_author_intent in lib/scratch.sh), so the source-side fence has a
+# single site to guard.
+assert_no_grep "scratch.sh must not stage a clickable linked-issue URL" \
+    'https://github.com/' lib/scratch.sh
 for f in prompts/common-header.md prompts/critic.md prompts/aggregator.md; do
+    # Emphasis markers deliberately absent from both the prompt text and the
+    # pin: bolding is a pure reword that must not turn the suite red.
     assert_grep "$f should forbid resolving linked-issue references" \
-        "Never **resolve** those references" "$f"
+        "Never resolve those references" "$f"
 done
 
 echo "  asserting architecture-refined.md anchors on inferred-intent scratch artifact..."
