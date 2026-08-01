@@ -109,8 +109,14 @@ trap cleanup_replay EXIT
 git clone "https://github.com/$REPO.git" "$WORK/repo"
 ( cd "$WORK/repo" && git fetch origin "pull/$PR/head" && git checkout "$SHA" )
 
-# Build diff at the historical SHA using local git diff, not gh pr diff
-BASE_REF="$(gh pr view "$PR" --repo "$REPO" --json baseRefName --jq .baseRefName)"
+# ONE metadata snapshot for the whole replay. Reading the same PR through
+# several `gh pr view` calls let a title edit between them make the prompt
+# header disagree with author-intent.md — i.e. benchmark one intent while
+# labelling it another — and a fetch nested in a command substitution had
+# its failure masked by the enclosing builder's exit status. Bare assignment
+# so a failed fetch aborts under `set -e`.
+REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json baseRefName,title,body,author,closingIssuesReferences)"
+BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r .baseRefName)"
 ( cd "$WORK/repo" && git fetch origin "$BASE_REF" )
 git -C "$WORK/repo" diff "origin/$BASE_REF...$SHA" > "$OUT/diff.patch"
 
@@ -148,8 +154,7 @@ done
 # Built by the SAME helper production uses (lib/scratch.sh): a replay whose
 # author-intent.md differs in layout, reference shape, or cap would silently
 # invalidate the prompt A/B comparison this harness exists for.
-write_scratch "$REPO_DIR" "author-intent.md" \
-    "$(build_author_intent "$(gh pr view "$PR" --repo "$REPO" --json title,body,closingIssuesReferences)")"
+write_scratch "$REPO_DIR" "author-intent.md" "$(build_author_intent "$REPLAY_PR_META")"
 # Memory surfaces stage EMPTY, not sentinel prose: a non-empty
 # previous-review.md flips pipeline.py's has_prev and the aggregator's
 # carry-forward into re-review mode over placeholder text. Empty is the
@@ -242,9 +247,9 @@ if [ -f "$PROBE_SCHEMA_SRC" ]; then
 fi
 
 PR_ID="$REPO#$PR"
-PR_TITLE="$(gh pr view "$PR" --repo "$REPO" --json title --jq .title | tr '\000-\037\177' ' ')"
+PR_TITLE="$(printf '%s' "$REPLAY_PR_META" | jq -r '.title // empty' | tr '\000-\037\177' ' ')"
 PR_URL="https://github.com/$REPO/pull/$PR"
-PR_AUTHOR="$(gh pr view "$PR" --repo "$REPO" --json author --jq .author.login)"
+PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
 # Mirror the live worker's visibility lookup so replays render the same
 # security/portability posture production does — without it, every replay
 # falls back to pipeline.py's `private` default and a public-repo canary
