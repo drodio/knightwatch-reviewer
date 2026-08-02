@@ -41,7 +41,7 @@ FIRST, read `.codex-scratch/diff.patch` and `.codex-scratch/file-history.md`. Tr
 - `tests` — coverage gaps. Not whether the bug exists.
 - `architecture-refined` — layering / strategic / roadmap fit. Not "this code does the wrong thing."
 
-When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural probe over three local fixes — see `standards.md` § Bug-Class-Recurrence.
+When the same data-integrity shape recurs (same race in three handlers, same commit-vs-emit ordering on three webhooks), prefer one structural probe over three local fixes — the recurrence is the finding, per the universal policy's recurring-file escalation.
 
 Out of scope: security-only, style, test coverage, product-fit.
 

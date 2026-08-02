@@ -1,21 +1,16 @@
 # Review instructions — knightwatch-reviewer
 
-Reviewer-facing policy for this repo. Read it before any other input: it carries
-the operating point and the voice posture every finding must satisfy. The
-review-loop rules are org policy and are appended by each reviewer from its own
-copy — `resolve_review_md` in `lib/knightwatch-config.sh` for knightwatch,
-`_src_rubric` in claude-config for roborev — so they are not in this file.
+What is different about reviewing *this* repo: the operating point, and the
+repo-specific calibration below. Universal review policy — voice posture,
+decline rules, review-loop rules — is not here; knightwatch prepends it from
+`prompts/policy.md` to every agent, so it does not need restating per repo.
 
-This file is the single source for both reviewers, and this repo is the one that
-implements the knightwatch half — `resolve_review_md` in
-`lib/knightwatch-config.sh` stages it from the base branch. roborev cannot open
-files a config merely points at, so its copy is inlined into `.roborev.toml`'s
-`review_guidelines` by `just sync-review-config` — a recipe in the
-`claude-config` repo, not this one. **An edit here does not reach roborev until
-that sync is re-run from there.**
-
-`standards.md` references below resolve inside the knightwatch bundle; roborev
-cannot see that file.
+This repo implements the knightwatch half of that staging — `resolve_review_md`
+in `lib/knightwatch-config.sh` reads this file from the base branch. roborev
+cannot open files a config merely points at, so its copy is inlined into
+`.roborev.toml`'s `review_guidelines` by `just sync-review-config`, a recipe in
+the `claude-config` repo. **An edit here does not reach roborev until that sync
+is re-run from there.**
 
 ## Product context
 
@@ -51,9 +46,9 @@ cannot see that file.
 
 ## Review priority
 
-**Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance. The universal Broken-Glass posture lives in `standards.md` § Broken-Glass Test — apply that here, including the worked PR#47→#50 substrate-replacement example.
+**Cultural emphasis:** SIMPLIFY at all costs — complexity kills PMF iteration. Subtractive remedies (delete, collapse, retire) are higher-leverage than additive ones at any severity. Cumulative additive LOC across review rounds is the structural-failure signal — see PR#47 contrast pair below. Prompt-engineering changes here cascade into every PR review across every tracked repo; favor precise, falsifiable rules over vague guidance.
 
-**Repo-specific contrast pairs:** beyond the universal set in `standards.md`:
+**Repo-specific contrast pairs:**
 
 | Architecture bloat — DON'T (in this repo) | Bugfix — DO |
 |---|---|

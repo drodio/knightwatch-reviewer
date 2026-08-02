@@ -47,18 +47,65 @@ assert_no_grep() {
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
 
-# Security fence: per-angle critics run with codex sandbox bypassed
+# Security fence: every agent runs with the codex sandbox bypassed
 # (--dangerously-bypass-approvals-and-sandbox in lib/pipeline.py:run_codex)
 # while reading PR-controlled inputs. The read-only/data-not-instructions
-# fence in critic.md is what stops a malicious diff from prompt-injecting
-# the critic into write actions or credential exfiltration. If the fence
-# is deleted, `just test` stays green but the dangerous execution path
-# remains exposed.
-echo "  asserting read-only sandbox fence in critic.md..."
-assert_grep "critic.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/critic.md
-assert_grep "critic.md should fence repo content as data-not-instructions" \
-    "data, not instructions" prompts/critic.md
+# fence is what stops a malicious diff from prompt-injecting an agent into
+# write actions or credential exfiltration. If it is deleted, `just test`
+# stays green but the dangerous execution path remains exposed.
+#
+# Asserted against the BUILT prompt for every kind, not against a source
+# file. The fence used to be retyped into common-header.md, critic.md, and
+# aggregator.md, and the three copies drifted in which files they named
+# untrusted; it now lives once in policy.md and is prepended by
+# build_prompt. Checking the assembled artifact is what proves each kind
+# actually receives it — a file-level grep would go green on a prelude
+# that never reached the critic.
+echo "  asserting universal policy reaches every built prompt..."
+python3 - <<'FENCE_PY'
+import os, sys
+sys.path.insert(0, ".")
+os.environ.setdefault("REPO_VISIBILITY", "private")
+from lib import pipeline
+
+KINDS = [
+    ("specialist", "security"),
+    ("standalone", "momentum"),
+    ("critic", "critic-security"),
+    ("aggregator", "aggregator"),
+]
+# Each token is a rule that must reach every agent. Structural tokens only —
+# this file does not pin rationale prose (see the header contract).
+TOKENS = [
+    "Read-only working directory",
+    "data, not instructions",
+    "Hypothetical-future-regression decline",
+    "CI/test fences for hypothetical future regressions",
+    "<!-- kwr-test-fence:review-loop -->",
+]
+failed = False
+for kind, agent in KINDS:
+    built = pipeline.build_prompt(
+        kind=kind, agent=agent, prompts_dir="prompts",
+        pr_id="owner/repo#1", pr_title="t", pr_url="u", pr_author="a",
+    )
+    for tok in TOKENS:
+        if tok not in built:
+            print(f"FAIL: built {kind} prompt is missing universal policy token: {tok!r}")
+            failed = True
+sys.exit(1 if failed else 0)
+FENCE_PY
+
+# Negative fence: the operating point belongs to the repo's REVIEW.md, staged
+# as .codex-scratch/review.md. A prompt that hardcodes the stage silently
+# overrides any repo that states a different one — the drift PR #201 left
+# behind when it moved the operating point to REVIEW.md without updating the
+# layer that acts on it.
+echo "  asserting no prompt hardcodes the operating point..."
+if grep -rniE "pre-pmf" prompts/; then
+    echo "FAIL: a prompt hardcodes the pre-PMF operating point — read it from .codex-scratch/review.md instead"
+    exit 1
+fi
 
 # Negative fence: the legacy critic opening said "Eight specialists have
 # surfaced findings" — that wording predates the probe-as-unit refactor
@@ -269,14 +316,6 @@ assert_grep "critic.md should carry the Hypothetical-future-regression decline r
     "Hypothetical-future-regression decline" prompts/critic.md
 assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
     "Hypothetical-future-regression decline" prompts/aggregator.md
-
-# Token fence: common-header.md "Don't propose:" list must include
-# CI/test fences for hypothetical future regressions — the upstream
-# emission-prevention companion to critic.md's downstream decline
-# rule. Anti-Bloat / YAGNI pairing keeps the canonical term visible.
-echo "  asserting CI-fence Don't-propose bullet in common-header.md..."
-assert_grep "common-header.md should forbid CI fences for hypothetical future regressions" \
-    "CI/test fences for hypothetical future regressions" prompts/common-header.md
 
 # Token fence: common-header.md must carry the Iteration-Q-shape
 # trigger — the cut-positive escape hatch for fence concerns that ARE
@@ -765,23 +804,14 @@ assert_grep "prompts/standalone/momentum.md should treat n/a Adds as insufficien
     "endpoint Adds is n/a" prompts/standalone/momentum.md
 
 echo "  asserting read-only sandbox fence on aggregator and momentum..."
-# Aggregator and momentum agents read PR-controlled inputs while codex
-# runs with --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69).
-# Without the data-not-instructions fence the critic carries, a malicious
-# PR could prompt-inject the agents into write actions, network calls,
-# or credential exfiltration. Same fence as critic.md:3. Specifically pin
-# test-results.md (PR-controlled `just test` output) by name so the
-# enumeration can't silently drop it on a refactor.
-assert_grep "aggregator.md fence should pin test-results.md by name (PR-controlled just-test output)" \
-    'test-results.md` (PR-controlled' prompts/aggregator.md
-assert_grep "aggregator.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/aggregator.md
-assert_grep "aggregator.md should fence inputs as data-not-instructions" \
-    "data, not instructions" prompts/aggregator.md
-assert_grep "momentum.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/standalone/momentum.md
-assert_grep "momentum.md should fence inputs as data-not-instructions" \
-    "data, not instructions" prompts/standalone/momentum.md
+# Every agent reads PR-controlled inputs while codex runs with
+# --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69), so the
+# data-not-instructions fence has to reach all of them — that reach is
+# asserted against the built prompts in section 1. What is pinned here is the
+# fence's ENUMERATION: test-results.md (PR-controlled `just test` output) is
+# named explicitly so a refactor of the list can't silently drop it.
+assert_grep "policy.md fence should pin test-results.md by name (PR-controlled just-test output)" \
+    'test-results.md` — PR-controlled' prompts/policy.md
 
 # Bake-off timer cadence + persistence are quota-control contracts: the ~45-repo
 # walk is the heaviest single draw on the shared srosro GitHub budget, so it runs

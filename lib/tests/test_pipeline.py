@@ -53,6 +53,8 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     """
     (prompts_dir / "specialists").mkdir(parents=True, exist_ok=True)
     (prompts_dir / "standalone").mkdir(parents=True, exist_ok=True)
+    # Prepended to every kind by build_prompt; absent, it aborts the review.
+    (prompts_dir / "policy.md").write_text("POLICY: universal review policy.\n")
     (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
     for specialist in pipeline.SPECIALISTS:
         (prompts_dir / "specialists" / f"{specialist}.md").write_text(f"BODY {specialist}\n")
@@ -869,6 +871,8 @@ class TestBuildPrompt(unittest.TestCase):
         self.prompts = Path(self.tmp.name) / "prompts"
         (self.prompts / "specialists").mkdir(parents=True)
         (self.prompts / "standalone").mkdir(parents=True)
+        # Minimal policy.md — build_prompt prepends it to every kind
+        (self.prompts / "policy.md").write_text("POLICY: universal review policy.\n")
         # Minimal common-header.md
         (self.prompts / "common-header.md").write_text(
             "PR: {{PR_ID}} ({{PR_TITLE}}) by {{PR_AUTHOR}}\n"
@@ -936,7 +940,8 @@ class TestBuildPrompt(unittest.TestCase):
             pr_id="owner/repo#42", pr_title="Add X",
             pr_url="https://example/pull/42", pr_author="alice",
         )
-        self.assertEqual(out, "Infer intent for owner/repo#42 (Add X).\n")
+        self.assertIn("Infer intent for owner/repo#42 (Add X).", out)
+        self.assertIn("POLICY:", out)  # universal policy reaches standalones
         self.assertNotIn("PR: ", out)  # no common-header
 
     def test_critic_returns_raw_file(self):
@@ -952,7 +957,8 @@ class TestBuildPrompt(unittest.TestCase):
             prompts_dir=str(self.prompts),
             pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
         )
-        self.assertEqual(out, "Critique probes for security.\n")  # ANGLE substituted
+        self.assertIn("Critique probes for security.", out)  # ANGLE substituted
+        self.assertIn("POLICY:", out)  # universal policy reaches critics
 
     def test_aggregator_stitches_voice(self):
         out = pipeline.build_prompt(
@@ -980,6 +986,17 @@ class TestBuildPrompt(unittest.TestCase):
             pipeline.build_prompt(
                 kind="aggregator", agent="aggregator",
                 prompts_dir=str(self.prompts),
+                pr_id="x", pr_title="x", pr_url="x", pr_author="x",
+            )
+
+    def test_missing_policy_raises(self):
+        """A missing policy.md would silently strip the security fence and every
+        decline rule from an otherwise-working review — fail loud instead."""
+        (self.prompts / "specialists" / "security.md").write_text("body\n")
+        (self.prompts / "policy.md").unlink()
+        with self.assertRaises(FileNotFoundError):
+            pipeline.build_prompt(
+                kind="specialist", agent="security", prompts_dir=str(self.prompts),
                 pr_id="x", pr_title="x", pr_url="x", pr_author="x",
             )
 
@@ -1051,6 +1068,7 @@ class TestRunSpecialist(unittest.TestCase):
         # Minimal prompts dir so build_prompt can resolve files
         self.prompts = Path(self.tmp.name) / "prompts"
         (self.prompts / "specialists").mkdir(parents=True)
+        (self.prompts / "policy.md").write_text("POLICY: universal review policy.\n")
         (self.prompts / "common-header.md").write_text("HEADER {{SPECIALIST_NAME}}\n")
         (self.prompts / "specialists" / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
         (self.prompts / "critic.md").write_text("Critique {{ANGLE}}.\n")
