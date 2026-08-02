@@ -52,7 +52,7 @@ is re-run from there.**
 
 | Architecture bloat — DON'T (in this repo) | Bugfix — DO |
 |---|---|
-| Add a new specialist whose remedy could land in `common-header.md` Rule 8 or `critic.md` REMEDY-BLOAT instead. Each new specialist is ~$0.50/PR. | Add a specialist when there's a finding class no existing specialist owns. |
-| Pin literal prompt prose in a smoke test ("Rule 8 says exactly X"). Rule 8 itself forbids tests that calcify prose. | Token-level smoke that fences the contract surface (presence of a named bucket, a status token, a file path) without pinning wording. |
+| Add a new specialist whose remedy could land in `policy.md`'s Don't-propose list or Hypothetical-future-regression decline instead. Each new specialist is ~$0.50/PR. | Add a specialist when there's a finding class no existing specialist owns. |
+| Pin literal prompt prose in a smoke test ("the Don't-propose list says exactly X"). That list itself forbids tests that calcify prose. | Token-level smoke that fences the contract surface (presence of a named bucket, a status token, a file path) without pinning wording. |
 | Defensive guards in shell that handle `set -u` with no observed unbound-var failure. | Handle real failure modes: codex non-zero exits, missing scratch files, race between `gh pr comment` and `state_set`. |
 | Continue iterating with additive remedies on a refactor PR whose cumulative additive LOC across rounds has crossed +100 (probe-as-unit PR#47 dynamic). | Surface the substrate-replacement move that retires the recurring bug class — net-LOC-down beats five rounds of net-LOC-up parser fixes. |

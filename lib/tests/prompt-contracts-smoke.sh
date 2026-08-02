@@ -109,6 +109,13 @@ if "may read any file" in intent:
 if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not in intent:
     print("FAIL: built intent prompt lost its staged-inputs-only fence")
     failed = True
+# The prelude must not dictate output shape either. _validate_intent requires
+# exactly one non-blank "Inferred intent: " line and run_pipeline aborts
+# otherwise, so a prelude directive to also state the operating point killed
+# every review before Wave B — observed, not hypothetical (first commit here).
+if "state the operating point" in intent.lower():
+    print("FAIL: built intent prompt carries an operating-point output directive — _validate_intent allows exactly one line")
+    failed = True
 
 sys.exit(1 if failed else 0)
 FENCE_PY
