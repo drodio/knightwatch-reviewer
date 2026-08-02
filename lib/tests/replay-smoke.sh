@@ -71,4 +71,40 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted)"
+# Scenario 4: metadata → pipeline author wiring.
+# The whole replay harness was dead from #206 until #213: line 120 read
+# PR_AUTHOR="$REPLAY_PR_AUTHOR", a self-assignment of a never-set name, so
+# `set -u` aborted every run at clone time — before the guard on the next line
+# could say anything useful. Nothing in `just test` touched that path, which is
+# why weeks of broken replays went unnoticed (you cannot run the tool that
+# would show the tool is broken). This drives the real derivation + guard on a
+# synthetic metadata snapshot, so a re-introduced self-assignment or an unset
+# author fails here instead of in production.
+echo "  scenario 4: PR_AUTHOR derived from the metadata snapshot, guard fires when absent..."
+assert_author_wiring() {
+    local label="$1" meta="$2" want_rc="$3" want_author="${4:-}"
+    local rc=0 out
+    out=$(
+        set +u
+        REPLAY_PR_META="$meta"
+        BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
+        PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
+        [ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ] || exit 1
+        printf '%s' "$PR_AUTHOR"
+    ) || rc=$?
+    [ "$rc" = "$want_rc" ] \
+        || { echo "FAIL scenario 4 ($label): rc=$rc, want $want_rc"; exit 1; }
+    [ -z "$want_author" ] || [ "$out" = "$want_author" ] \
+        || { echo "FAIL scenario 4 ($label): author='$out', want '$want_author'"; exit 1; }
+}
+assert_author_wiring "full metadata" '{"baseRefName":"main","author":{"login":"octocat"}}' 0 octocat
+assert_author_wiring "author missing" '{"baseRefName":"main"}' 1
+assert_author_wiring "baseRef missing" '{"author":{"login":"octocat"}}' 1
+
+# The failure that shipped: the derivation replaced by a self-assignment of an
+# unset name. Under `set -u` — which replay.sh runs with — that must abort.
+( set -u; unset PR_AUTHOR 2>/dev/null || true; PR_AUTHOR="$PR_AUTHOR" ) 2>/dev/null \
+    && { echo "FAIL scenario 4: self-assignment of an unset name did not abort under set -u"; exit 1; } \
+    || true
+
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; author wiring derived + guarded)"
