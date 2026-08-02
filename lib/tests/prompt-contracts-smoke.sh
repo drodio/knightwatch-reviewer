@@ -819,10 +819,18 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # severity) to this prompt having no taxonomy constraint at all.
 # Pin the value list, not the framing sentence: rewording the taxonomy to
 # `blocking`, `high`, `medium` is the exact regression this fence exists for,
-# and a framing-sentence pin would stay green through it.
+# and a framing-sentence pin would stay green through it. Two halves, two
+# assertions — the enumeration alone survives both a deletion of the
+# prohibition and a downgrade to non-binding phrasing ("values include ..."),
+# and the prohibition is the half that remediates an already-corrupted list.
+# Both patterns track the SHELL-ESCAPED source form (\` inside the double-quoted
+# PROMPT); converting PROMPT to a quoted heredoc drops the backslashes and these
+# fences must be updated with it.
 echo "  asserting learn-from-replies.sh pins the severity taxonomy..."
 assert_grep 'learn-from-replies.sh should constrain the tuner to blocking|medium|low|nit' \
     '\`blocking\`, \`medium\`, \`low\`, \`nit\`' learn-from-replies.sh
+assert_grep 'learn-from-replies.sh should prohibit non-taxonomy severity tags' \
+    '\`high\`, \`critical\`, or \`major\`' learn-from-replies.sh
 
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
