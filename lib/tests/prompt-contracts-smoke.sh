@@ -812,6 +812,15 @@ echo "  asserting live path appends the no-REVIEW.md note on the org-default bra
 assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
     '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
 
+# The tuner rewrites COMMENT_REVIEW_MISTAKES.md end-to-end every hour and that
+# file is concatenated into every review's standards prompt, so a severity word
+# outside the taxonomy leaks into every review and can't be hand-corrected —
+# srosro/claude-config#150 traced a stray `high` (a Confidence value, not a
+# severity) to this prompt having no taxonomy constraint at all.
+echo "  asserting learn-from-replies.sh pins the severity taxonomy..."
+assert_grep 'learn-from-replies.sh should constrain the tuner to blocking|medium|low|nit' \
+    'Severity is exactly one of' learn-from-replies.sh
+
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
 
