@@ -20,8 +20,8 @@
 # dropped several wording-pin fences that were over-fitting; that
 # PR's description documents what was removed and why.
 #
-# Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
-# itself forbids tests that calcify prompt prose; what we fence here is
+# Deliberately NOT a content-pinning test. policy.md's Don't-propose list
+# itself forbids CI/test fences that calcify the current contract; what we fence here is
 # contract integrity (token presence, branch-negative alternative still
 # allowed), not literal wording. One carve-out: a short rewording-stable
 # fragment of a rule may be pinned to prove the rule itself still exists —
@@ -108,13 +108,6 @@ if "may read any file" in intent:
     failed = True
 if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not in intent:
     print("FAIL: built intent prompt lost its staged-inputs-only fence")
-    failed = True
-# The prelude must not dictate output shape either. _validate_intent requires
-# exactly one non-blank "Inferred intent: " line and run_pipeline aborts
-# otherwise, so a prelude directive to also state the operating point killed
-# every review before Wave B — observed, not hypothetical (first commit here).
-if "state the operating point" in intent.lower():
-    print("FAIL: built intent prompt carries an operating-point output directive — _validate_intent allows exactly one line")
     failed = True
 
 sys.exit(1 if failed else 0)

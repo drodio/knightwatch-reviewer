@@ -753,14 +753,17 @@ def _validate_intent(intent_out: Path) -> str:
     if not intent_out.exists() or intent_out.stat().st_size == 0:
         raise ValueError("intent inference produced empty output")
     text = intent_out.read_text()
-    nonblank = [ln for ln in text.splitlines() if ln.strip()]
-    if len(nonblank) != 1:
-        raise ValueError(
-            f"intent output has {len(nonblank)} non-blank lines, expected exactly 1"
-        )
-    if not nonblank[0].startswith("Inferred intent: "):
-        raise ValueError("intent output missing 'Inferred intent: ' prefix")
-    return nonblank[0]
+    # Select the intent line rather than requiring it to be the ONLY non-blank
+    # line. The strict count made any stray line fatal — and since policy.md is
+    # prepended to every agent, a prelude edit that never touches intent.md
+    # could add one and abort every review on every repo before Wave B (it did,
+    # in cd955a9). Selecting retires that whole class: no prompt wording can
+    # kill the pipeline. Still fails loud when no intent line is produced at
+    # all, which is the contract violation actually worth aborting on.
+    matches = [ln for ln in text.splitlines() if ln.startswith("Inferred intent: ")]
+    if not matches:
+        raise ValueError("intent output missing 'Inferred intent: ' line")
+    return matches[0]
 
 
 def _run_standalone(
