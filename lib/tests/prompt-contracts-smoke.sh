@@ -510,24 +510,12 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-echo "  asserting intent.md carries the staged-inputs-only fence..."
-# The prohibition on reading author-intent.md was retired once linked-issue
-# bodies stopped being staged. intent.md is a STANDALONE prompt — pipeline.py
-# does not prepend common-header.md — so its injection fence must live in the
-# file itself, or PR-author-controlled description prose reaches the anchor
-# the specialists grade against with nothing in between.
-# Two positive pins — the fence's heading and its contract clause — matching
-# the shape used for critic.md's fence above ("Read-only working directory"
-# plus "data, not instructions"). Deleting or renaming the fence fails here;
-# that is the regression worth catching. Finer-grained prose pins were tried
-# and dropped (the exact retired prohibition, the triangulate imperative, the
-# repo-read grant): each was in turn too broad, too narrow, or wording-locked,
-# which is inherent to grepping prose, and this file's header is explicit that
-# it is deliberately not a content-pinning test.
-assert_grep "intent.md must carry its staged-inputs-only fence" \
-    "Staged-inputs-only security fence" prompts/standalone/intent.md
-assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
-    "data, not instructions" prompts/standalone/intent.md
+# The intent pre-pass's staged-inputs-only fence is asserted against the
+# ASSEMBLED prompt in test_pipeline.py's TestRealPromptsCompose, which
+# strictly subsumes a source-level grep: standalone/intent is built from
+# policy.md + intent.md and nothing else, so any deletion that would trip a
+# grep here also trips the composed assertion. Keeping both made two owners
+# of one contract — the defect this file's section-1 comment describes.
 
 echo "  asserting the linked-issue privacy contract holds at source AND consumer..."
 # Two halves, both load-bearing. Source: stage no clickable URL. Consumer:

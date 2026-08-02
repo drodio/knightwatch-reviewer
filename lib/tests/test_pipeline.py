@@ -2157,14 +2157,16 @@ class TestRealPromptsCompose(unittest.TestCase):
 
     def test_universal_policy_reaches_every_built_prompt(self):
         """policy.md must reach all four kinds, and must not widen the intent
-        pre-pass's envelope or dictate its output shape.
+        pre-pass's envelope.
 
         The prelude is prepended to everything, so a policy edit can reach an
         agent whose role prompt it never touched — that is how a "you may read
-        any file" grant leaked into the staged-inputs-only intent pre-pass, and
-        how an output directive nearly aborted every review before Wave B.
-        Asserted against the ASSEMBLED prompt: a file-level grep goes green on
-        a prelude that never reaches a given kind.
+        any file" grant leaked into the staged-inputs-only intent pre-pass. (A
+        prelude output directive once aborted every review before Wave B too;
+        that class is retired in _validate_intent, which now selects the intent
+        line instead of requiring it to be the only one, so this test fences
+        reach and envelope only.) Asserted against the ASSEMBLED prompt: a
+        file-level grep goes green on a prelude that never reaches a given kind.
         """
         tokens = (
             "Read-only working directory",
