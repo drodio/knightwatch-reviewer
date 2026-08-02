@@ -83,17 +83,32 @@ grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
 # regression it advertised. Driving the script for real needs git-clone + gh
 # stubs for a three-line sequence; a shape fence on the actual file is the
 # cheap 90%, and unlike the copy it cannot pass if the bug returns.
-echo "  scenario 4: replay.sh derives PR_AUTHOR from the metadata snapshot..."
+echo "  scenario 4: replay.sh derives BASE_REF + PR_AUTHOR from the metadata snapshot..."
 REPLAY_SH="$REPO_ROOT/lib/replay.sh"
-grep -qE '^PR_AUTHOR="\$\(printf .* \| jq -r .\.author\.login' "$REPLAY_SH" \
-    || { echo "FAIL scenario 4: replay.sh no longer derives PR_AUTHOR from REPLAY_PR_META via jq"; exit 1; }
-grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
-    || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
-# The regression shape itself: any NAME="$NAME" self-assignment. Under the
-# `set -euo pipefail` replay.sh runs with, that aborts if NAME is unset.
-if grep -nE '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)="\$\1"[[:space:]]*$' "$REPLAY_SH"; then
-    echo "FAIL scenario 4: replay.sh contains a self-assignment — under set -u this aborts when the name is unset (the #206 outage)"
+# Fixed strings, whole line, INCLUDING the `// empty` fallback — that fallback
+# is the load-bearing half. Without it `jq -r` prints the literal string "null"
+# for absent metadata, which passes `[ -n "$VAR" ]`: PR_AUTHOR=null reaches
+# every replay review, and BASE_REF=null becomes `git fetch origin null` — the
+# obscure failure the guard's own comment says it exists to prevent. A looser
+# pattern that matched only through `.author.login` would go green on exactly
+# that silent-corruption edit.
+assert_replay_line() {
+    grep -qF "$2" "$REPLAY_SH" \
+        || { echo "FAIL scenario 4: replay.sh $1"; echo "      expected: $2"; exit 1; }
+}
+assert_replay_line "no longer derives BASE_REF from REPLAY_PR_META with the // empty fallback" \
+    "BASE_REF=\"\$(printf '%s' \"\$REPLAY_PR_META\" | jq -r '.baseRefName // empty')\""
+assert_replay_line "no longer derives PR_AUTHOR from REPLAY_PR_META with the // empty fallback" \
+    "PR_AUTHOR=\"\$(printf '%s' \"\$REPLAY_PR_META\" | jq -r '.author.login // empty')\""
+assert_replay_line "lost the fail-loud guard on BASE_REF / PR_AUTHOR" \
+    '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]'
+# The #206 shape specifically, asserted narrowly. A whole-file scan for
+# NAME="$NAME" would be redundant with the derivation checks above AND would
+# false-positive on the five legitimate env-forwarding self-assignments at
+# :274-280, which today escape only via their trailing line-continuation.
+if grep -qE '^[[:space:]]*(REPLAY_)?PR_AUTHOR="\$(REPLAY_)?PR_AUTHOR"[[:space:]]*$' "$REPLAY_SH"; then
+    echo "FAIL scenario 4: replay.sh self-assigns PR_AUTHOR — the #206 outage (aborts under set -u when unset)"
     exit 1
 fi
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh author wiring fenced)"
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh BASE_REF/PR_AUTHOR derivation + guard fenced)"
