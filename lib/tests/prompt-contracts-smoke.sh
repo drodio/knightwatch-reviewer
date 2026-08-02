@@ -812,8 +812,9 @@ echo "  asserting live path appends the no-REVIEW.md note on the org-default bra
 assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
     '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
 
-# The tuner's output is concatenated into every review's standards prompt, so a
-# severity word outside the taxonomy leaks into every review — srosro/claude-config#150
+# The tuner rewrites COMMENT_REVIEW_MISTAKES.md end-to-end, and that file is
+# concatenated into every review's standards prompt, so a severity word
+# outside the taxonomy leaks into every review — srosro/claude-config#150
 # traced a stray `high` (a Confidence value, not a severity) to this prompt
 # carrying no taxonomy constraint at all.
 #
@@ -827,7 +828,7 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # The constraint deliberately does not DIRECT a repair of an already-bad item;
 # encoding that for an LLM that rewrites the list wholesale with no diff gate
 # generated pure ambiguity. Recurrence is prevented here; the one-time repair is
-# by hand — see knightwatch-reviewer#207 for its status and its second location
+# by hand — see plow-pbc/knightwatch-reviewer#207 for its status and its second location
 # (the container standards snapshot, per README.md's "Calibration is host-only
 # in v1" bullet and the `claude-standards` mounts in docker-compose.yml).
 #
