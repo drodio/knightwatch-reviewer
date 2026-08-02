@@ -18,7 +18,7 @@ cp -r docker/secrets.example docker/secrets
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
 | `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/plow-pbc_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
 | `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted **writable** at reviewer-1's `/root/.codex` — codex rotates its own tokens/session state, and fatal-auth recovery keys on a newer `auth.json` mtime. If a worker goes offline on invalid auth, re-login that account's dir (`CODEX_HOME=docker/secrets/codex-account-a codex login --device-auth`, or copy in a fresh `auth.json`); the newer mtime auto-clears the offline marker. |
-| `codex-account-b/` | reviewer-2's OpenAI account | Same, for account B → reviewer-2. |
+| `codex-account-b/`, `-c/`, `-d/`, … | one per additional reviewer | Same, lettered in worker order (B → reviewer-2, C → reviewer-3, …). See *Adding the Nth account* below. |
 
 ## Live-credential `just test` (trusted-author scenario suites)
 
@@ -86,18 +86,23 @@ cp -r ~/.codex docker/secrets/codex-account-a
 
 Only `auth.json` is strictly required; copying the whole dir is simplest.
 
-## Adding a third account (scale-out)
+## Adding the Nth account (scale-out)
 
-1. `cp -r ~/.codex docker/secrets/codex-account-c` (account C's login).
-2. In `docker-compose.yml`, add a `dind-3` (`<<: *dind` + its `dind3-lib` and
-   `scenario-shared3:/scenario-shared` volumes) and a `reviewer-3` that reuses
+Accounts are lettered in worker order: `codex-account-a` → reviewer-1,
+`-b` → reviewer-2, and so on. For a new worker N (letter L):
+
+1. `CODEX_HOME=docker/secrets/codex-account-<L> codex login --device-auth`
+   (or `cp -r ~/.codex docker/secrets/codex-account-<L>` from a machine already
+   logged into that account).
+2. In `docker-compose.yml`, add a `dind-N` (`<<: *dind` + its `dindN-lib` and
+   `scenario-sharedN:/scenario-shared` volumes) and a `reviewer-N` that reuses
    the shared contract — `<<: *reviewer` and `<<: *reviewer-env` — overriding
-   only `network_mode: service:dind-3`, `WORKER_ID: "3"`, the `reviewer3-local`
-   volume, the `scenario-shared3:/scenario-shared` bridge (same path as dind-3,
+   only `network_mode: service:dind-N`, `WORKER_ID: "N"`, the `reviewerN-local`
+   volume, the `scenario-sharedN:/scenario-shared` bridge (same path as dind-N,
    so the nested-dind scenario token mount resolves), the shared
    `./docker/secrets/repo-env:/root/.kwr/repo-env:ro` mount (same on every
-   reviewer), and the `codex-account-c` mount. Add `reviewer3-local` +
-   `dind3-lib` + `scenario-shared3` to the
+   reviewer), and the `codex-account-<L>` mount. Add `reviewerN-local` +
+   `dindN-lib` + `scenario-sharedN` to the
    `volumes:` block.
 3. `docker compose up -d` to create the new pair, then `sudo systemctl start
    knightwatch-reviewer.service` to keep the fleet under systemd ownership

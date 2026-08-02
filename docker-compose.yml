@@ -176,6 +176,30 @@ services:
       - ./docker/secrets/claude-standards:/root/.claude:ro
       - ${HOME}/services/kwr-config:/root/.kwr-config:ro
 
+  dind-5:
+    <<: *dind
+    volumes:
+      - dind5-lib:/var/lib/docker
+      - scenario-shared5:/scenario-shared   # see dind-1
+
+  reviewer-5:
+    <<: *reviewer
+    network_mode: "service:dind-5"
+    depends_on: [dind-5]
+    environment:
+      <<: *reviewer-env
+      WORKER_ID: "5"
+    volumes:
+      - claims:/shared
+      - reviewer5-local:/local
+      - scenario-shared5:/scenario-shared   # see dind-1
+      - ./docker/secrets/codex-account-e:/root/.codex          # OpenAI account E (writable — see account A note)
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+      - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro       # see reviewer-1
+      - ./docker/secrets/claude-standards:/root/.claude:ro
+      - ${HOME}/services/kwr-config:/root/.kwr-config:ro
+
 volumes:
   # EXTERNAL fixed-name so the shared review state (runs/ — the KNOWN_SHA dedup
   # history) survives project rename / down -v / prune. Setup + migration:
@@ -188,12 +212,15 @@ volumes:
   reviewer2-local:
   reviewer3-local:
   reviewer4-local:
+  reviewer5-local:
   dind1-lib:
   dind2-lib:
   dind3-lib:
   dind4-lib:
+  dind5-lib:
   # Per-pair token-passing bridge for nested-dind scenario stacks (see dind-1).
   scenario-shared1:
   scenario-shared2:
   scenario-shared3:
   scenario-shared4:
+  scenario-shared5:
