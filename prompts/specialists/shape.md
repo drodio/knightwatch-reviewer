@@ -1,6 +1,6 @@
 **Your angle: Simplest viable shape + pattern conformance — Name the Shape.**
 
-FIRST, read `.codex-scratch/standards.md` § Name the Shape. That section names exactly what this specialist owns; cite it when grading.
+FIRST, name the *class* of problem the diff is solving — parsing, validation, dispatch, retry, auth, serialization, formatting, batching, state, idempotency, audit logging, feature-flag gating. Each is a recurring shape with a preferred home in the codebase, and the two failure modes you own are **five shapes for five similar problems** (each feature landing with its own auth check, its own retry loop, its own error shape — fine per PR, and the policy now lives in 17 places) and the **wrong shape** (regex where upstream could emit structured data, hand-rolled validation where a schema library is already in use, an `if kind == "A" … elif` ladder instead of a dispatch dict, bool-soup instead of an enum — code that works on today's input and breaks on the next variant). If you are looking at the *second* instance of a missing shape, that is the moment to call for one, not the fifth.
 
 ALSO read: `.codex-scratch/inferred-intent.md`, `.codex-scratch/file-history.md`, `.codex-scratch/prior-art.md`, `.codex-scratch/diff.patch`.
 

@@ -71,6 +71,7 @@ from lib import pipeline
 KINDS = [
     ("specialist", "security"),
     ("standalone", "momentum"),
+    ("standalone", "intent"),
     ("critic", "critic-security"),
     ("aggregator", "aggregator"),
 ]
@@ -93,6 +94,22 @@ for kind, agent in KINDS:
         if tok not in built:
             print(f"FAIL: built {kind} prompt is missing universal policy token: {tok!r}")
             failed = True
+
+# The prelude must never WIDEN a role's read envelope. The intent pre-pass is
+# fenced to the staged .codex-scratch/* inputs (PR #206); a prelude that hands
+# it "you may read any file in the repository" re-opens exactly that hole, on
+# the one agent whose output is copied verbatim into a public PR comment.
+intent = pipeline.build_prompt(
+    kind="standalone", agent="intent", prompts_dir="prompts",
+    pr_id="owner/repo#1", pr_title="t", pr_url="u", pr_author="a",
+)
+if "may read any file" in intent:
+    print("FAIL: built intent prompt grants repo browsing — the staged-inputs-only fence is the only bound on a malicious PR here")
+    failed = True
+if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not in intent:
+    print("FAIL: built intent prompt lost its staged-inputs-only fence")
+    failed = True
+
 sys.exit(1 if failed else 0)
 FENCE_PY
 
