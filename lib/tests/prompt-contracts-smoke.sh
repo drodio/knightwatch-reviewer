@@ -113,20 +113,32 @@ if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not
 sys.exit(1 if failed else 0)
 FENCE_PY
 
-# Negative fence: only policy.md describes what review.md carries. Three
-# rounds of local review each surfaced another prompt still claiming
-# review.md holds "voice posture" / "review-loop rules" — false since those
-# moved to the prelude, and it points the critic and the aggregator at a
-# file that no longer holds what they were told to read there. Every other
-# prompt now carries a bare pointer, so the description has one owner and
-# this drift class cannot reopen one file at a time.
+# Positive fence: policy.md is the ONLY place that says what review.md
+# carries. Every other prompt's input-list entry for it must be the bare
+# pointer, so the description has exactly one owner.
+#
+# Enumerated from git ls-files rather than a hardcoded list, and asserted as
+# a required form rather than a blacklist of known-bad phrasings — both
+# earned. Three review rounds each surfaced another prompt re-describing the
+# file, and a first attempt at this fence checked two literal phrases across
+# four named files: it went green while specialists/contract-drift.md said
+# review.md carries "what's deployed and how", a fourth phrasing in a fifth
+# file. A blacklist only ever knows the drift that already happened; a new
+# prompt file or a new wording walks straight past it.
 echo "  asserting only policy.md describes review.md's contents..."
-for f in prompts/common-header.md prompts/critic.md prompts/aggregator.md prompts/standalone/momentum.md; do
-    if grep -nE 'review\.md.*(voice posture|review-loop rules)' "$f"; then
-        echo "FAIL: $f re-describes review.md as carrying voice posture / review-loop rules — those live in policy.md; keep a bare pointer here"
-        exit 1
-    fi
-done
+fence_failed=0
+while IFS= read -r f; do
+    [ "$f" = "prompts/policy.md" ] && continue
+    while IFS=: read -r lineno body; do
+        case "$body" in
+            *"the universal policy above says what to take from it"*) ;;
+            *) echo "FAIL: $f:$lineno re-describes what review.md carries — policy.md owns that; use the bare pointer form"
+               echo "      $body"
+               fence_failed=1 ;;
+        esac
+    done < <(grep -n '^- `\.codex-scratch/review\.md`' "$f" || true)
+done < <(git ls-files 'prompts/*.md' 'prompts/**/*.md')
+[ "$fence_failed" -eq 0 ] || exit 1
 
 # Negative fence: the operating point belongs to the repo's REVIEW.md, staged
 # as .codex-scratch/review.md. A prompt that hardcodes the stage silently

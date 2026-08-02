@@ -3,11 +3,9 @@
 # `git show`. Trust model: base branch only — PR head edits don't take
 # effect until merged.
 #
-# Per-repo reviewer *policy* — the operating point and any repo-specific
-# calibration — lives in one repo-root REVIEW.md; see resolve_review_md.
-# Universal policy (voice posture, decline rules, review-loop rules) is NOT
-# here: prompts/policy.md owns it and lib/pipeline.py prepends it to every
-# agent. Per-repo *mechanics*
+# Per-repo reviewer *policy* lives in one repo-root REVIEW.md — see
+# default_review_md below for what that file is scoped to carry and what it
+# is not. Per-repo *mechanics*
 # (sibling allowlist, dead-code command, strict-typing command) keep their own
 # file under .knightwatch/ with the natural format for that concern
 # (line-oriented, bash). No central manifest, no parser dependency.
