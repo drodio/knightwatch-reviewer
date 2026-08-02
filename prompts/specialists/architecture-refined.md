@@ -2,7 +2,8 @@
 
 The recurring failure across these repos is code built as if it serves far more users than it does: abstractions, flags, parallel modes, edge-case handling the actual intent never required, and the same block written three times instead of once. Every maintained code path is a tax on iteration speed. Optimize for **developer time** — elegant, DRY code that is easy to build on top of, not defensive code with brittle branches for users who do not exist yet.
 
-The operating point you extracted from `.codex-scratch/review.md` is your primary calibration — every judgment below is relative to it.
+**Inputs you calibrate against:**
+- `.codex-scratch/review.md` — the repo's `REVIEW.md`; the universal policy above says what to take from it. The operating point you extract there is your primary calibration — every judgment below is relative to it.
 
 SECOND, read `.codex-scratch/inferred-intent.md` and treat the spec as LESS rigid than the code assumes. Ask whether each covered edge case, validation branch, and configuration knob traces to that intent — or whether the author imagined a requirement no user has. A handled case the intent never asked for is over-engineering, not robustness.
 

@@ -114,29 +114,43 @@ sys.exit(1 if failed else 0)
 FENCE_PY
 
 # Positive fence: policy.md is the ONLY place that says what review.md
-# carries. Every other prompt's input-list entry for it must be the bare
-# pointer, so the description has exactly one owner.
+# carries. Every prompt that consumes it declares it once, in the bare-pointer
+# form, so the description has exactly one owner.
 #
-# Enumerated from git ls-files rather than a hardcoded list, and asserted as
-# a required form rather than a blacklist of known-bad phrasings — both
-# earned. Three review rounds each surfaced another prompt re-describing the
-# file, and a first attempt at this fence checked two literal phrases across
-# four named files: it went green while specialists/contract-drift.md said
-# review.md carries "what's deployed and how", a fourth phrasing in a fifth
-# file. A blacklist only ever knows the drift that already happened; a new
-# prompt file or a new wording walks straight past it.
+# Two halves, both earned by a fence that was too weak the round before:
+#   (a) FILES come from git ls-files, not a hardcoded list — a four-file list
+#       missed specialists/contract-drift.md entirely.
+#   (b) LINES are matched by a tolerant list-item pattern and checked for a
+#       REQUIRED phrase, not against a blacklist of known-bad wordings. The
+#       first attempt keyed on one literal bullet prefix, which just moved the
+#       whitelist from the phrase to the line selector: bold, indented, or
+#       `*`-bulleted variants passed vacuously.
+# Plus a presence assertion, because silence must not read as compliance: a
+# prompt that mentions review.md but yields no checked line FAILS rather than
+# passing on zero lines. That is what stops a file from opting out by
+# reformatting — the vacuous-pass shape this repo treats as its top defect.
+#
+# Conditional references are deliberately allowed ("flag only when review.md
+# makes that need real"). They assert nothing about the file's contents and
+# fail safe when it says nothing; only declarative descriptions are drift.
 echo "  asserting only policy.md describes review.md's contents..."
 fence_failed=0
 while IFS= read -r f; do
     [ "$f" = "prompts/policy.md" ] && continue
+    grep -q '\.codex-scratch/review\.md' "$f" || continue
+    pointers=0
     while IFS=: read -r lineno body; do
         case "$body" in
-            *"the universal policy above says what to take from it"*) ;;
+            *"the universal policy above says what to take from it"*) pointers=$((pointers + 1)) ;;
             *) echo "FAIL: $f:$lineno re-describes what review.md carries — policy.md owns that; use the bare pointer form"
                echo "      $body"
                fence_failed=1 ;;
         esac
-    done < <(grep -n '^- `\.codex-scratch/review\.md`' "$f" || true)
+    done < <(grep -nE '^[[:space:]]*[-*] +\**`?\.codex-scratch/review\.md' "$f" || true)
+    if [ "$pointers" -eq 0 ]; then
+        echo "FAIL: $f mentions .codex-scratch/review.md but declares no bare-pointer line — a file must not opt out of this fence by reformatting"
+        fence_failed=1
+    fi
 done < <(git ls-files 'prompts/*.md' 'prompts/**/*.md')
 [ "$fence_failed" -eq 0 ] || exit 1
 
