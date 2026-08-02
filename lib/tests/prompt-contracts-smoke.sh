@@ -113,6 +113,21 @@ if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not
 sys.exit(1 if failed else 0)
 FENCE_PY
 
+# Negative fence: only policy.md describes what review.md carries. Three
+# rounds of local review each surfaced another prompt still claiming
+# review.md holds "voice posture" / "review-loop rules" — false since those
+# moved to the prelude, and it points the critic and the aggregator at a
+# file that no longer holds what they were told to read there. Every other
+# prompt now carries a bare pointer, so the description has one owner and
+# this drift class cannot reopen one file at a time.
+echo "  asserting only policy.md describes review.md's contents..."
+for f in prompts/common-header.md prompts/critic.md prompts/aggregator.md prompts/standalone/momentum.md; do
+    if grep -nE 'review\.md.*(voice posture|review-loop rules)' "$f"; then
+        echo "FAIL: $f re-describes review.md as carrying voice posture / review-loop rules — those live in policy.md; keep a bare pointer here"
+        exit 1
+    fi
+done
+
 # Negative fence: the operating point belongs to the repo's REVIEW.md, staged
 # as .codex-scratch/review.md. A prompt that hardcodes the stage silently
 # overrides any repo that states a different one — the drift PR #201 left
