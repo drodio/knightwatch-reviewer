@@ -833,7 +833,14 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
+    # Stage the VALIDATED line, not the raw output. _validate_intent selects
+    # rather than requiring a single non-blank line, so the old strict check no
+    # longer bounds what lands here — and the aggregator copies this file's
+    # contents verbatim into a public PR comment after stripping the prefix
+    # from the start. Staging raw output would publish any preamble or
+    # reasoning the agent emitted around the line, all of it derived from
+    # PR-author-controlled inputs.
+    _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
     _stage_scratch(scratch / "dead-code.md",
                    (run / "agents" / "dead-code-search" / "output.md").read_bytes())
     log(f"{pr_id}: Wave A complete: {intent_text}")

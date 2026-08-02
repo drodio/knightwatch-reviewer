@@ -1457,6 +1457,24 @@ class TestRunPipeline(unittest.TestCase):
         self.assertFalse(self.repo_dir.exists())
 
     @patch("pipeline.subprocess.Popen")
+    def test_intent_extra_lines_survive_and_only_the_line_is_staged(self, mock_popen):
+        """Both halves of the selecting-validator contract.
+
+        A prelude edit can add a stray line to the intent agent's output
+        without touching intent.md, and that used to abort every review. It
+        must now complete — AND stage only the intent line, because the
+        aggregator copies this file verbatim into a public PR comment and the
+        surrounding prose is derived from PR-author-controlled inputs.
+        """
+        mock_popen.side_effect = _make_codex_stub({
+            "intent": (0, "Operating point: pre-PMF\nInferred intent: ship X.\nnote: reasoning\n"),
+        })
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        staged = (self.repo_dir / ".codex-scratch" / "inferred-intent.md").read_text()
+        self.assertEqual(staged, "Inferred intent: ship X.\n")
+
+    @patch("pipeline.subprocess.Popen")
     def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
         """Wave A's intent + dead-code-search must run concurrently. Use
         threading.Barrier(2): both stubs wait at the barrier — if Wave A
