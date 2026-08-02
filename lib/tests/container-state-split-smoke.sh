@@ -43,6 +43,7 @@ grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-o
 # Match the top-level `claims:` block (2-space indent under `volumes:`), not the
 # `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
 COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
+OVERRIDE_EXAMPLE="$(cd "$HERE/.." && pwd)/docker-compose.override.yml.example"
 claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
 printf '%s\n' "$claims_block" | grep -q 'external: true' \
   || fail "claims volume is not external:true (durable review state regressed — PR #130)"
@@ -75,6 +76,16 @@ grep -qF 'REPO_ENV_DIR: /root/.kwr/repo-env' "$COMPOSE" \
 n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE" || true)
 [ "$n_repo_env" -eq "$n_reviewers" ] \
   || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
+
+# kid prior-art parity: the override example must list EVERY reviewer. A unit
+# missing there has no KWR_CLONE_ROOT, so review-one-pr.sh takes the "index
+# present but KWR_CLONE_ROOT unset" branch and reviews WITHOUT prior-art — review
+# depth then depends on which account claims the PR, with nothing failing loudly.
+# The live override is gitignored, so the example is the only checkable copy;
+# pinning parity here is what makes the deploy-side edit impossible to forget.
+n_kid=$(grep -cE '^  reviewer-[0-9]+: (\*kid|&kid)' "$OVERRIDE_EXAMPLE" || true)
+[ "$n_kid" -eq "$n_reviewers" ] \
+  || fail "kid override example covers $n_kid of $n_reviewers reviewers — every reviewer needs a *kid entry (else it silently reviews without prior-art)"
 
 # docker compose plugin: the static docker tarball ships only the client, so the
 # reviewer image must install the compose plugin into the default cli-plugins dir
