@@ -91,6 +91,8 @@ grep -qE '^BASE_REF=.*REPLAY_PR_META.*baseRefName.*// empty' "$REPLAY_SH" \
     || { echo "FAIL scenario 4: replay.sh no longer derives BASE_REF from REPLAY_PR_META with the // empty fallback"; exit 1; }
 grep -qE '^PR_AUTHOR=.*REPLAY_PR_META.*author\.login.*// empty' "$REPLAY_SH" \
     || { echo "FAIL scenario 4: replay.sh no longer derives PR_AUTHOR from REPLAY_PR_META with the // empty fallback"; exit 1; }
+grep -qE '^PR_TITLE=.*REPLAY_PR_META.*\.title.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives PR_TITLE from REPLAY_PR_META with the // empty fallback"; exit 1; }
 grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
     || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
 
