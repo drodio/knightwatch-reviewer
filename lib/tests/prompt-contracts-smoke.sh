@@ -812,11 +812,11 @@ echo "  asserting live path appends the no-REVIEW.md note on the org-default bra
 assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
     '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
 
-# The tuner rewrites COMMENT_REVIEW_MISTAKES.md end-to-end every hour and that
-# file is concatenated into every review's standards prompt, so a severity word
-# outside the taxonomy leaks into every review and can't be hand-corrected —
-# srosro/claude-config#150 traced a stray `high` (a Confidence value, not a
-# severity) to this prompt having no taxonomy constraint at all.
+# The tuner's output is concatenated into every review's standards prompt, so a
+# severity word outside the taxonomy leaks into every review — srosro/claude-config#150
+# traced a stray `high` (a Confidence value, not a severity) to this prompt
+# carrying no taxonomy constraint at all.
+#
 # Pin the value list, not the framing sentence: rewording the taxonomy to
 # `blocking`, `high`, `medium` is the exact regression this fence exists for,
 # and a framing-sentence pin would stay green through it. Two halves, two
@@ -824,19 +824,12 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # prohibition and a downgrade to non-binding phrasing ("values include ..."),
 # and the prohibition is the half that carries the actual ban.
 #
-# The constraint deliberately does not DIRECT a repair of an existing bad item.
-# (Whether the model also normalizes one while rewriting the list is
-# unspecified — the tuner re-emits every item, so a preserved item is also an
-# emitted one.) Encoding a repair instruction here, for an LLM that rewrites
-# the list wholesale with no diff gate, bought five rounds of pronoun-ambiguity
-# findings and one real risk of deleting a whole calibration rule.
-#
-# So: one-time fix by hand, recurrence prevented by machine. The existing stray
-# `high` is repaired by hand in srosro/claude-config#153 (#150 traced it) —
-# still open as of this commit. That repair is a TWO-location job: the host file
-# the tuner writes, plus the static `docker/secrets/claude-standards/` snapshot
-# the review containers read (README.md:105/:113), which otherwise keeps serving
-# the corrupted item. Tracked in #207.
+# The constraint deliberately does not DIRECT a repair of an already-bad item;
+# encoding that for an LLM that rewrites the list wholesale with no diff gate
+# generated pure ambiguity. Recurrence is prevented here; the one-time repair is
+# by hand — see knightwatch-reviewer#207 for its status and its second location
+# (the container standards snapshot, per README.md's "Calibration is host-only
+# in v1" bullet and the `claude-standards` mounts in docker-compose.yml).
 #
 # Both patterns track the SHELL-ESCAPED source form (\` inside the double-quoted
 # PROMPT); converting PROMPT to a quoted heredoc drops the backslashes and these
