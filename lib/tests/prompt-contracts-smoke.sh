@@ -828,9 +828,11 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # The constraint deliberately does not DIRECT a repair of an already-bad item;
 # encoding that for an LLM that rewrites the list wholesale with no diff gate
 # generated pure ambiguity. Recurrence is prevented here; the one-time repair is
-# by hand — see plow-pbc/knightwatch-reviewer#207 for its status and its second location
-# (the container standards snapshot, per README.md's "Calibration is host-only
-# in v1" bullet and the `claude-standards` mounts in docker-compose.yml).
+# by hand — see plow-pbc/knightwatch-reviewer#207 for its status and its
+# second location (the container standards snapshot, per README.md's
+# "Calibration is host-only in v1" bullet and the `claude-standards` mounts
+# in docker-compose.yml). Owner is plow-pbc, not the srosro this repo still
+# names in places — see #209.
 #
 # Both patterns track the SHELL-ESCAPED source form (\` inside the double-quoted
 # PROMPT); converting PROMPT to a quoted heredoc drops the backslashes and these
