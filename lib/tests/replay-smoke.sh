@@ -71,40 +71,29 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-# Scenario 4: metadata → pipeline author wiring.
-# The whole replay harness was dead from #206 until #213: line 120 read
-# PR_AUTHOR="$REPLAY_PR_AUTHOR", a self-assignment of a never-set name, so
-# `set -u` aborted every run at clone time — before the guard on the next line
-# could say anything useful. Nothing in `just test` touched that path, which is
-# why weeks of broken replays went unnoticed (you cannot run the tool that
-# would show the tool is broken). This drives the real derivation + guard on a
-# synthetic metadata snapshot, so a re-introduced self-assignment or an unset
-# author fails here instead of in production.
-echo "  scenario 4: PR_AUTHOR derived from the metadata snapshot, guard fires when absent..."
-assert_author_wiring() {
-    local label="$1" meta="$2" want_rc="$3" want_author="${4:-}"
-    local rc=0 out
-    out=$(
-        set +u
-        REPLAY_PR_META="$meta"
-        BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
-        PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
-        [ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ] || exit 1
-        printf '%s' "$PR_AUTHOR"
-    ) || rc=$?
-    [ "$rc" = "$want_rc" ] \
-        || { echo "FAIL scenario 4 ($label): rc=$rc, want $want_rc"; exit 1; }
-    [ -z "$want_author" ] || [ "$out" = "$want_author" ] \
-        || { echo "FAIL scenario 4 ($label): author='$out', want '$want_author'"; exit 1; }
-}
-assert_author_wiring "full metadata" '{"baseRefName":"main","author":{"login":"octocat"}}' 0 octocat
-assert_author_wiring "author missing" '{"baseRefName":"main"}' 1
-assert_author_wiring "baseRef missing" '{"author":{"login":"octocat"}}' 1
+# Scenario 4: the metadata→author wiring in lib/replay.sh itself.
+# From #206 until #213, line 120 read PR_AUTHOR="$REPLAY_PR_AUTHOR" — a
+# self-assignment of a never-set name — so `set -u` aborted every replay at
+# clone time and the whole harness was dead. Nothing in `just test` touched
+# that path, which is why weeks of broken replays went unnoticed.
+#
+# This asserts against replay.sh's REAL text, not a copy of it. An earlier
+# version of this scenario re-implemented the three lines in a local subshell
+# and asserted on those, which would have stayed green through the exact
+# regression it advertised. Driving the script for real needs git-clone + gh
+# stubs for a three-line sequence; a shape fence on the actual file is the
+# cheap 90%, and unlike the copy it cannot pass if the bug returns.
+echo "  scenario 4: replay.sh derives PR_AUTHOR from the metadata snapshot..."
+REPLAY_SH="$REPO_ROOT/lib/replay.sh"
+grep -qE '^PR_AUTHOR="\$\(printf .* \| jq -r .\.author\.login' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives PR_AUTHOR from REPLAY_PR_META via jq"; exit 1; }
+grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
+# The regression shape itself: any NAME="$NAME" self-assignment. Under the
+# `set -euo pipefail` replay.sh runs with, that aborts if NAME is unset.
+if grep -nE '^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)="\$\1"[[:space:]]*$' "$REPLAY_SH"; then
+    echo "FAIL scenario 4: replay.sh contains a self-assignment — under set -u this aborts when the name is unset (the #206 outage)"
+    exit 1
+fi
 
-# The failure that shipped: the derivation replaced by a self-assignment of an
-# unset name. Under `set -u` — which replay.sh runs with — that must abort.
-( set -u; unset PR_AUTHOR 2>/dev/null || true; PR_AUTHOR="$PR_AUTHOR" ) 2>/dev/null \
-    && { echo "FAIL scenario 4: self-assignment of an unset name did not abort under set -u"; exit 1; } \
-    || true
-
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; author wiring derived + guarded)"
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh author wiring fenced)"
