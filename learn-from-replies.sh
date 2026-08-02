@@ -158,7 +158,7 @@ YOUR JOB:
    - Ranked by importance: frequently-seen patterns outrank one-offs.
    - If the list exceeds 48 items after edits, DROP the lowest-ranked items.
    - Preserve the header text above the numbered list.
-   - Severity is exactly one of \`blocking\`, \`medium\`, \`low\`, \`nit\`. Never write any other severity word (\`high\`, \`critical\`, \`major\`); \`high\` is a Confidence value, not a severity. If an existing item names one, correct it to the nearest valid severity.
+   - When an item TAGS a finding's severity, use exactly one of \`blocking\`, \`medium\`, \`low\`, \`nit\` (same taxonomy as \`prompts/common-header.md\`) — never \`high\`, \`critical\`, or \`major\`; \`high\` is a Confidence value, not a severity. Correct an existing item that tags one of those. Leave non-severity prose uses of those words alone (\`high confidence\`, \`high-churn\`, \`critical path\` are all fine).
 
 4. Produce a per-request acknowledgment inside an <ACKS> block. For each /${BOT_CMD_PREFIX}-memorize request, emit one <ACK> line that names the request by its key and explains in ONE CONCISE LINE what you did: what rule you added, what existing rule you softened, or that you made no change and why. ACK every request — the human asked you to remember something, so silence is wrong; tell them what happened.
 

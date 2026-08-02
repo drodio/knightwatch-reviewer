@@ -817,9 +817,12 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # outside the taxonomy leaks into every review and can't be hand-corrected —
 # srosro/claude-config#150 traced a stray `high` (a Confidence value, not a
 # severity) to this prompt having no taxonomy constraint at all.
+# Pin the value list, not the framing sentence: rewording the taxonomy to
+# `blocking`, `high`, `medium` is the exact regression this fence exists for,
+# and a framing-sentence pin would stay green through it.
 echo "  asserting learn-from-replies.sh pins the severity taxonomy..."
 assert_grep 'learn-from-replies.sh should constrain the tuner to blocking|medium|low|nit' \
-    'Severity is exactly one of' learn-from-replies.sh
+    '\`blocking\`, \`medium\`, \`low\`, \`nit\`' learn-from-replies.sh
 
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
