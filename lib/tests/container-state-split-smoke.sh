@@ -44,7 +44,6 @@ grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-o
 # `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
 COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
 OVERRIDE_EXAMPLE="$(cd "$HERE/.." && pwd)/docker-compose.override.yml.example"
-OVERRIDE_LIVE="$(cd "$HERE/.." && pwd)/docker-compose.override.yml"   # gitignored; only in a deployment clone
 claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
 printf '%s\n' "$claims_block" | grep -q 'external: true' \
   || fail "claims volume is not external:true (durable review state regressed — PR #130)"
@@ -89,24 +88,23 @@ n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPO
 # Match on the *kid ANCHOR, not the bare `reviewer-N:` key: a hand-added
 # `reviewer-6:` carrying its own partial block is the natural edit when someone
 # misses the anchor convention, and it gets no /kwr mount despite looking present.
-check_kid_parity() {
-    local file="$1" label="$2" kid_set cmp_out
-    kid_set=$(grep -oE '^  reviewer-[0-9]+: (\*kid|&kid)' "$file" | grep -oE 'reviewer-[0-9]+' | sort)
-    cmp_out=$(diff <(grep -oE '^  reviewer-[0-9]+:' "$COMPOSE" | tr -d ' :' | sort) \
-                   <(printf '%s\n' "$kid_set")) \
-      || fail "$label: *kid reviewer set differs from docker-compose.yml (< compose-only, > override-only):
+# `|| true` per the note above — without it a wiring-free override makes grep exit
+# 1 and `set -e` kills the script with NO labeled failure, silently skipping every
+# assertion below (the loudest regression producing the quietest failure).
+#
+# Scoped to the EXAMPLE deliberately. The deployed override is gitignored and
+# hand-maintained, so its YAML style is free to diverge (expanded blocks, a
+# `<<: *kid` merge key, or a unit needing its own block for an index outside the
+# shared root — the header contemplates exactly that). Any text predicate is
+# therefore wrong in both directions on that file. The deployed config is covered
+# at RUNTIME instead, by the kid_dry_check.py reachability branch in
+# review-one-pr.sh, which is style-independent by construction.
+kid_set=$(grep -oE '^  reviewer-[0-9]+: (\*kid|&kid)' "$OVERRIDE_EXAMPLE" \
+            | grep -oE 'reviewer-[0-9]+' | sort || true)
+cmp_out=$(diff <(grep -oE '^  reviewer-[0-9]+:' "$COMPOSE" | tr -d ' :' | sort) \
+               <(printf '%s\n' "$kid_set")) \
+  || fail "docker-compose.override.yml.example: *kid reviewer set differs from docker-compose.yml (< compose-only, > override-only):
 $cmp_out"
-}
-check_kid_parity "$OVERRIDE_EXAMPLE" "docker-compose.override.yml.example"
-
-# The example is a template compose never reads. When the DEPLOYED override is
-# present (it's gitignored, so only in a real deployment clone), check it too —
-# it's the file that actually governs the running fleet, and nothing else
-# validates it. Skipped when it carries no kid wiring at all: an override can
-# exist for unrelated reasons, and that deployment simply isn't using kid.
-if [ -f "$OVERRIDE_LIVE" ] && grep -qE '^  reviewer-[0-9]+: (\*kid|&kid)' "$OVERRIDE_LIVE"; then
-    check_kid_parity "$OVERRIDE_LIVE" "docker-compose.override.yml (DEPLOYED — governs the running fleet)"
-fi
 
 # docker compose plugin: the static docker tarball ships only the client, so the
 # reviewer image must install the compose plugin into the default cli-plugins dir
