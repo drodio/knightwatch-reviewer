@@ -111,11 +111,23 @@ echo "  scenario 4: meta_field yields empty (not \"null\") for absent fields..."
 
 # And that replay.sh actually routes its snapshot reads through the helper,
 # so the contract above is the one production uses.
+# Match the assignment TARGET too, not just the call. Checking only the
+# right-hand side leaves the #206 shape invisible: rename line 120 to
+# REPLAY_PR_AUTHOR=... with nothing else setting PR_AUTHOR and the call still
+# matches, the guard's text is still present, and the smoke goes green while
+# every real replay aborts at [ -n "$PR_AUTHOR" ] under set -u.
 REPLAY_SH="$REPO_ROOT/lib/replay.sh"
-for field in '.baseRefName' '.author.login' '.title'; do
-    grep -qF "meta_field \"\$REPLAY_PR_META\" '$field'" "$REPLAY_SH" \
-        || { echo "FAIL scenario 4: replay.sh no longer reads $field via meta_field"; exit 1; }
-done
+while read -r var field; do
+    # ANCHORED at line start. A substring match would accept
+    # REPLAY_PR_AUTHOR="$(meta_field …)" as satisfying PR_AUTHOR — the #206
+    # shape — because the shorter name is a suffix of the longer one.
+    grep -qE "^$var=\"\\\$\\(meta_field \"\\\$REPLAY_PR_META\" '$field'" "$REPLAY_SH" \
+        || { echo "FAIL scenario 4: replay.sh no longer assigns $var from $field via meta_field"; exit 1; }
+done <<'WIRING'
+BASE_REF .baseRefName
+PR_AUTHOR .author.login
+PR_TITLE .title
+WIRING
 grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
     || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
 
