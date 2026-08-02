@@ -78,14 +78,16 @@ n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPO
   || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
 
 # kid prior-art parity: the override example must list EVERY reviewer. A unit
-# missing there has no KWR_CLONE_ROOT, so review-one-pr.sh takes the "index
-# present but KWR_CLONE_ROOT unset" branch and reviews WITHOUT prior-art — review
-# depth then depends on which account claims the PR, with nothing failing loudly.
-# The live override is gitignored, so the example is the only checkable copy;
-# pinning parity here is what makes the deploy-side edit impossible to forget.
-n_kid=$(grep -cE '^  reviewer-[0-9]+: (\*kid|&kid)' "$OVERRIDE_EXAMPLE" || true)
-[ "$n_kid" -eq "$n_reviewers" ] \
-  || fail "kid override example covers $n_kid of $n_reviewers reviewers — every reviewer needs a *kid entry (else it silently reviews without prior-art)"
+# missing there gets no /kwr mount, so kid_dry_check.py is unreachable and
+# review-one-pr.sh skips prior-art — review depth then depends on which account
+# claims the PR. The live override is gitignored, so the example is the only
+# checkable copy; pinning parity here is what makes the deploy-side edit hard to
+# forget on the next unit. Compare NAME SETS, not counts: equal counts still pass
+# when the numbering diverges (compose gains reviewer-6, the override reviewer-7),
+# which is the exact shape that invalidates the whole compose project.
+diff <(grep -oE '^  reviewer-[0-9]+:' "$COMPOSE" | tr -d ' :' | sort) \
+     <(grep -oE '^  reviewer-[0-9]+:' "$OVERRIDE_EXAMPLE" | tr -d ' :' | sort) >/dev/null \
+  || fail "kid override example's reviewer set differs from docker-compose.yml ($(grep -cE '^  reviewer-[0-9]+:' "$OVERRIDE_EXAMPLE" || true) vs $n_reviewers entries) — every reviewer needs a *kid entry or it silently reviews without prior-art"
 
 # docker compose plugin: the static docker tarball ships only the client, so the
 # reviewer image must install the compose plugin into the default cli-plugins dir

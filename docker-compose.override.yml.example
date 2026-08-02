@@ -16,11 +16,10 @@
 # and KID_OLLAMA_URL / KID_EMBED_MODEL in docker/secrets/config.env.
 #
 # SCALE-OUT: this list must cover EVERY reviewer in docker-compose.yml. A reviewer
-# missing here has no KWR_CLONE_ROOT, so review-one-pr.sh takes the "kid index
-# present but KWR_CLONE_ROOT unset" branch and silently reviews without prior-art —
-# reviews get shallower depending on which account happens to claim the PR. The
-# live override is gitignored, so adding a unit means editing BOTH this example and
-# the deployed docker-compose.override.yml.
+# missing here gets no /kwr mount, so kid_dry_check.py is unreachable and
+# review-one-pr.sh skips prior-art — reviews get shallower depending on which
+# account happens to claim the PR. The live override is gitignored, so adding a
+# unit means editing BOTH this example and the deployed docker-compose.override.yml.
 #
 # ORDER MATTERS: add the reviewer to docker-compose.yml FIRST. An override naming a
 # service the base file doesn't define fails as "neither an image nor a build
