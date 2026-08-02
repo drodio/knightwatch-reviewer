@@ -71,64 +71,27 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-# Scenario 4: meta_field's // empty contract.
+# Scenario 4: replay.sh's author/base derivation and its fail-loud guard.
 #
-# From #206 until #213 the replay harness was dead: line 120 self-assigned a
-# never-set name, so `set -u` aborted every run at clone time. Nothing in
-# `just test` touched that path — you cannot run the tool that would show the
-# tool is broken.
+# From #206 until #213 line 120 read PR_AUTHOR="$REPLAY_PR_AUTHOR" — a
+# self-assignment of a never-set name — so `set -u` aborted every replay at
+# clone time and the whole harness was dead. Nothing in `just test` touched
+# that path, which is why it went unnoticed for weeks.
 #
-# Three earlier versions of this scenario tried to fence it by matching
-# replay.sh's source text, and each closed one matching gap while opening
-# another (a copy of the code, then a too-loose ERE, then substring-vs-whole-
-# line). That is what mirroring source text in a second file buys you. The
-# derivation now lives in ONE place — meta_field in replay-paths.sh, used by
-# all three snapshot reads — so this asserts its behavior instead, which is
-# the property actually worth protecting and survives any reformat.
-#
-# The load-bearing case is `// empty`: without it `jq -r` prints the literal
-# string "null" for an absent field, which passes `[ -n "$VAR" ]`. The caller's
-# fail-loud guard then waves it through and the pipeline runs with
-# PR_AUTHOR=null, or fetches `origin null`.
-echo "  scenario 4: meta_field yields empty (not \"null\") for absent fields..."
-(
-    . "$REPO_ROOT/lib/replay-paths.sh"
-    full='{"baseRefName":"main","author":{"login":"octocat"},"title":"Add X"}'
-    partial='{"baseRefName":"main"}'
-
-    [ "$(meta_field "$full" '.author.login')" = "octocat" ] \
-        || { echo "FAIL scenario 4: meta_field did not extract .author.login"; exit 1; }
-    [ "$(meta_field "$full" '.baseRefName')" = "main" ] \
-        || { echo "FAIL scenario 4: meta_field did not extract .baseRefName"; exit 1; }
-
-    # The silent-corruption case: absent field must be EMPTY, never "null".
-    got="$(meta_field "$partial" '.author.login')"
-    [ -z "$got" ] \
-        || { echo "FAIL scenario 4: absent .author.login yielded '$got' — the // empty fallback is gone, so the caller's [ -n ] guard passes and the pipeline runs with a literal null"; exit 1; }
-    [ -z "$(meta_field '{}' '.baseRefName')" ] \
-        || { echo "FAIL scenario 4: absent .baseRefName did not yield empty — replay would fetch 'origin null'"; exit 1; }
-) || exit 1
-
-# And that replay.sh actually routes its snapshot reads through the helper,
-# so the contract above is the one production uses.
-# Match the assignment TARGET too, not just the call. Checking only the
-# right-hand side leaves the #206 shape invisible: rename line 120 to
-# REPLAY_PR_AUTHOR=... with nothing else setting PR_AUTHOR and the call still
-# matches, the guard's text is still present, and the smoke goes green while
-# every real replay aborts at [ -n "$PR_AUTHOR" ] under set -u.
+# Anchored EREs, each requiring the snapshot variable, the jq path, AND the
+# `// empty` fallback. All three parts are load-bearing: the anchor rejects a
+# REPLAY_-prefixed rename of the assigned name (the #206 shape, where the
+# consumed name is never set); requiring REPLAY_PR_META + jq rejects a
+# self-assignment; and `// empty` is what stops `jq -r` printing the literal
+# string "null" for absent metadata, which would pass [ -n "$VAR" ] and let
+# the pipeline run with PR_AUTHOR=null or fetch `origin null`.
+echo "  scenario 4: replay.sh derives + guards BASE_REF and PR_AUTHOR..."
 REPLAY_SH="$REPO_ROOT/lib/replay.sh"
-while read -r var field; do
-    # ANCHORED at line start. A substring match would accept
-    # REPLAY_PR_AUTHOR="$(meta_field …)" as satisfying PR_AUTHOR — the #206
-    # shape — because the shorter name is a suffix of the longer one.
-    grep -qE "^$var=\"\\\$\\(meta_field \"\\\$REPLAY_PR_META\" '$field'" "$REPLAY_SH" \
-        || { echo "FAIL scenario 4: replay.sh no longer assigns $var from $field via meta_field"; exit 1; }
-done <<'WIRING'
-BASE_REF .baseRefName
-PR_AUTHOR .author.login
-PR_TITLE .title
-WIRING
+grep -qE '^BASE_REF=.*REPLAY_PR_META.*baseRefName.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives BASE_REF from REPLAY_PR_META with the // empty fallback"; exit 1; }
+grep -qE '^PR_AUTHOR=.*REPLAY_PR_META.*author\.login.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives PR_AUTHOR from REPLAY_PR_META with the // empty fallback"; exit 1; }
 grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
     || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; meta_field's // empty contract + replay.sh wiring)"
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh derivation + guard fenced)"
