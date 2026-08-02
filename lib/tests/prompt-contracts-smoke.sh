@@ -824,13 +824,19 @@ assert_grep 'review-one-pr.sh should append the fallback note when resolve_revie
 # prohibition and a downgrade to non-binding phrasing ("values include ..."),
 # and the prohibition is the half that carries the actual ban.
 #
-# The constraint is deliberately forward-only — it stops the tuner EMITTING a
-# non-taxonomy severity, it does not instruct it to repair an existing one.
-# Repairing a corrupted item is a one-time job (srosro/claude-config#150 did it
-# by hand); encoding it here as a standing instruction to an LLM that rewrites
-# the list wholesale bought five rounds of pronoun-ambiguity findings and one
-# real risk of deleting a whole calibration rule. One-time fix by hand,
-# recurrence prevented by machine.
+# The constraint deliberately does not DIRECT a repair of an existing bad item.
+# (Whether the model also normalizes one while rewriting the list is
+# unspecified — the tuner re-emits every item, so a preserved item is also an
+# emitted one.) Encoding a repair instruction here, for an LLM that rewrites
+# the list wholesale with no diff gate, bought five rounds of pronoun-ambiguity
+# findings and one real risk of deleting a whole calibration rule.
+#
+# So: one-time fix by hand, recurrence prevented by machine. The existing stray
+# `high` is repaired by hand in srosro/claude-config#153 (#150 traced it) —
+# still open as of this commit. That repair is a TWO-location job: the host file
+# the tuner writes, plus the static `docker/secrets/claude-standards/` snapshot
+# the review containers read (README.md:105/:113), which otherwise keeps serving
+# the corrupted item. Tracked in #207.
 #
 # Both patterns track the SHELL-ESCAPED source form (\` inside the double-quoted
 # PROMPT); converting PROMPT to a quoted heredoc drops the backslashes and these
