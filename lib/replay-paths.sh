@@ -49,3 +49,16 @@ replay_run_dir() {
     esac
     printf '%s-%s-%s-%s\n' "${repo//\//-}" "$pr" "${sha:0:7}" "$slug"
 }
+
+# meta_field JSON JQ_PATH
+#   Read one field out of a `gh pr view --json` snapshot, empty when absent.
+#
+#   The `// empty` fallback is the whole point and the reason this is a
+#   function rather than three inline pipes. `jq -r '.author.login'` on a
+#   snapshot with no author prints the literal string "null", which passes
+#   `[ -n "$VAR" ]` — so the caller's fail-loud guard waves it through and the
+#   pipeline runs with PR_AUTHOR=null, or fetches `origin null`. One copy means
+#   the fallback can't be dropped from one site while the others keep it.
+meta_field() {
+    printf '%s' "$1" | jq -r "$2 // empty"
+}

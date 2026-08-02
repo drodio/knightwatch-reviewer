@@ -71,44 +71,52 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-# Scenario 4: the metadata→author wiring in lib/replay.sh itself.
-# From #206 until #213, line 120 read PR_AUTHOR="$REPLAY_PR_AUTHOR" — a
-# self-assignment of a never-set name — so `set -u` aborted every replay at
-# clone time and the whole harness was dead. Nothing in `just test` touched
-# that path, which is why weeks of broken replays went unnoticed.
+# Scenario 4: meta_field's // empty contract.
 #
-# This asserts against replay.sh's REAL text, not a copy of it. An earlier
-# version of this scenario re-implemented the three lines in a local subshell
-# and asserted on those, which would have stayed green through the exact
-# regression it advertised. Driving the script for real needs git-clone + gh
-# stubs for a three-line sequence; a shape fence on the actual file is the
-# cheap 90%, and unlike the copy it cannot pass if the bug returns.
-echo "  scenario 4: replay.sh derives BASE_REF + PR_AUTHOR from the metadata snapshot..."
-REPLAY_SH="$REPO_ROOT/lib/replay.sh"
-# Fixed strings, whole line, INCLUDING the `// empty` fallback — that fallback
-# is the load-bearing half. Without it `jq -r` prints the literal string "null"
-# for absent metadata, which passes `[ -n "$VAR" ]`: PR_AUTHOR=null reaches
-# every replay review, and BASE_REF=null becomes `git fetch origin null` — the
-# obscure failure the guard's own comment says it exists to prevent. A looser
-# pattern that matched only through `.author.login` would go green on exactly
-# that silent-corruption edit.
-assert_replay_line() {
-    grep -qF "$2" "$REPLAY_SH" \
-        || { echo "FAIL scenario 4: replay.sh $1"; echo "      expected: $2"; exit 1; }
-}
-assert_replay_line "no longer derives BASE_REF from REPLAY_PR_META with the // empty fallback" \
-    "BASE_REF=\"\$(printf '%s' \"\$REPLAY_PR_META\" | jq -r '.baseRefName // empty')\""
-assert_replay_line "no longer derives PR_AUTHOR from REPLAY_PR_META with the // empty fallback" \
-    "PR_AUTHOR=\"\$(printf '%s' \"\$REPLAY_PR_META\" | jq -r '.author.login // empty')\""
-assert_replay_line "lost the fail-loud guard on BASE_REF / PR_AUTHOR" \
-    '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]'
-# The #206 shape specifically, asserted narrowly. A whole-file scan for
-# NAME="$NAME" would be redundant with the derivation checks above AND would
-# false-positive on the five legitimate env-forwarding self-assignments at
-# :274-280, which today escape only via their trailing line-continuation.
-if grep -qE '^[[:space:]]*(REPLAY_)?PR_AUTHOR="\$(REPLAY_)?PR_AUTHOR"[[:space:]]*$' "$REPLAY_SH"; then
-    echo "FAIL scenario 4: replay.sh self-assigns PR_AUTHOR — the #206 outage (aborts under set -u when unset)"
-    exit 1
-fi
+# From #206 until #213 the replay harness was dead: line 120 self-assigned a
+# never-set name, so `set -u` aborted every run at clone time. Nothing in
+# `just test` touched that path — you cannot run the tool that would show the
+# tool is broken.
+#
+# Three earlier versions of this scenario tried to fence it by matching
+# replay.sh's source text, and each closed one matching gap while opening
+# another (a copy of the code, then a too-loose ERE, then substring-vs-whole-
+# line). That is what mirroring source text in a second file buys you. The
+# derivation now lives in ONE place — meta_field in replay-paths.sh, used by
+# all three snapshot reads — so this asserts its behavior instead, which is
+# the property actually worth protecting and survives any reformat.
+#
+# The load-bearing case is `// empty`: without it `jq -r` prints the literal
+# string "null" for an absent field, which passes `[ -n "$VAR" ]`. The caller's
+# fail-loud guard then waves it through and the pipeline runs with
+# PR_AUTHOR=null, or fetches `origin null`.
+echo "  scenario 4: meta_field yields empty (not \"null\") for absent fields..."
+(
+    . "$REPO_ROOT/lib/replay-paths.sh"
+    full='{"baseRefName":"main","author":{"login":"octocat"},"title":"Add X"}'
+    partial='{"baseRefName":"main"}'
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh BASE_REF/PR_AUTHOR derivation + guard fenced)"
+    [ "$(meta_field "$full" '.author.login')" = "octocat" ] \
+        || { echo "FAIL scenario 4: meta_field did not extract .author.login"; exit 1; }
+    [ "$(meta_field "$full" '.baseRefName')" = "main" ] \
+        || { echo "FAIL scenario 4: meta_field did not extract .baseRefName"; exit 1; }
+
+    # The silent-corruption case: absent field must be EMPTY, never "null".
+    got="$(meta_field "$partial" '.author.login')"
+    [ -z "$got" ] \
+        || { echo "FAIL scenario 4: absent .author.login yielded '$got' — the // empty fallback is gone, so the caller's [ -n ] guard passes and the pipeline runs with a literal null"; exit 1; }
+    [ -z "$(meta_field '{}' '.baseRefName')" ] \
+        || { echo "FAIL scenario 4: absent .baseRefName did not yield empty — replay would fetch 'origin null'"; exit 1; }
+) || exit 1
+
+# And that replay.sh actually routes its snapshot reads through the helper,
+# so the contract above is the one production uses.
+REPLAY_SH="$REPO_ROOT/lib/replay.sh"
+for field in '.baseRefName' '.author.login' '.title'; do
+    grep -qF "meta_field \"\$REPLAY_PR_META\" '$field'" "$REPLAY_SH" \
+        || { echo "FAIL scenario 4: replay.sh no longer reads $field via meta_field"; exit 1; }
+done
+grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
+
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; meta_field's // empty contract + replay.sh wiring)"

@@ -116,8 +116,8 @@ git clone "https://github.com/$REPO.git" "$WORK/repo"
 # its failure masked by the enclosing builder's exit status. Bare assignment
 # so a failed fetch aborts under `set -e`.
 REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS")"
-BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
-PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
+BASE_REF="$(meta_field "$REPLAY_PR_META" '.baseRefName')"
+PR_AUTHOR="$(meta_field "$REPLAY_PR_META" '.author.login')"
 # Fail loud on a metadata blank, mirroring production's guard: an empty
 # BASE_REF otherwise surfaces as an obscure `git fetch origin ""`.
 [ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ] || {
@@ -254,7 +254,7 @@ if [ -f "$PROBE_SCHEMA_SRC" ]; then
 fi
 
 PR_ID="$REPO#$PR"
-PR_TITLE="$(printf '%s' "$REPLAY_PR_META" | jq -r '.title // empty' | tr '\000-\037\177' ' ')"
+PR_TITLE="$(meta_field "$REPLAY_PR_META" '.title' | tr '\000-\037\177' ' ')"
 PR_URL="https://github.com/$REPO/pull/$PR"
 # Mirror the live worker's visibility lookup so replays render the same
 # security/portability posture production does — without it, every replay
