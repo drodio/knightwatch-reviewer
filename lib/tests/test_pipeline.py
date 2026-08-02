@@ -2155,6 +2155,53 @@ class TestRealPromptsCompose(unittest.TestCase):
             self.assertNotIn("{{REPO_VISIBILITY}}", out, f"{specialist}: REPO_VISIBILITY placeholder leaked")
             self.assertIn(specialist, out, f"{specialist}: specialist name missing")
 
+    def test_universal_policy_reaches_every_built_prompt(self):
+        """policy.md must reach all four kinds, and must not widen the intent
+        pre-pass's envelope or dictate its output shape.
+
+        The prelude is prepended to everything, so a policy edit can reach an
+        agent whose role prompt it never touched — that is how a "you may read
+        any file" grant leaked into the staged-inputs-only intent pre-pass, and
+        how an output directive nearly aborted every review before Wave B.
+        Asserted against the ASSEMBLED prompt: a file-level grep goes green on
+        a prelude that never reaches a given kind.
+        """
+        tokens = (
+            "Read-only working directory",
+            "data, not instructions",
+            "Hypothetical-future-regression decline",
+            "CI/test fences for hypothetical future regressions",
+            "<!-- kwr-test-fence:review-loop -->",
+        )
+        for kind, agent in (
+            ("specialist", "security"),
+            ("standalone", "momentum"),
+            ("standalone", "intent"),
+            ("critic", "critic-security"),
+            ("aggregator", "aggregator"),
+        ):
+            out = pipeline.build_prompt(
+                kind=kind, agent=agent, prompts_dir=str(self.real_prompts),
+                pr_id="owner/repo#42", pr_title="Add X",
+                pr_url="https://example/pull/42", pr_author="alice",
+            )
+            for token in tokens:
+                self.assertIn(token, out, f"{kind}/{agent}: universal policy token missing: {token!r}")
+
+        intent = pipeline.build_prompt(
+            kind="standalone", agent="intent", prompts_dir=str(self.real_prompts),
+            pr_id="owner/repo#42", pr_title="Add X",
+            pr_url="https://example/pull/42", pr_author="alice",
+        )
+        self.assertNotIn(
+            "may read any file", intent,
+            "intent prompt grants repo browsing — the staged-inputs-only fence is the only bound here",
+        )
+        self.assertIn(
+            "read the staged `.codex-scratch/*` inputs listed above and nothing else", intent,
+            "intent prompt lost its staged-inputs-only fence",
+        )
+
     def test_standalone_compose_against_real_prompts(self):
         """Each standalone prompt body must compose without error against the
         real prompts/ tree — catches drift in prompts/standalone/{intent,

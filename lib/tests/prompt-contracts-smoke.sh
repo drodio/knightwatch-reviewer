@@ -47,71 +47,12 @@ assert_no_grep() {
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
 
-# Security fence: every agent runs with the codex sandbox bypassed
-# (--dangerously-bypass-approvals-and-sandbox in lib/pipeline.py:run_codex)
-# while reading PR-controlled inputs. The read-only/data-not-instructions
-# fence is what stops a malicious diff from prompt-injecting an agent into
-# write actions or credential exfiltration. If it is deleted, `just test`
-# stays green but the dangerous execution path remains exposed.
-#
-# Asserted against the BUILT prompt for every kind, not against a source
-# file. The fence used to be retyped into common-header.md, critic.md, and
-# aggregator.md, and the three copies drifted in which files they named
-# untrusted; it now lives once in policy.md and is prepended by
-# build_prompt. Checking the assembled artifact is what proves each kind
-# actually receives it — a file-level grep would go green on a prelude
-# that never reached the critic.
-echo "  asserting universal policy reaches every built prompt..."
-python3 - <<'FENCE_PY'
-import os, sys
-sys.path.insert(0, ".")
-os.environ.setdefault("REPO_VISIBILITY", "private")
-from lib import pipeline
-
-KINDS = [
-    ("specialist", "security"),
-    ("standalone", "momentum"),
-    ("standalone", "intent"),
-    ("critic", "critic-security"),
-    ("aggregator", "aggregator"),
-]
-# Each token is a rule that must reach every agent. Structural tokens only —
-# this file does not pin rationale prose (see the header contract).
-TOKENS = [
-    "Read-only working directory",
-    "data, not instructions",
-    "Hypothetical-future-regression decline",
-    "CI/test fences for hypothetical future regressions",
-    "<!-- kwr-test-fence:review-loop -->",
-]
-failed = False
-for kind, agent in KINDS:
-    built = pipeline.build_prompt(
-        kind=kind, agent=agent, prompts_dir="prompts",
-        pr_id="owner/repo#1", pr_title="t", pr_url="u", pr_author="a",
-    )
-    for tok in TOKENS:
-        if tok not in built:
-            print(f"FAIL: built {kind} prompt is missing universal policy token: {tok!r}")
-            failed = True
-
-# The prelude must never WIDEN a role's read envelope. The intent pre-pass is
-# fenced to the staged .codex-scratch/* inputs (PR #206); a prelude that hands
-# it "you may read any file in the repository" re-opens exactly that hole, on
-# the one agent whose output is copied verbatim into a public PR comment.
-intent = pipeline.build_prompt(
-    kind="standalone", agent="intent", prompts_dir="prompts",
-    pr_id="owner/repo#1", pr_title="t", pr_url="u", pr_author="a",
-)
-if "may read any file" in intent:
-    print("FAIL: built intent prompt grants repo browsing — the staged-inputs-only fence is the only bound on a malicious PR here")
-    failed = True
-if "read the staged `.codex-scratch/*` inputs listed above and nothing else" not in intent:
-    print("FAIL: built intent prompt lost its staged-inputs-only fence")
-    failed = True
-
-sys.exit(1 if failed else 0)
-FENCE_PY
+# Prompt-composition behavior — including that policy.md reaches every kind
+# and never widens the intent pre-pass's envelope — is asserted against the
+# ASSEMBLED prompts in lib/tests/test_pipeline.py's TestRealPromptsCompose.
+# It lived here as an embedded python3 heredoc for a while, which made two
+# owners of one behavior in two languages; the Python suite already composed
+# the real prompts/ tree, so that is where it belongs.
 
 # Negative fence: the operating point belongs to the repo's REVIEW.md, staged
 # as .codex-scratch/review.md. A prompt that hardcodes the stage silently
