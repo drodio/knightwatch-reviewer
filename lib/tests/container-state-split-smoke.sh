@@ -119,7 +119,9 @@ grep -qF 'chmod +x /usr/local/bin/jq' "$DOCKERFILE" \
 # the path must live on a volume mounted at the SAME location in both reviewer-N
 # and dind-N. Pin both mounts per pair + the volume declaration so a compose edit
 # can't silently drop the bridge and re-break "Unable to reach your agent". (PR #161.)
-for n in 1 2 3 4; do
+# Driven off the reviewer count derived above so the fence extends with every
+# scale-out instead of silently lagging the fleet.
+for n in $(seq 1 "$n_reviewers"); do
   dind_block=$(awk "/^  dind-$n:/{f=1;next} /^  [a-z]/{f=0} f" "$COMPOSE")
   printf '%s\n' "$dind_block" | grep -qF "scenario-shared$n:/scenario-shared" \
     || fail "dind-$n missing scenario-shared$n:/scenario-shared mount (nested-dind token bridge regressed — PR #161)"

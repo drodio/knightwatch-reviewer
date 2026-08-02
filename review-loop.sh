@@ -53,6 +53,18 @@ for i in $(seq 1 60); do
 done
 log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
 
+# An UNPROVISIONED account (compose bind-mounts a codex-account-N dir that was
+# never logged in — docker silently auto-creates it empty) has no auth.json.
+# That state can't reach the offline path: _CODEX_AUTH_FATAL_RE (lib/pipeline.py)
+# is pinned to refresh_token_reused|token_invalidated and excludes the "sign in"
+# phrasing a logged-out codex emits, so no marker is written, the loop keeps
+# claiming, and the account spin-aborts every PR it steals from a healthy
+# sibling. Fail loud at startup instead — the container restart-loops visibly.
+[ -s "$(codex_auth_json)" ] || {
+    log "[review-loop] FATAL: no codex auth.json at $(codex_auth_json) — account not provisioned (CODEX_HOME=… codex login --device-auth)"
+    exit 1
+}
+
 # Quota backoff: when codex caps this account, review-one-pr.sh writes the reset
 # epoch to the quota-pause file (see lib/state-io.sh); this loop stops claiming
 # reviews until it passes, so a capped account backs off and the other accounts

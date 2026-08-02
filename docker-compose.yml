@@ -22,9 +22,15 @@
 # overrides — network_mode, WORKER_ID, local volume, codex-account mount, and
 # the `scenario-sharedN:/scenario-shared` bridge on BOTH dind-N and reviewer-N
 # (+ a `scenario-sharedN` volume declaration).
-# Memory: reviewer (codex agents) + dind (just-test compose stack) per unit is
-# capped near the legacy single-unit budget so prod Plow keeps headroom on the
-# 128G host. Tune after observing real peaks.
+# Memory: the per-unit caps below are CEILINGS, not reservations, and they
+# deliberately over-commit — 5 units × (20g reviewer + 12g dind) = 160g of caps
+# on a 128G host. What actually bounds the aggregate is the shared just-test
+# semaphore (MAX_CONCURRENT_TESTS, default 3), which rations the dind side
+# host-wide; the reviewer side is unbounded across containers, so a simultaneous
+# 5-account codex peak is arbitrated by the host OOM killer rather than by any
+# cgroup — and it can reap prod Plow instead of a reviewer. Per-unit caps stay
+# high so a single legitimate review isn't killed mid-flight. Revisit (lower the
+# caps, or add a reviewer-side reservation) if real peaks ever approach the box.
 
 x-dind: &dind
   image: docker:27-dind

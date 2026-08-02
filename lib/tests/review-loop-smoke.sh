@@ -22,6 +22,10 @@ make_sandbox() {
     # give the sandbox the real lib so the quota-pause check exercises production code.
     cp "$(dirname "$SRC")/lib/state-io.sh" "$d/lib/state-io.sh"
     printf '#!/bin/bash\nexit 0\n' > "$d/bin/sleep"; chmod +x "$d/bin/sleep"  # noop: don't actually wait
+    # Provisioned codex home. Every case passes CODEX_HOME="$d/codex" so the
+    # startup auth guard reads the sandbox, never the operator's real ~/.codex
+    # (which would make these cases pass or fail on the host's login state).
+    mkdir -p "$d/codex"; echo '{}' > "$d/codex/auth.json"   # non-empty: the guard tests -s
     echo "$d"
 }
 
@@ -29,7 +33,7 @@ make_sandbox() {
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 1\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"    # `docker info` always fails
 printf '#!/bin/bash\nexit 0\n' > "$d/review.sh"; chmod +x "$d/review.sh"
-if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1; then
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 when the dind daemon never came up (should fail loud)"
 fi
 rm -rf "$d"
@@ -50,6 +54,7 @@ chmod +x "$d/review.sh"
 # (the contract that broke in the bot's worker, which exports REVIEWER_LIB_DIR):
 # review-loop must override them to the in-image paths, not honor the caller.
 if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" \
+        CODEX_HOME="$d/codex" \
         REVIEWER_LIB_DIR=/bogus/inherited/lib PROMPTS_DIR=/bogus/inherited/prompts \
         ./review-loop.sh ) >/dev/null 2>&1; then
     fail "review-loop exited 0 on a fatal (non-zero) review.sh tick (should exit for restart)"
@@ -69,11 +74,11 @@ printf '%s\n' "$(( $(date +%s) + 3600 ))" > "$d/state/pool/solo/quota-paused-unt
 # Backdate AFTER the file write (creating a file bumps the dir mtime): the
 # loop's registration touch is then the only thing that can freshen it — the pin.
 touch -d '3 hours ago' "$d/state/pool/solo"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ ! -e "$d/called" ] || fail "review-loop ran review.sh while quota-paused (should skip the tick)"
 [ "$(stat -c %Y "$d/state/pool/solo")" -gt $(( $(date +%s) - 3600 )) ] || fail "loop tick did not touch the account dir (liveness registration unpinned)"
 printf '%s\n' "$(( $(date +%s) - 10 ))" > "$d/state/pool/solo/quota-paused-until"
-( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" ./review-loop.sh ) >/dev/null 2>&1 || true
+( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop skipped the tick with a PAST quota epoch (should resume)"
 rm -rf "$d"
 
@@ -84,7 +89,6 @@ rm -rf "$d"
 d=$(make_sandbox)
 printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
 printf '#!/bin/bash\ntouch "%s/called"\nexit 1\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
-mkdir -p "$d/codex"; : > "$d/codex/auth.json"
 # Producer: the same mark_auth_offline (lib/state-io.sh) review-one-pr.sh calls
 # on a fatal-auth abort — exercises the real produce→consume handoff, not a
 # hand-written marker. It records the live auth.json mtime (not re-logged yet).
@@ -98,6 +102,20 @@ touch -d "+1 hour" "$d/codex/auth.json"
 ( cd "$d" && timeout 3 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1 || true
 [ -e "$d/called" ] || fail "review-loop stayed offline after re-login (newer auth.json mtime should resume)"
 [ ! -e "$d/state/pool/solo/auth-offline" ] || fail "review-loop did not clear the auth-offline marker after re-login"
+rm -rf "$d"
+
+# 6. Unprovisioned account: a codex home with no auth.json (compose auto-creates
+#    an empty bind-mount source for an account that was never logged in) must
+#    fail loud at startup — the logged-out phrasing never matches the fatal-auth
+#    regex, so without this guard the account claims PRs and spin-aborts each one.
+d=$(make_sandbox)
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"; chmod +x "$d/bin/docker"   # dind ready
+printf '#!/bin/bash\ntouch "%s/called"\nexit 0\n' "$d" > "$d/review.sh"; chmod +x "$d/review.sh"
+rm -f "$d/codex/auth.json"
+if ( cd "$d" && timeout 20 env PATH="$d/bin:$PATH" DOCKER_HOST=tcp://x STATE_DIR="$d/state" CODEX_HOME="$d/codex" ./review-loop.sh ) >/dev/null 2>&1; then
+    fail "review-loop exited 0 with no codex auth.json (unprovisioned account should fail loud)"
+fi
+[ ! -e "$d/called" ] || fail "review-loop claimed a review with no codex auth.json (should never reach review.sh)"
 rm -rf "$d"
 
 echo "PASS: review-loop-smoke"
