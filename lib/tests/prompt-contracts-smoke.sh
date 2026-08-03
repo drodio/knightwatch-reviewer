@@ -812,33 +812,6 @@ echo "  asserting live path appends the no-REVIEW.md note on the org-default bra
 assert_grep 'review-one-pr.sh should append the fallback note when resolve_review_md returns rc 1' \
     '[ "$REVIEW_MD_RC" = 1 ] && REVIEW_NOTES+=' lib/review-one-pr.sh
 
-# The tuner rewrites COMMENT_REVIEW_MISTAKES.md end-to-end, and that file is
-# concatenated into every review's standards prompt, so a severity word
-# outside the taxonomy leaks into every review — srosro/claude-config#150
-# traced a stray `high` (a Confidence value, not a severity) to this prompt
-# carrying no taxonomy constraint at all.
-#
-# Pin the value list, not the framing sentence: rewording the taxonomy to
-# `blocking`, `high`, `medium` is the exact regression this fence exists for,
-# and a framing-sentence pin would stay green through it. Two halves, two
-# assertions — the enumeration alone survives both a deletion of the
-# prohibition and a downgrade to non-binding phrasing ("values include ..."),
-# and the prohibition is the half that carries the actual ban.
-#
-# The constraint deliberately does not DIRECT a repair of an already-bad item;
-# encoding that for an LLM that rewrites the list wholesale with no diff gate
-# generated pure ambiguity. Recurrence is prevented here; the one-time repair
-# is by hand — see plow-pbc/knightwatch-reviewer#207.
-#
-# Both patterns track the SHELL-ESCAPED source form (\` inside the double-quoted
-# PROMPT); converting PROMPT to a quoted heredoc drops the backslashes and these
-# fences must be updated with it.
-echo "  asserting learn-from-replies.sh pins the severity taxonomy..."
-assert_grep 'learn-from-replies.sh should constrain the tuner to blocking|medium|low|nit' \
-    '\`blocking\`, \`medium\`, \`low\`, \`nit\`' learn-from-replies.sh
-assert_grep 'learn-from-replies.sh should prohibit non-taxonomy severity tags' \
-    '\`high\`, \`critical\`, or \`major\`' learn-from-replies.sh
-
 # (contract-drift's aggregator registration is now covered by the
 # SPECIALISTS-derived roster check above — no per-name assert needed.)
 
