@@ -85,7 +85,7 @@ while true; do
         # Container recipe, not the host-side CODEX_HOME one line 64 prints:
         # by now codex-as-root has rewritten config.toml 600 root-owned in the
         # bind-mounted account dir, so host-side login dies on EACCES.
-        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (docker compose exec reviewer-${WORKER_ID:-N} codex login --device-auth); skipping tick"
+        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (docker compose exec reviewer-${WORKER_ID} codex login --device-auth); skipping tick"
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(auth_offline_file)"  # absent or re-logged (newer auth.json); resume claiming
