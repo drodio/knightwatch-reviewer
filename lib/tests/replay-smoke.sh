@@ -71,4 +71,29 @@ bash "$REPO_ROOT/lib/replay-batch.sh" \
 grep -qF '|---|---|---|' "$BATCH_OUT/index.md" \
     || { echo "FAIL scenario 3: index.md missing the table separator row"; cat "$BATCH_OUT/index.md"; exit 1; }
 
-echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted)"
+# Scenario 4: replay.sh's author/base derivation and its fail-loud guard.
+#
+# From #206 until #213 line 120 read PR_AUTHOR="$REPLAY_PR_AUTHOR" — a
+# self-assignment of a never-set name — so `set -u` aborted every replay at
+# clone time and the whole harness was dead. Nothing in `just test` touched
+# that path, which is why it went unnoticed for weeks.
+#
+# Anchored EREs, each requiring the snapshot variable, the jq path, AND the
+# `// empty` fallback. All three parts are load-bearing: the anchor rejects a
+# REPLAY_-prefixed rename of the assigned name (the #206 shape, where the
+# consumed name is never set); requiring REPLAY_PR_META + jq rejects a
+# self-assignment; and `// empty` is what stops `jq -r` printing the literal
+# string "null" for absent metadata, which would pass [ -n "$VAR" ] and let
+# the pipeline run with PR_AUTHOR=null or fetch `origin null`.
+echo "  scenario 4: replay.sh derives + guards BASE_REF and PR_AUTHOR..."
+REPLAY_SH="$REPO_ROOT/lib/replay.sh"
+grep -qE '^BASE_REF=.*REPLAY_PR_META.*baseRefName.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives BASE_REF from REPLAY_PR_META with the // empty fallback"; exit 1; }
+grep -qE '^PR_AUTHOR=.*REPLAY_PR_META.*author\.login.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives PR_AUTHOR from REPLAY_PR_META with the // empty fallback"; exit 1; }
+grep -qE '^PR_TITLE=.*REPLAY_PR_META.*\.title.*// empty' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh no longer derives PR_TITLE from REPLAY_PR_META with the // empty fallback"; exit 1; }
+grep -qF '[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ]' "$REPLAY_SH" \
+    || { echo "FAIL scenario 4: replay.sh lost the fail-loud guard on BASE_REF / PR_AUTHOR"; exit 1; }
+
+echo "OK: replay-smoke (absent-note appears; present-note suppressed; replay-batch index.md emitted; replay.sh derivation + guard fenced)"

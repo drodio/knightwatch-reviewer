@@ -117,10 +117,10 @@ git clone "https://github.com/$REPO.git" "$WORK/repo"
 # so a failed fetch aborts under `set -e`.
 REPLAY_PR_META="$(gh pr view "$PR" --repo "$REPO" --json "baseRefName,author,$AUTHOR_INTENT_FIELDS")"
 BASE_REF="$(printf '%s' "$REPLAY_PR_META" | jq -r '.baseRefName // empty')"
-REPLAY_PR_AUTHOR="$REPLAY_PR_AUTHOR"
+PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
 # Fail loud on a metadata blank, mirroring production's guard: an empty
 # BASE_REF otherwise surfaces as an obscure `git fetch origin ""`.
-[ -n "$BASE_REF" ] && [ -n "$REPLAY_PR_AUTHOR" ] || {
+[ -n "$BASE_REF" ] && [ -n "$PR_AUTHOR" ] || {
     echo "replay: gh pr view $PR returned no baseRefName / author — aborting" >&2
     exit 1
 }
@@ -256,7 +256,6 @@ fi
 PR_ID="$REPO#$PR"
 PR_TITLE="$(printf '%s' "$REPLAY_PR_META" | jq -r '.title // empty' | tr '\000-\037\177' ' ')"
 PR_URL="https://github.com/$REPO/pull/$PR"
-PR_AUTHOR="$(printf '%s' "$REPLAY_PR_META" | jq -r '.author.login // empty')"
 # Mirror the live worker's visibility lookup so replays render the same
 # security/portability posture production does — without it, every replay
 # falls back to pipeline.py's `private` default and a public-repo canary
