@@ -14,6 +14,17 @@
 #
 # Then set KID_PATHS in docker/secrets/repos.conf (repo → in-container index path)
 # and KID_OLLAMA_URL / KID_EMBED_MODEL in docker/secrets/config.env.
+#
+# SCALE-OUT: this list must cover EVERY reviewer in docker-compose.yml. A reviewer
+# missing here gets no /kwr mount, so kid_dry_check.py is unreachable and
+# review-one-pr.sh skips prior-art — reviews get shallower depending on which
+# account happens to claim the PR. The live override is gitignored, so adding a
+# unit means editing BOTH this example and the deployed docker-compose.override.yml.
+#
+# ORDER MATTERS: add the reviewer to docker-compose.yml FIRST. An override naming a
+# service the base file doesn't define fails as "neither an image nor a build
+# context specified" — and that invalidates the WHOLE compose project, taking the
+# entire fleet down on the next `compose up`, not just the new unit.
 services:
   reviewer-1: &kid
     environment:
@@ -25,3 +36,4 @@ services:
   reviewer-2: *kid
   reviewer-3: *kid
   reviewer-4: *kid
+  reviewer-5: *kid

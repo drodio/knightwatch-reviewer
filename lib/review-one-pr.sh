@@ -997,7 +997,7 @@ KID_RAN=false
 # KID_PATHS empty so the lookup is safe under `set -u` even if
 # repos.conf is absent in a test sandbox).
 KID_PROJECT_PATH="${KID_PATHS[$REPO]:-}"
-if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -n "${KWR_CLONE_ROOT:-}" ]; then
+if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "$KID_INPUT_DIFF" ] && [ -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
     # The index is mounted read-only (host kid-refresh owns it), but ChromaDB's
     # sqlite needs write access even for a query (WAL). Query a throwaway copy in
     # a per-container writable dir: cp is cheap (~0.2s, page-cached), keeps each
@@ -1038,8 +1038,13 @@ if [ -n "$KID_PROJECT_PATH" ] && [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -n "
     rm -rf "$KID_QUERY_DIR"
 elif [ -z "$KID_PROJECT_PATH" ]; then
     log "$PR_ID: no KID_PATHS entry for $REPO — skipping prior-art lookup"
-elif [ -d "$KID_PROJECT_PATH/.keepitdry" ] && [ -z "${KWR_CLONE_ROOT:-}" ]; then
-    log "$PR_ID: kid index present but KWR_CLONE_ROOT unset — skipping prior-art lookup (compose override missing it)"
+# Test the kid ENTRYPOINT's reachability, not `-z KWR_CLONE_ROOT`: tracked-repos.sh
+# defaults KWR_CLONE_ROOT unconditionally, so an unset test can never fire and this
+# misconfig used to fall through to the "index not yet built" message below —
+# indistinguishable from the legitimate pre-index state. A reviewer left out of the
+# compose override has no /kwr mount, so the entrypoint is simply absent.
+elif [ ! -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
+    log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (this reviewer missing from the compose override?)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
     log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
 fi
