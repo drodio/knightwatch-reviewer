@@ -82,7 +82,10 @@ while true; do
     # timed pause. Checked before quota: a 401-on-refresh never yields a usage
     # cap, so without this it would fall through and spin-abort every PR.
     if auth_offline_active; then
-        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (CODEX_HOME codex login); skipping tick"
+        # Container recipe, not the host-side CODEX_HOME one line 64 prints:
+        # by now codex-as-root has rewritten config.toml 600 root-owned in the
+        # bind-mounted account dir, so host-side login dies on EACCES.
+        log "[review-loop] codex auth invalid — worker OFFLINE until re-login (docker compose exec reviewer-${WORKER_ID:-N} codex login --device-auth); skipping tick"
         sleep "$POLL_SECS"; continue
     fi
     rm -f "$(auth_offline_file)"  # absent or re-logged (newer auth.json); resume claiming
