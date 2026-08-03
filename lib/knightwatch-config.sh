@@ -3,8 +3,9 @@
 # `git show`. Trust model: base branch only — PR head edits don't take
 # effect until merged.
 #
-# Reviewer *policy* (product context, operating point, voice posture) lives in
-# one repo-root REVIEW.md — see resolve_review_md. Per-repo *mechanics*
+# Per-repo reviewer *policy* lives in one repo-root REVIEW.md — see
+# default_review_md below for what that file is scoped to carry and what it
+# is not. Per-repo *mechanics*
 # (sibling allowlist, dead-code command, strict-typing command) keep their own
 # file under .knightwatch/ with the natural format for that concern
 # (line-oriented, bash). No central manifest, no parser dependency.
@@ -76,8 +77,10 @@ read_knightwatch_file() {
 # the two paths can't drift — a reworded default reaches both at once. A repo
 # with a different operating point overrides this by committing REVIEW.md.
 #
-# The shared review-loop rules are NOT here — resolve_review_md appends them to
-# per-repo and default content alike, so both paths get them from one copy.
+# Scope: the operating point ONLY. Universal review policy (voice posture,
+# decline rules, review-loop rules) lives in prompts/policy.md, which the
+# pipeline prepends to every agent — it does not belong in a per-repo file
+# and does not need restating for 38 repos.
 default_review_md() {
     cat <<'REVIEW_MD_EOF'
 # Review instructions (org default — no per-repo REVIEW.md configured)
@@ -91,96 +94,15 @@ No `REVIEW.md` is committed for this repo, so assume the org default operating p
 - **Spec rigidity:** treat specs and inferred intent as sketches, not contracts. A handled edge case the intent never asked for is a cost, not a feature.
 - **Optimize for developer time:** elegant, DRY code that is easy to build on; every maintained code path taxes iteration speed.
 
-## Review priority
-
-- Apply `standards.md` § Broken-Glass Test on all findings (universal Broken-Glass policy).
-- No repo-specific contrast pairs. The universal contrast pairs in `standards.md` apply.
-
 If this repo needs a different operating point, commit `REVIEW.md` to the base branch.
 REVIEW_MD_EOF
 }
 
-# The review-loop rules — org policy, identical for every repo, so they live
-# HERE rather than being copied into 38 REVIEW.md files. resolve_review_md
-# appends them to whatever per-repo content it resolves, which means a repo's
-# REVIEW.md carries only what is actually repo-specific. roborev gets the same
-# rules from claude-config's _src_rubric, its own single copy.
-shared_review_loop_rules() {
-    cat <<'SHARED_EOF'
-
-<!-- shared: review-loop -->
-## Review-loop rules
-
-**Scope.** Three rules below govern *repeat* review only — re-review
-convergence, recurring-file escalation, and the snippet-churn clause of the
-docs/skills bar. They apply when your context already contains prior reviews
-covering the lines you are re-examining. Code that is new in what you are
-reviewing is always in scope, and none of them may suppress a finding on it.
-When you cannot tell whether a prior review covered a line, report normally.
-They exist to stop a loop that will not terminate, never to let a review pass
-without looking. § Severity floor for prose, and the rest of the docs/skills
-bar, are not scoped this way — they always apply.
-
-### Re-review convergence
-
-Once a finding has been raised and the author has responded to it, do not raise
-it again in another shape. A second opinion on lines already reviewed and
-already revised is not reportable at any severity — wording you would phrase
-differently, a fix you would have shaped another way, or a consequence of your
-own earlier suggestion. High-confidence correctness and security bugs are
-exempt and stay reportable no matter how late they surface.
-
-### Recurring-file escalation
-
-If the prior reviews in your context have already flagged the same file two or
-more times, stop reporting individual issues on the lines those reviews
-covered. The recurrence *is* the finding.
-
-Report it once, as a question naming the structural cost: which seam keeps
-producing these, and what single change would make the class disappear? Lines
-the change under review newly adds stay reportable as usual. Enumerating facet
-N+1 of a churning file is the failure mode this rule exists to stop — every
-individual finding can be correct while the sequence never terminates.
-
-### Severity floor for prose
-
-This rule only ever narrows: it never authorizes an editorial finding your other
-instructions drop. When such a finding is emitted at all, it is the lowest
-severity you emit, never medium or higher, and worth at most one line in the
-summary. That covers wording, phrasing, parallelism, sentence shape, line
-reflow, and list construction in `.md` files.
-
-A factual claim in a doc that contradicts the code it describes is a normal
-finding at normal severity: this floor covers style, not truth.
-
-### Lower bar for docs, skills, and diagnostic snippets
-
-Markdown docs, agent/skill files, and the shell snippets embedded in them are
-operator aids on a pre-launch prototype, not shipped product code. Report a
-finding in them only when it would cause data loss, leak a secret, execute
-attacker-controlled input, make a documented recovery path actively
-wrong, or state something the code contradicts (the truth carve-out above
-survives this bar). Ordinary correctness lapses in an example command — an
-unguarded comparison, a missing `2>/dev/null` case, a whitespace-sensitive
-check — are not worth a review round here.
-
-Snippets in skill files are *executed* by agents and routinely interpolate
-PR-controlled values, so an unquoted expansion or an `eval` over PR metadata is
-a real finding, not an example-code nit.
-
-If the prior reviews in your context show the same snippet already rewritten in
-response to review, stop: say it is churning and suggest deleting or simplifying
-it instead of correcting it again.
-<!-- /shared -->
-SHARED_EOF
-}
-
 # Resolve the reviewer-policy input for a review: the per-repo REVIEW.md at
-# base_ref if committed and non-empty, else the org default — with the shared
-# review-loop rules appended either way. Both production (lib/review-one-pr.sh)
-# and operator-bench replay (lib/replay.sh) call it, so the present/absent/error
-# contract can't drift between them (it did, twice, when each open-coded its own
-# tri-state).
+# base_ref if committed and non-empty, else the org default. Both production
+# (lib/review-one-pr.sh) and operator-bench replay (lib/replay.sh) call it, so
+# the present/absent/error contract can't drift between them (it did, twice,
+# when each open-coded its own tri-state).
 #
 # The status IS the classification, so callers never re-derive it. Every earlier
 # attempt to recover "did this fall back?" outside this function diverged from
@@ -203,7 +125,6 @@ resolve_review_md() {
         default_review_md
         status=1
     fi
-    shared_review_loop_rules
     return "$status"
 }
 

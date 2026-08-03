@@ -20,8 +20,8 @@
 # dropped several wording-pin fences that were over-fitting; that
 # PR's description documents what was removed and why.
 #
-# Deliberately NOT a content-pinning test. Rule 8 (Remedy-cost framing)
-# itself forbids tests that calcify prompt prose; what we fence here is
+# Deliberately NOT a content-pinning test. policy.md's Don't-propose list
+# itself forbids CI/test fences that calcify the current contract; what we fence here is
 # contract integrity (token presence, branch-negative alternative still
 # allowed), not literal wording. One carve-out: a short rewording-stable
 # fragment of a rule may be pinned to prove the rule itself still exists —
@@ -47,18 +47,23 @@ assert_no_grep() {
 # Section 1: prompt-contract sync (formerly anti-bloat-contract-smoke.sh)
 # ====================================================================
 
-# Security fence: per-angle critics run with codex sandbox bypassed
-# (--dangerously-bypass-approvals-and-sandbox in lib/pipeline.py:run_codex)
-# while reading PR-controlled inputs. The read-only/data-not-instructions
-# fence in critic.md is what stops a malicious diff from prompt-injecting
-# the critic into write actions or credential exfiltration. If the fence
-# is deleted, `just test` stays green but the dangerous execution path
-# remains exposed.
-echo "  asserting read-only sandbox fence in critic.md..."
-assert_grep "critic.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/critic.md
-assert_grep "critic.md should fence repo content as data-not-instructions" \
-    "data, not instructions" prompts/critic.md
+# Prompt-composition behavior — including that policy.md reaches every kind
+# and never widens the intent pre-pass's envelope — is asserted against the
+# ASSEMBLED prompts in lib/tests/test_pipeline.py's TestRealPromptsCompose.
+# It lived here as an embedded python3 heredoc for a while, which made two
+# owners of one behavior in two languages; the Python suite already composed
+# the real prompts/ tree, so that is where it belongs.
+
+# Negative fence: the operating point belongs to the repo's REVIEW.md, staged
+# as .codex-scratch/review.md. A prompt that hardcodes the stage silently
+# overrides any repo that states a different one — the drift PR #201 left
+# behind when it moved the operating point to REVIEW.md without updating the
+# layer that acts on it.
+echo "  asserting no prompt hardcodes the operating point..."
+if grep -rniE "pre-pmf" prompts/; then
+    echo "FAIL: a prompt hardcodes the pre-PMF operating point — read it from .codex-scratch/review.md instead"
+    exit 1
+fi
 
 # Negative fence: the legacy critic opening said "Eight specialists have
 # surfaced findings" — that wording predates the probe-as-unit refactor
@@ -269,14 +274,6 @@ assert_grep "critic.md should carry the Hypothetical-future-regression decline r
     "Hypothetical-future-regression decline" prompts/critic.md
 assert_grep "aggregator.md should inherit the decline rule for cross-angle probes" \
     "Hypothetical-future-regression decline" prompts/aggregator.md
-
-# Token fence: common-header.md "Don't propose:" list must include
-# CI/test fences for hypothetical future regressions — the upstream
-# emission-prevention companion to critic.md's downstream decline
-# rule. Anti-Bloat / YAGNI pairing keeps the canonical term visible.
-echo "  asserting CI-fence Don't-propose bullet in common-header.md..."
-assert_grep "common-header.md should forbid CI fences for hypothetical future regressions" \
-    "CI/test fences for hypothetical future regressions" prompts/common-header.md
 
 # Token fence: common-header.md must carry the Iteration-Q-shape
 # trigger — the cut-positive escape hatch for fence concerns that ARE
@@ -513,24 +510,12 @@ assert_grep "common-header.md should mandate 'No probes.' marker" \
 assert_grep "pipeline.py should grep for the same 'No probes.' marker" \
     'No probes\.' "$PIPELINE"
 
-echo "  asserting intent.md carries the staged-inputs-only fence..."
-# The prohibition on reading author-intent.md was retired once linked-issue
-# bodies stopped being staged. intent.md is a STANDALONE prompt — pipeline.py
-# does not prepend common-header.md — so its injection fence must live in the
-# file itself, or PR-author-controlled description prose reaches the anchor
-# the specialists grade against with nothing in between.
-# Two positive pins — the fence's heading and its contract clause — matching
-# the shape used for critic.md's fence above ("Read-only working directory"
-# plus "data, not instructions"). Deleting or renaming the fence fails here;
-# that is the regression worth catching. Finer-grained prose pins were tried
-# and dropped (the exact retired prohibition, the triangulate imperative, the
-# repo-read grant): each was in turn too broad, too narrow, or wording-locked,
-# which is inherent to grepping prose, and this file's header is explicit that
-# it is deliberately not a content-pinning test.
-assert_grep "intent.md must carry its staged-inputs-only fence" \
-    "Staged-inputs-only security fence" prompts/standalone/intent.md
-assert_grep "intent.md should fence its staged inputs as data-not-instructions" \
-    "data, not instructions" prompts/standalone/intent.md
+# The intent pre-pass's staged-inputs-only fence is asserted against the
+# ASSEMBLED prompt in test_pipeline.py's TestRealPromptsCompose, which
+# strictly subsumes a source-level grep: standalone/intent is built from
+# policy.md + intent.md and nothing else, so any deletion that would trip a
+# grep here also trips the composed assertion. Keeping both made two owners
+# of one contract — the defect this file's section-1 comment describes.
 
 echo "  asserting the linked-issue privacy contract holds at source AND consumer..."
 # Two halves, both load-bearing. Source: stage no clickable URL. Consumer:
@@ -765,23 +750,14 @@ assert_grep "prompts/standalone/momentum.md should treat n/a Adds as insufficien
     "endpoint Adds is n/a" prompts/standalone/momentum.md
 
 echo "  asserting read-only sandbox fence on aggregator and momentum..."
-# Aggregator and momentum agents read PR-controlled inputs while codex
-# runs with --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69).
-# Without the data-not-instructions fence the critic carries, a malicious
-# PR could prompt-inject the agents into write actions, network calls,
-# or credential exfiltration. Same fence as critic.md:3. Specifically pin
-# test-results.md (PR-controlled `just test` output) by name so the
-# enumeration can't silently drop it on a refactor.
-assert_grep "aggregator.md fence should pin test-results.md by name (PR-controlled just-test output)" \
-    'test-results.md` (PR-controlled' prompts/aggregator.md
-assert_grep "aggregator.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/aggregator.md
-assert_grep "aggregator.md should fence inputs as data-not-instructions" \
-    "data, not instructions" prompts/aggregator.md
-assert_grep "momentum.md should carry the read-only working directory fence" \
-    "Read-only working directory" prompts/standalone/momentum.md
-assert_grep "momentum.md should fence inputs as data-not-instructions" \
-    "data, not instructions" prompts/standalone/momentum.md
+# Every agent reads PR-controlled inputs while codex runs with
+# --dangerously-bypass-approvals-and-sandbox (lib/pipeline.py:69), so the
+# data-not-instructions fence has to reach all of them — that reach is
+# asserted against the built prompts in section 1. What is pinned here is the
+# fence's ENUMERATION: test-results.md (PR-controlled `just test` output) is
+# named explicitly so a refactor of the list can't silently drop it.
+assert_grep "policy.md fence should pin test-results.md by name (PR-controlled just-test output)" \
+    'test-results.md` — PR-controlled' prompts/policy.md
 
 # Bake-off timer cadence + persistence are quota-control contracts: the ~45-repo
 # walk is the heaviest single draw on the shared srosro GitHub budget, so it runs

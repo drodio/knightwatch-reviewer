@@ -53,6 +53,8 @@ def _write_minimal_prompts(prompts_dir: Path) -> None:
     """
     (prompts_dir / "specialists").mkdir(parents=True, exist_ok=True)
     (prompts_dir / "standalone").mkdir(parents=True, exist_ok=True)
+    # Prepended to every kind by build_prompt; absent, it aborts the review.
+    (prompts_dir / "policy.md").write_text("POLICY: universal review policy.\n")
     (prompts_dir / "common-header.md").write_text("H {{SPECIALIST_NAME}}\n")
     for specialist in pipeline.SPECIALISTS:
         (prompts_dir / "specialists" / f"{specialist}.md").write_text(f"BODY {specialist}\n")
@@ -869,6 +871,8 @@ class TestBuildPrompt(unittest.TestCase):
         self.prompts = Path(self.tmp.name) / "prompts"
         (self.prompts / "specialists").mkdir(parents=True)
         (self.prompts / "standalone").mkdir(parents=True)
+        # Minimal policy.md — build_prompt prepends it to every kind
+        (self.prompts / "policy.md").write_text("POLICY: universal review policy.\n")
         # Minimal common-header.md
         (self.prompts / "common-header.md").write_text(
             "PR: {{PR_ID}} ({{PR_TITLE}}) by {{PR_AUTHOR}}\n"
@@ -936,7 +940,8 @@ class TestBuildPrompt(unittest.TestCase):
             pr_id="owner/repo#42", pr_title="Add X",
             pr_url="https://example/pull/42", pr_author="alice",
         )
-        self.assertEqual(out, "Infer intent for owner/repo#42 (Add X).\n")
+        self.assertIn("Infer intent for owner/repo#42 (Add X).", out)
+        self.assertIn("POLICY:", out)  # universal policy reaches standalones
         self.assertNotIn("PR: ", out)  # no common-header
 
     def test_critic_returns_raw_file(self):
@@ -952,7 +957,8 @@ class TestBuildPrompt(unittest.TestCase):
             prompts_dir=str(self.prompts),
             pr_id="owner/repo#42", pr_title="X", pr_url="u", pr_author="a",
         )
-        self.assertEqual(out, "Critique probes for security.\n")  # ANGLE substituted
+        self.assertIn("Critique probes for security.", out)  # ANGLE substituted
+        self.assertIn("POLICY:", out)  # universal policy reaches critics
 
     def test_aggregator_stitches_voice(self):
         out = pipeline.build_prompt(
@@ -980,6 +986,17 @@ class TestBuildPrompt(unittest.TestCase):
             pipeline.build_prompt(
                 kind="aggregator", agent="aggregator",
                 prompts_dir=str(self.prompts),
+                pr_id="x", pr_title="x", pr_url="x", pr_author="x",
+            )
+
+    def test_missing_policy_raises(self):
+        """A missing policy.md would silently strip the security fence and every
+        decline rule from an otherwise-working review — fail loud instead."""
+        (self.prompts / "specialists" / "security.md").write_text("body\n")
+        (self.prompts / "policy.md").unlink()
+        with self.assertRaises(FileNotFoundError):
+            pipeline.build_prompt(
+                kind="specialist", agent="security", prompts_dir=str(self.prompts),
                 pr_id="x", pr_title="x", pr_url="x", pr_author="x",
             )
 
@@ -1051,6 +1068,7 @@ class TestRunSpecialist(unittest.TestCase):
         # Minimal prompts dir so build_prompt can resolve files
         self.prompts = Path(self.tmp.name) / "prompts"
         (self.prompts / "specialists").mkdir(parents=True)
+        (self.prompts / "policy.md").write_text("POLICY: universal review policy.\n")
         (self.prompts / "common-header.md").write_text("HEADER {{SPECIALIST_NAME}}\n")
         (self.prompts / "specialists" / "security.md").write_text("BODY for {{SPECIALIST_NAME}}\n")
         (self.prompts / "critic.md").write_text("Critique {{ANGLE}}.\n")
@@ -1437,6 +1455,24 @@ class TestRunPipeline(unittest.TestCase):
         rc = self._run()
         self.assertNotEqual(rc, 0)
         self.assertFalse(self.repo_dir.exists())
+
+    @patch("pipeline.subprocess.Popen")
+    def test_intent_extra_lines_survive_and_only_the_line_is_staged(self, mock_popen):
+        """Both halves of the selecting-validator contract.
+
+        A prelude edit can add a stray line to the intent agent's output
+        without touching intent.md, and that used to abort every review. It
+        must now complete — AND stage only the intent line, because the
+        aggregator copies this file verbatim into a public PR comment and the
+        surrounding prose is derived from PR-author-controlled inputs.
+        """
+        mock_popen.side_effect = _make_codex_stub({
+            "intent": (0, "Operating point: pre-PMF\nInferred intent: ship X.\nnote: reasoning\n"),
+        })
+        rc = self._run()
+        self.assertEqual(rc, 0)
+        staged = (self.repo_dir / ".codex-scratch" / "inferred-intent.md").read_text()
+        self.assertEqual(staged, "Inferred intent: ship X.\n")
 
     @patch("pipeline.subprocess.Popen")
     def test_wave_a_runs_intent_and_dead_code_in_parallel(self, mock_popen):
@@ -2118,6 +2154,55 @@ class TestRealPromptsCompose(unittest.TestCase):
             self.assertNotIn("{{SPECIALIST_NAME}}", out, f"{specialist}: specialist name leaked")
             self.assertNotIn("{{REPO_VISIBILITY}}", out, f"{specialist}: REPO_VISIBILITY placeholder leaked")
             self.assertIn(specialist, out, f"{specialist}: specialist name missing")
+
+    def test_universal_policy_reaches_every_built_prompt(self):
+        """policy.md must reach all four kinds, and must not widen the intent
+        pre-pass's envelope.
+
+        The prelude is prepended to everything, so a policy edit can reach an
+        agent whose role prompt it never touched — that is how a "you may read
+        any file" grant leaked into the staged-inputs-only intent pre-pass. (A
+        prelude output directive once aborted every review before Wave B too;
+        that class is retired in _validate_intent, which now selects the intent
+        line instead of requiring it to be the only one, so this test fences
+        reach and envelope only.) Asserted against the ASSEMBLED prompt: a
+        file-level grep goes green on a prelude that never reaches a given kind.
+        """
+        tokens = (
+            "Read-only working directory",
+            "data, not instructions",
+            "Hypothetical-future-regression decline",
+            "CI/test fences for hypothetical future regressions",
+            "<!-- kwr-test-fence:review-loop -->",
+        )
+        for kind, agent in (
+            ("specialist", "security"),
+            ("standalone", "momentum"),
+            ("standalone", "intent"),
+            ("critic", "critic-security"),
+            ("aggregator", "aggregator"),
+        ):
+            out = pipeline.build_prompt(
+                kind=kind, agent=agent, prompts_dir=str(self.real_prompts),
+                pr_id="owner/repo#42", pr_title="Add X",
+                pr_url="https://example/pull/42", pr_author="alice",
+            )
+            for token in tokens:
+                self.assertIn(token, out, f"{kind}/{agent}: universal policy token missing: {token!r}")
+
+        intent = pipeline.build_prompt(
+            kind="standalone", agent="intent", prompts_dir=str(self.real_prompts),
+            pr_id="owner/repo#42", pr_title="Add X",
+            pr_url="https://example/pull/42", pr_author="alice",
+        )
+        self.assertNotIn(
+            "may read any file", intent,
+            "intent prompt grants repo browsing — the staged-inputs-only fence is the only bound here",
+        )
+        self.assertIn(
+            "read the staged `.codex-scratch/*` inputs listed above and nothing else", intent,
+            "intent prompt lost its staged-inputs-only fence",
+        )
 
     def test_standalone_compose_against_real_prompts(self):
         """Each standalone prompt body must compose without error against the

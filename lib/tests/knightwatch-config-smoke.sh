@@ -175,28 +175,31 @@ git -C "$WORK" fetch -q origin main
 GITLINK_SHA=$(git -C "$WORK" rev-parse origin/main)
 assert_resolve "unreadable REVIEW.md" "$GITLINK_SHA" 2 "--"
 
-# The shared loop rules come from ONE copy (shared_review_loop_rules) appended
-# to BOTH paths — a repo's REVIEW.md never carries them, so they cannot drift
-# per-repo. Assert the appended text is byte-identical in both cases.
-per_repo_block=$(printf '%s' "$got" | sed -n '/shared: review-loop/,/\/shared/p')
-default_block=$(printf '%s' "$got_default" | sed -n '/shared: review-loop/,/\/shared/p')
-[ -n "$per_repo_block" ] || { echo "FAIL: per-repo path did not get the shared loop block"; exit 1; }
-[ "$per_repo_block" = "$default_block" ] \
-    || { echo "FAIL: shared loop block differs between the per-repo and default paths"; exit 1; }
-[ "$per_repo_block" = "$(shared_review_loop_rules | sed -n '/shared: review-loop/,/\/shared/p')" ] \
-    || { echo "FAIL: appended block is not the one shared_review_loop_rules emits"; exit 1; }
-for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose" \
-                "Lower bar for docs, skills, and diagnostic snippets"; do
-    printf '%s' "$per_repo_block" | grep -qF "$heading" \
-        || { echo "FAIL: shared block missing loop rule: $heading"; exit 1; }
-done
-# Exactly ONE copy on each path. Equality alone can't see a doubled block (a
-# repo whose REVIEW.md still carries its copy, or a re-add to
-# default_review_md) because the sed range captures only the first.
+# Inverted contract: the review-loop rules are ORG policy and now live in
+# prompts/policy.md, which lib/pipeline.py prepends to every agent. Neither
+# resolve_review_md path may carry them — a per-repo copy is 38 copies to keep
+# in sync, and a copy in default_review_md would double up against the prelude.
 for label_and_body in "per-repo:$got" "default:$got_default"; do
-    n=$(printf '%s' "${label_and_body#*:}" | grep -c '<!-- shared: review-loop -->')
-    [ "$n" = 1 ] || { echo "FAIL: ${label_and_body%%:*} path has $n copies of the shared block, want 1"; exit 1; }
+    for heading in "Re-review convergence" "Recurring-file escalation" \
+                   "Severity floor for prose" "review-loop"; do
+        if printf '%s' "${label_and_body#*:}" | grep -qF "$heading"; then
+            echo "FAIL: ${label_and_body%%:*} REVIEW.md carries org review-loop policy ('$heading') — it belongs to prompts/policy.md alone"
+            exit 1
+        fi
+    done
 done
+
+# ...and policy.md carries them exactly once, so removing them from here did
+# not delete them from the pipeline.
+POLICY="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/prompts/policy.md"
+[ -f "$POLICY" ] || { echo "FAIL: prompts/policy.md missing — the review-loop rules have no home"; exit 1; }
+for heading in "Re-review convergence" "Recurring-file escalation" "Severity floor for prose" \
+               "Lower bar for docs, skills, and diagnostic snippets"; do
+    grep -qF "$heading" "$POLICY" \
+        || { echo "FAIL: prompts/policy.md missing loop rule: $heading"; exit 1; }
+done
+n=$(grep -c '<!-- kwr-test-fence:review-loop -->' "$POLICY")
+[ "$n" = 1 ] || { echo "FAIL: prompts/policy.md has $n copies of the review-loop block, want 1"; exit 1; }
 
 # Feature-branch-only addition must NOT take effect when reading
 # against the base SHA (locks down the same invariant the bot enforces:

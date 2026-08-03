@@ -493,7 +493,14 @@ def build_prompt(
     pr_author: str,
 ) -> str:
     """Build a prompt string. `kind` is 'specialist', 'standalone', 'critic',
-    or 'aggregator'."""
+    or 'aggregator'.
+
+    Every kind is prefixed with prompts/policy.md — the universal review policy
+    (security fence, operating point, voice posture, decline rules, review-loop
+    rules). Only specialists ever received common-header.md, so before the
+    prelude each of the other three kinds carried its own hand-maintained copy
+    of those rules, and the copies had already drifted.
+    """
     pdir = Path(prompts_dir)
     operator_name = os.environ.get("OPERATOR_NAME", "Sam")
     # No default — both entrypoints (review-one-pr.sh, replay.sh) fail loud and
@@ -507,25 +514,20 @@ def build_prompt(
     )
 
     if kind == "specialist":
-        common = (pdir / "common-header.md").read_text()
-        body = (pdir / "specialists" / f"{agent}.md").read_text()
-        subs = dict(base_subs, specialist_name=agent)
-        return (
-            _substitute_placeholders(common, **subs)
+        template = (
+            (pdir / "common-header.md").read_text()
             + "\n"
-            + _substitute_placeholders(body, **subs)
+            + (pdir / "specialists" / f"{agent}.md").read_text()
         )
-
-    if kind == "standalone":
-        body = (pdir / "standalone" / f"{agent}.md").read_text()
-        return _substitute_placeholders(body, **base_subs, specialist_name="")
-
-    if kind == "critic":
-        body = (pdir / "critic.md").read_text()
+        subs = dict(base_subs, specialist_name=agent)
+    elif kind == "standalone":
+        template = (pdir / "standalone" / f"{agent}.md").read_text()
+        subs = dict(base_subs, specialist_name="")
+    elif kind == "critic":
+        template = (pdir / "critic.md").read_text()
         angle = agent[len("critic-"):]
-        return _substitute_placeholders(body, **base_subs, angle=angle, specialist_name=angle)
-
-    if kind == "aggregator":
+        subs = dict(base_subs, angle=angle, specialist_name=angle)
+    elif kind == "aggregator":
         agg = (pdir / "aggregator.md").read_text()
         voice_path = pdir / "voice.md"
         if not voice_path.exists():
@@ -534,10 +536,20 @@ def build_prompt(
         if marker not in agg:
             raise ValueError(f"build_prompt: aggregator.md missing {marker} marker")
         voice_body = _strip_leading_html_comment(voice_path.read_text()).rstrip("\n")
-        stitched = agg.replace(marker, voice_body, 1)
-        return _substitute_placeholders(stitched, **base_subs)
+        template = agg.replace(marker, voice_body, 1)
+        subs = base_subs
+    else:
+        raise ValueError(f"build_prompt: unknown kind '{kind}'")
 
-    raise ValueError(f"build_prompt: unknown kind '{kind}'")
+    # Missing policy.md would silently strip the security fence and every
+    # decline rule from an otherwise-working review, so it's a hard failure
+    # rather than an empty prelude — same contract as voice.md above.
+    policy_path = pdir / "policy.md"
+    if not policy_path.exists():
+        raise FileNotFoundError(f"build_prompt: policy.md missing at {policy_path}")
+    prelude = _strip_leading_html_comment(policy_path.read_text()).rstrip("\n")
+
+    return prelude + "\n\n" + _substitute_placeholders(template, **subs)
 
 
 def _duplicate_ids(ids: list[str]) -> list[str]:
@@ -741,14 +753,17 @@ def _validate_intent(intent_out: Path) -> str:
     if not intent_out.exists() or intent_out.stat().st_size == 0:
         raise ValueError("intent inference produced empty output")
     text = intent_out.read_text()
-    nonblank = [ln for ln in text.splitlines() if ln.strip()]
-    if len(nonblank) != 1:
-        raise ValueError(
-            f"intent output has {len(nonblank)} non-blank lines, expected exactly 1"
-        )
-    if not nonblank[0].startswith("Inferred intent: "):
-        raise ValueError("intent output missing 'Inferred intent: ' prefix")
-    return nonblank[0]
+    # Select the intent line rather than requiring it to be the ONLY non-blank
+    # line. The strict count made any stray line fatal — and since policy.md is
+    # prepended to every agent, a prelude edit that never touches intent.md
+    # could add one and abort every review on every repo before Wave B (it did,
+    # in cd955a9). Selecting retires that whole class: no prompt wording can
+    # kill the pipeline. Still fails loud when no intent line is produced at
+    # all, which is the contract violation actually worth aborting on.
+    matches = [ln for ln in text.splitlines() if ln.startswith("Inferred intent: ")]
+    if not matches:
+        raise ValueError("intent output missing 'Inferred intent: ' line")
+    return matches[0]
 
 
 def _run_standalone(
@@ -818,7 +833,14 @@ def run_pipeline(
         intent_text = _validate_intent(intent_dir / "output.md")
     except ValueError as e:
         return _abort(repo, f"{pr_id}: {e} — aborting")
-    _stage_scratch(scratch / "inferred-intent.md", (intent_dir / "output.md").read_bytes())
+    # Stage the VALIDATED line, not the raw output. _validate_intent selects
+    # rather than requiring a single non-blank line, so the old strict check no
+    # longer bounds what lands here — and the aggregator copies this file's
+    # contents verbatim into a public PR comment after stripping the prefix
+    # from the start. Staging raw output would publish any preamble or
+    # reasoning the agent emitted around the line, all of it derived from
+    # PR-author-controlled inputs.
+    _stage_scratch(scratch / "inferred-intent.md", (intent_text + "\n").encode())
     _stage_scratch(scratch / "dead-code.md",
                    (run / "agents" / "dead-code-search" / "output.md").read_bytes())
     log(f"{pr_id}: Wave A complete: {intent_text}")
