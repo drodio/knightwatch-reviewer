@@ -17,7 +17,7 @@ cp -r docker/secrets.example docker/secrets
 | `repos.conf` | shared | The tracked-target manifest. For whole-org coverage set `ORGS=(...)` (every non-archived open PR in the org is reviewed, new repos included, via one batched search per org per tick); reserve `REPOS=(...)` for specific repos in partially-tracked orgs (kept OUT of ORGS). Also holds `KID_PATHS`/`SOURCE_PATHS`. Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
 | `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/plow-pbc_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
-| `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted **writable** at reviewer-1's `/root/.codex` — codex rotates its own tokens/session state, and fatal-auth recovery keys on a newer `auth.json` mtime. If a worker goes offline on invalid auth, re-login that account's dir (`CODEX_HOME=docker/secrets/codex-account-a codex login --device-auth`, or copy in a fresh `auth.json`); the newer mtime auto-clears the offline marker. |
+| `codex-account-a/` | reviewer-1's OpenAI account | A full `~/.codex` directory for account A (must contain `auth.json`). Mounted **writable** at reviewer-1's `/root/.codex` — codex rotates its own tokens/session state, and fatal-auth recovery keys on a newer `auth.json` mtime. If a worker goes offline on invalid auth, re-login **inside that worker's container** (`docker exec -it knightwatch-reviewer-reviewer-1-1 codex login --device-auth`), or copy in a fresh `auth.json`; the newer mtime auto-clears the offline marker, so no restart is needed. A host-side `CODEX_HOME=… codex login` fails on an established account — codex-as-root rewrites `config.toml` mode 600 root-owned inside the container, and the host user then can't read it. |
 | `codex-account-b/`, `-c/`, `-d/`, … | one per additional reviewer | Same, lettered in worker order (B → reviewer-2, C → reviewer-3, …). See *Adding the Nth account* below. |
 
 ## Live-credential `just test` (trusted-author scenario suites)
@@ -93,7 +93,9 @@ Accounts are lettered in worker order: `codex-account-a` → reviewer-1,
 
 1. `CODEX_HOME=docker/secrets/codex-account-<L> codex login --device-auth`
    (or `cp -r ~/.codex docker/secrets/codex-account-<L>` from a machine already
-   logged into that account).
+   logged into that account). Host-side works here because the dir is still
+   empty; once the container has run, re-login goes through `docker exec` —
+   see the `codex-account-a/` row above.
 2. In `docker-compose.yml`, add a `dind-N` (`<<: *dind` + its `dindN-lib` and
    `scenario-sharedN:/scenario-shared` volumes) and a `reviewer-N` that reuses
    the shared contract — `<<: *reviewer` and `<<: *reviewer-env` — overriding
