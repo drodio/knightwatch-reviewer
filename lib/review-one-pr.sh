@@ -1046,7 +1046,7 @@ elif [ -z "$KID_PROJECT_PATH" ]; then
 elif [ ! -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
     log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (KID_ROOT unset in config.env, or 'just fleet' not re-run?)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
-    log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (an index outside KID_ROOT also needs a KID_EXTRA_MOUNTS pair in config.env)"
+    log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (an index outside KID_ROOT also needs its host path listed in KID_EXTRA_MOUNTS in config.env)"
 fi
 
 # ---- touched-files derivation (shared by dead-code + strict-typing) ----

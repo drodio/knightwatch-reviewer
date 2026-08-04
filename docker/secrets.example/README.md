@@ -103,12 +103,15 @@ worker N (letter L):
 
        6  codex-account-f
 
-3. `just fleet && docker compose up -d && sudo systemctl start knightwatch-reviewer.service`
+3. `just fleet && docker compose up -d --remove-orphans && sudo systemctl start knightwatch-reviewer.service`
 
    `up -d` creates only the new pair and leaves the running units alone; the
    `start` re-establishes systemd ownership and is a no-op if the unit is
-   already active. Use `restart` only when you mean to bounce the whole fleet —
-   it stops every reviewer, killing any review in flight.
+   already active. `--remove-orphans` is harmless when adding, and load-bearing
+   when *parking* a unit (commenting its row out): it is what tears the removed
+   container down. It cannot be left to `ExecStart` — that no-op `start` never
+   re-runs it. Use `restart` only when you mean to bounce the whole fleet — it
+   stops every reviewer, killing any review in flight.
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
 toward the box's total — keep headroom for production Plow.

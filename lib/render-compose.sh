@@ -21,9 +21,13 @@ die() { printf 'render-compose: FATAL: %s\n' "$*" >&2; exit 1; }
     || die "no fleet.conf at $FLEET_CONF — copy docker/secrets.example/fleet.conf and edit it"
 
 # KID_ROOT (clone root, mounted at /kwr — carries kid_dry_check.py) and the
-# optional KID_EXTRA_MOUNTS (space-separated <host-path>:<container-path> pairs
-# for indices that live OUTSIDE the clone root, e.g. plow's) are the prior-art
-# wiring. Read in a SUBSHELL: config.env also carries GH_TOKEN, and nothing
+# optional KID_EXTRA_MOUNTS (space-separated HOST paths for indices that live
+# OUTSIDE the clone root, e.g. plow's) are the prior-art wiring. Each extra index
+# mounts at the SAME path in the container, deliberately: KID_PATHS is consumed
+# in BOTH namespaces (host-side plow-kid-refresh.sh git-pulls each value as a
+# checkout, container-side review-one-pr.sh queries it), so a host≠container path
+# would force the two same-named repos.conf manifests to diverge on that key.
+# Read in a SUBSHELL: config.env also carries GH_TOKEN, and nothing
 # from it is echoed or exported into the render.
 # The trailing '.' is load-bearing: command substitution strips trailing
 # newlines, so without it an empty KID_EXTRA_MOUNTS collapses the two fields
@@ -42,11 +46,9 @@ KID_EXTRA_MOUNTS="${kid_cfg#*$'\n'}"; KID_EXTRA_MOUNTS="${KID_EXTRA_MOUNTS%.}"
     || die "KID_ROOT=$KID_ROOT is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
 [ -z "$KID_EXTRA_MOUNTS" ] || [ -n "$KID_ROOT" ] \
     || die "KID_EXTRA_MOUNTS is set but KID_ROOT is empty — extra indices are unreachable without the clone root that carries kid_dry_check.py"
-for pair in $KID_EXTRA_MOUNTS; do
-    [ "${pair//[!:]/}" = ":" ] && [ "${pair%%:*}" ] && [ "${pair##*:}" ] \
-        || die "KID_EXTRA_MOUNTS: expected '<host-path>:<container-path>', got: $pair"
-    [ -d "${pair%%:*}" ] \
-        || die "KID_EXTRA_MOUNTS: ${pair%%:*} is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
+for extra in $KID_EXTRA_MOUNTS; do
+    [ -d "$extra" ] \
+        || die "KID_EXTRA_MOUNTS: $extra is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
 done
 
 # --- parse + validate -------------------------------------------------------
@@ -85,6 +87,18 @@ done < "$FLEET_CONF"
 # (repo-env stays unguarded — absent is a documented no-op.)
 [ -d "$SECRETS_DIR/claude-standards" ] \
     || die "$SECRETS_DIR/claude-standards not found — docker would auto-create it empty and every review would run with no coding/review standards"
+# Worse for the two FILE mounts: docker auto-creates a missing source as a
+# DIRECTORY, and both consumers load it with `[ -f … ] && . …`
+# (lib/tracked-repos.sh) — the -f test fails against that dir and the source is
+# skipped without a word, so the fleet comes up with no GH_TOKEN and an empty
+# ORGS/REPOS and every reviewer idles reviewing nothing.
+# The CONFIG_ENV read above stays `-f`-tolerant on purpose: it is a separate
+# override knob (the smokes point it at a sandbox file), while what must exist
+# is the MOUNT SOURCE the render below emits — which is always $SECRETS_DIR's.
+for f in config.env repos.conf; do
+    [ -f "$SECRETS_DIR/$f" ] \
+        || die "$SECRETS_DIR/$f not found — docker mounts a DIRECTORY over the missing file, the loader's [ -f ] test then skips it silently, and the fleet comes up with no GH_TOKEN / an empty ORGS+REPOS"
+done
 
 # The secrets mounts must render from the SAME path the rows were validated
 # against, or an overridden SECRETS_DIR validates dir A and mounts dir B (and
@@ -224,7 +238,7 @@ EOF
 EOF
     if [ -n "$KID_ROOT" ]; then
         printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"
-        for pair in $KID_EXTRA_MOUNTS; do printf '      - %s:ro\n' "$pair" >>"$TMP"; done
+        for extra in $KID_EXTRA_MOUNTS; do printf '      - %s:%s:ro\n' "$extra" "$extra" >>"$TMP"; done
     fi
     printf '\n' >>"$TMP"
 done

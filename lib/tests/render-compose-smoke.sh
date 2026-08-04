@@ -19,6 +19,9 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # row naming a missing one (docker would otherwise auto-create it empty).
 SECRETS="$SANDBOX/secrets"
 mkdir -p "$SECRETS"/codex-account-{a,b,c,d} "$SECRETS/claude-standards"
+# The two FILE mounts are guarded too: docker would auto-create either as a
+# DIRECTORY, which the loaders' `[ -f … ] && .` then skips silently.
+: > "$SECRETS/config.env"; : > "$SECRETS/repos.conf"
 # Separated from the check below so a host without pyyaml gets its own name
 # rather than reading as invalid generator output.
 python3 -c 'import yaml' 2>/dev/null \
@@ -114,14 +117,16 @@ check_render 1=codex-account-a 4=codex-account-d
 # EVERY unit", and a count is the direct expression of that.
 echo "  2: kid wiring conditional..."
 KID_INDEX="$SANDBOX/kid-index"; PLOW_INDEX="$SANDBOX/plow-kid"
-mkdir -p "$KID_INDEX" "$PLOW_INDEX"
+SECOND_INDEX="$SANDBOX/second-kid"
+mkdir -p "$KID_INDEX" "$PLOW_INDEX" "$SECOND_INDEX"
 render "1  codex-account-a
 2  codex-account-b" "KID_ROOT=$KID_INDEX
-KID_EXTRA_MOUNTS=\"$PLOW_INDEX:/kid-ro/plow-kid $KID_INDEX:/kid-ro/second\"" \
+KID_EXTRA_MOUNTS=\"$PLOW_INDEX $SECOND_INDEX\"" \
     || fail "kid render exited non-zero: $(cat "$SANDBOX/render.log")"
 check_render 1=codex-account-a 2=codex-account-b
+# Identical host and container path, so one KID_PATHS value works in both.
 for expect in "KWR_CLONE_ROOT: /kwr" "$KID_INDEX:/kwr:ro" \
-              "$PLOW_INDEX:/kid-ro/plow-kid:ro" "$KID_INDEX:/kid-ro/second:ro"; do
+              "$PLOW_INDEX:$PLOW_INDEX:ro" "$SECOND_INDEX:$SECOND_INDEX:ro"; do
     [ "$(grep -cF "$expect" "$SANDBOX/out.yml")" = 2 ] \
         || fail "expected '$expect' on both units, got $(grep -cF "$expect" "$SANDBOX/out.yml")"
 done
@@ -134,8 +139,10 @@ render "1  codex-account-a
     || fail "KID_ROOT alone should render: $(cat "$SANDBOX/render.log")"
 [ "$(grep -cF "$KID_INDEX:/kwr:ro" "$SANDBOX/out.yml")" = 2 ] \
     || fail "KID_ROOT alone did not mount /kwr on both units"
-grep -qF '/kid-ro' "$SANDBOX/out.yml" \
-    && fail "KID_EXTRA_MOUNTS unset but the render still emitted an extra mount"
+# Two hits total (the /kwr mount on each unit): a collapsed read hands KID_ROOT
+# back as an extra self-mount, which shows up as a third and fourth.
+[ "$(grep -cF "$KID_INDEX" "$SANDBOX/out.yml")" = 2 ] \
+    || fail "KID_EXTRA_MOUNTS unset but the render still emitted an extra mount"
 
 render "1  codex-account-a
 2  codex-account-b"
@@ -170,20 +177,39 @@ assert_render_fails "KID_ROOT names a missing dir" "1  codex-account-a
 2  codex-account-b" "KID_ROOT=$SANDBOX/no-such-kid-index"
 assert_render_fails "KID_EXTRA_MOUNTS names a missing dir" "1  codex-account-a" \
     "KID_ROOT=$KID_INDEX
-KID_EXTRA_MOUNTS=$SANDBOX/no-such-index:/kid-ro/x"
-assert_render_fails "KID_EXTRA_MOUNTS pair is malformed" "1  codex-account-a" \
-    "KID_ROOT=$KID_INDEX
-KID_EXTRA_MOUNTS=$PLOW_INDEX"
+KID_EXTRA_MOUNTS=$SANDBOX/no-such-index"
 assert_render_fails "KID_EXTRA_MOUNTS without KID_ROOT" "1  codex-account-a" \
-    "KID_EXTRA_MOUNTS=$PLOW_INDEX:/kid-ro/plow-kid"
-mv "$SECRETS/claude-standards" "$SANDBOX/standards-away"
-assert_render_fails "absent claude-standards" "1  codex-account-a"
-mv "$SANDBOX/standards-away" "$SECRETS/claude-standards"
+    "KID_EXTRA_MOUNTS=$PLOW_INDEX"
+# The three mounts whose absence degrades SILENTLY — docker auto-creates each
+# source (a directory even where a file was meant) and every consumer stages it
+# behind a `[ -f … ]`/`[ -d … ]` test that then just skips it.
+for away in claude-standards config.env repos.conf; do
+    mv "$SECRETS/$away" "$SANDBOX/mount-away"
+    assert_render_fails "absent $away" "1  codex-account-a"
+    mv "$SANDBOX/mount-away" "$SECRETS/$away"
+done
 
 rm -f "$SANDBOX/fleet.conf"
 SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
     CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
     bash "$RENDER" >/dev/null 2>&1 \
     && fail "missing fleet.conf: render succeeded but should have failed"
+
+# A crash mid-write (disk full, killed process) must never leave a partial
+# docker-compose.yml — a truncated file takes the whole fleet down on the next
+# `up`. This is what the generator's temp-file+mv contract buys over writing
+# straight to $OUT, and it is the ONLY case that exercises it: every die path
+# above returns before mktemp. Forced deterministically with a tiny file-size
+# ulimit (a validated 4-unit render blows past one block); ulimit -c 0 so the
+# SIGXFSZ leaves no core file behind.
+printf '1  codex-account-a\n2  codex-account-b\n3  codex-account-c\n4  codex-account-d\n' \
+    > "$SANDBOX/fleet.conf"
+rm -f "$SANDBOX/out.yml"
+( ulimit -c 0; ulimit -f 1
+  SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
+      CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
+      bash "$RENDER" ) >/dev/null 2>&1
+[ ! -f "$SANDBOX/out.yml" ] \
+    || fail "write crash left a partial docker-compose.yml"
 
 echo "PASS: render-compose smoke"
