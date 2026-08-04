@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Render docker-compose.yml from the operator's fleet.conf.
+#
+# The fleet's topology is a pure function of (worker id, codex account dir):
+# the netns peer, the scenario-shared bridge, the per-unit volumes, and the
+# shared read-only mounts are all mechanical. Generating them means those
+# invariants hold by construction — which is why the per-unit parity fences
+# that used to live in container-state-split-smoke.sh were deleted rather than
+# extended when the sixth unit was added.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SECRETS_DIR="${SECRETS_DIR:-$REPO_ROOT/docker/secrets}"
+FLEET_CONF="${FLEET_CONF:-$SECRETS_DIR/fleet.conf}"
+CONFIG_ENV="${CONFIG_ENV:-$SECRETS_DIR/config.env}"
+OUT="${OUT:-$REPO_ROOT/docker-compose.yml}"
+
+die() { printf 'render-compose: FATAL: %s\n' "$*" >&2; exit 1; }
+
+[ -f "$FLEET_CONF" ] \
+    || die "no fleet.conf at $FLEET_CONF — copy docker/secrets.example/fleet.conf and edit it"
+
+# KID_ROOT is optional prior-art wiring. Sourced in a SUBSHELL: config.env also
+# carries GH_TOKEN, and nothing from it is echoed or exported into the render.
+KID_ROOT="$(
+    set +u
+    [ -f "$CONFIG_ENV" ] && . "$CONFIG_ENV" >/dev/null 2>&1
+    printf '%s' "${KID_ROOT:-}"
+)"
+
+# --- parse + validate -------------------------------------------------------
+ids=(); accounts=()
+lineno=0
+while IFS= read -r raw || [ -n "$raw" ]; do
+    lineno=$((lineno + 1))
+    line="${raw%%#*}"
+    id=""; acct=""; extra=""
+    read -r id acct extra <<<"$line" || true
+    [ -n "$id" ] || continue
+
+    [ -n "$acct" ] && [ -z "$extra" ] \
+        || die "$FLEET_CONF:$lineno: expected '<worker-id> <codex-account-dir>', got: ${line# }"
+    case "$id" in
+        ''|*[!0-9]*) die "$FLEET_CONF:$lineno: worker id must be a positive integer, got: $id" ;;
+    esac
+    for seen in ${ids[@]+"${ids[@]}"}; do
+        [ "$seen" = "$id" ] \
+            && die "$FLEET_CONF:$lineno: duplicate worker id $id — two units would share /shared/pool/$id/ and corrupt each other's quota-pause and offline state"
+    done
+    [ -d "$SECRETS_DIR/$acct" ] \
+        || die "$FLEET_CONF:$lineno: account dir not found: $SECRETS_DIR/$acct (a missing dir is auto-created EMPTY by docker's bind mount, so the unit would start and immediately fail its auth guard)"
+
+    ids+=("$id"); accounts+=("$acct")
+done < "$FLEET_CONF"
+
+[ "${#ids[@]}" -gt 0 ] \
+    || die "$FLEET_CONF: no enabled units — an empty services block takes the whole fleet down on the next 'compose up'"
+
+# --- render (temp file; only moved into place once fully written) -----------
+TMP="$(mktemp "${OUT}.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
+
+cat >"$TMP" <<'STATIC_HEADER'
+# GENERATED FILE — do not edit.
+# Source:     docker/secrets/fleet.conf
+# Regenerate: just fleet
+#
+# N reviewer units on one host. Each reviewer shares its dind sidecar's
+# network namespace (network_mode: service:dind-K) so `just test`'s
+# published scenario ports land on a localhost the reviewer shares with
+# the daemon, and DOCKER_HOST can be tcp://127.0.0.1:2375.
+#
+# The `claims` volume is SHARED across ALL reviewers (STATE_DIR=/shared): it
+# holds runs/ review-state, the per-PR locks, the just-test concurrency
+# semaphore (a host-wide memory cap, deliberately shared — see
+# review-one-pr.sh), the locks/__enumerator election flock, and the
+# enumerate-once work-list queue.json. The non-blocking per-PR flock + KNOWN_SHA
+# gate dedup reviews across containers; one container per ENUMERATE_SECS window
+# runs the GraphQL enumerate and writes queue.json, and every reviewer consumes
+# it and claims PRs via the per-PR flock. LOCAL_STATE_DIR is per-container and
+# holds the canonical clone/fetch lock + ephemeral per-PR KID query copies;
+# per-account codex quota-pause + fatal-auth offline state lives in the SHARED
+# /shared/pool/<WORKER_ID>/ namespace (lib/state-io.sh) so any account can
+# render pool status.
+# repos/, workdirs/, ~/.codex are per-container too.
+#
+# Scale-out: units are generated from docker/secrets/fleet.conf — add a row
+# there (`just fleet`) rather than hand-editing this file. See fleet.conf's
+# own header for the format and the operational notes on parking a unit.
+# Memory: the per-unit caps below are CEILINGS, not reservations, and they
+# deliberately over-commit — summing every unit's (20g reviewer + 12g dind)
+# cap routinely exceeds host RAM. What actually bounds the aggregate is the
+# shared just-test semaphore (MAX_CONCURRENT_TESTS, default 3), which rations
+# the dind side host-wide; the reviewer side is unbounded across containers,
+# so a simultaneous fleet-wide codex peak is arbitrated by the host OOM killer
+# rather than by any cgroup — and it can reap prod Plow instead of a reviewer.
+# Per-unit caps stay high so a single legitimate review isn't killed
+# mid-flight. Revisit (lower the caps, or add a reviewer-side reservation) if
+# real peaks ever approach the box.
+
+x-dind: &dind
+  image: docker:27-dind
+  privileged: true
+  environment:
+    DOCKER_TLS_CERTDIR: ""          # plaintext daemon within the shared netns only
+  # Bind loopback ONLY. reviewer-K shares dind-K's netns (network_mode below), so
+  # 127.0.0.1 reaches its own daemon — but a sibling pair's netns can't, so a
+  # 0.0.0.0 bind (reachable across the compose network) would let one reviewer
+  # drive another account's daemon. Keep DOCKER_HOST=tcp://127.0.0.1:2375.
+  #
+  # `dockerd` MUST be the first token. dockerd-entrypoint.sh injects its own
+  # default `--host=tcp://0.0.0.0:2375` whenever argv is empty or starts with `-`
+  # (its line ~100). A bare `--host=…` first token trips that, so the entrypoint
+  # ALSO appends 0.0.0.0:2375 — which both defeats the loopback-only intent and
+  # collides on the port, so dockerd dies with "bind: address already in use".
+  # Leading with `dockerd` skips the injection, binding ONLY the hosts below.
+  command: ["dockerd", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]
+  mem_limit: 12g
+
+# Shared reviewer service contract (everything identical across accounts).
+x-reviewer: &reviewer
+  image: knightwatch-reviewer:dev
+  restart: unless-stopped
+  mem_limit: 20g
+
+# Shared reviewer env; per-service blocks merge this and add WORKER_ID.
+x-reviewer-env: &reviewer-env
+  STATE_DIR: /shared              # per-PR lock + runs/ (SHARED across containers)
+  REPOS_DIR: /local/repos         # per-container
+  WORKDIRS_DIR: /local/workdirs   # per-container
+  LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
+  DOCKER_HOST: tcp://127.0.0.1:2375
+  CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
+  KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
+  REPO_ENV_DIR: /root/.kwr/repo-env       # root-only mount of operator per-repo secret env files (e.g. plow-pbc_plow/api/.env.test-live — live test-scenario creds CI has but a fresh container lacks). review-one-pr.sh seeds them into the canonical clone so the trusted-author .env mirror copies them into the per-PR test dir. Empty/absent = no-op.
+
+services:
+STATIC_HEADER
+
+for i in "${!ids[@]}"; do
+    n="${ids[$i]}"; acct="${accounts[$i]}"
+    cat >>"$TMP" <<EOF
+  dind-$n:
+    <<: *dind
+    volumes:
+      - dind$n-lib:/var/lib/docker
+      - scenario-shared$n:/scenario-shared   # token bridge; same path as reviewer-$n (PR #161)
+
+  reviewer-$n:
+    <<: *reviewer
+    network_mode: "service:dind-$n"
+    depends_on: [dind-$n]
+    environment:
+      <<: *reviewer-env
+      WORKER_ID: "$n"
+EOF
+    [ -n "$KID_ROOT" ] && printf '      KWR_CLONE_ROOT: /kwr\n' >>"$TMP"
+    cat >>"$TMP" <<EOF
+    volumes:
+      - claims:/shared
+      - reviewer$n-local:/local
+      - scenario-shared$n:/scenario-shared
+      - ./docker/secrets/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
+      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
+      - ./docker/secrets/config.env:/root/.kwr/config.env:ro
+      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro
+      - ./docker/secrets/claude-standards:/root/.claude:ro
+      - \${HOME}/services/kwr-config:/root/.kwr-config:ro
+EOF
+    [ -n "$KID_ROOT" ] && printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"
+    printf '\n' >>"$TMP"
+done
+
+cat >>"$TMP" <<'EOF'
+volumes:
+  # EXTERNAL fixed-name so the shared review state (runs/ — the KNOWN_SHA dedup
+  # history) survives project rename / down -v / prune. Setup + migration:
+  # README § Containerized deployment.
+  claims:
+    external: true
+    name: kwr_claims
+EOF
+for n in "${ids[@]}"; do printf '  reviewer%s-local:\n' "$n" >>"$TMP"; done
+for n in "${ids[@]}"; do printf '  dind%s-lib:\n' "$n" >>"$TMP"; done
+printf '  # Per-pair token-passing bridge for nested-dind scenario stacks (see dind-%s).\n' "${ids[0]}" >>"$TMP"
+for n in "${ids[@]}"; do printf '  scenario-shared%s:\n' "$n" >>"$TMP"; done
+
+mv "$TMP" "$OUT"
+trap - EXIT
+printf 'render-compose: wrote %s (%d units: %s)\n' "$OUT" "${#ids[@]}" "${ids[*]}"

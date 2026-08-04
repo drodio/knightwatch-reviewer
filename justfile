@@ -58,6 +58,10 @@ test:
     bash lib/tests/repos-conf-smoke.sh
 
     echo ""
+    echo "=== render-compose smoke test ==="
+    bash lib/tests/render-compose-smoke.sh
+
+    echo ""
     echo "=== divergent-clock smoke test ==="
     bash lib/tests/divergent-clock-smoke.sh
 
@@ -235,3 +239,7 @@ test:
 
     echo ""
     echo "all checks passed"
+
+# Render docker-compose.yml from docker/secrets/fleet.conf.
+fleet:
+    bash lib/render-compose.sh
