@@ -65,6 +65,10 @@ for n in 1 4; do
         || fail "dind-$n missing its scenario-shared$n bridge"
     grep -q "^  scenario-shared$n:" "$SANDBOX/out.yml" \
         || fail "scenario-shared$n volume not declared"
+    grep -q "^  reviewer$n-local:" "$SANDBOX/out.yml" \
+        || fail "reviewer$n-local volume not declared"
+    grep -q "^  dind$n-lib:" "$SANDBOX/out.yml" \
+        || fail "dind$n-lib volume not declared"
     printf '%s' "$rev" | grep -qF "WORKER_ID: \"$n\"" \
         || fail "reviewer-$n missing WORKER_ID: \"$n\""
     printf '%s' "$rev" | grep -qF "${ACCT[$n]}:/root/.codex" \
@@ -73,7 +77,7 @@ for n in 1 4; do
         || fail "reviewer-$n missing its per-container local volume"
     # The shared read-only mounts every reviewer needs. These four had their own
     # parity fences before generation.
-    for m in '/shared/repos.conf' '/root/.kwr/config.env' '/root/.kwr/repo-env' '/root/.kwr-config'; do
+    for m in '/shared/repos.conf' '/root/.kwr/config.env' '/root/.kwr/repo-env' '/root/.kwr-config' '/root/.claude'; do
         printf '%s' "$rev" | grep -qF "$m" \
             || fail "reviewer-$n missing shared mount $m"
     done
@@ -81,13 +85,15 @@ done
 
 # --- 3. kid wiring is conditional on KID_ROOT -------------------------------
 echo "  3: kid wiring conditional..."
+KID_INDEX="$SANDBOX/kid-index"
+mkdir -p "$KID_INDEX"
 render "1  codex-account-a
-2  codex-account-b" "KID_ROOT=/srv/kid-index"
+2  codex-account-b" "KID_ROOT=$KID_INDEX"
 for n in 1 2; do
     rev="$(unit_block "reviewer-$n")"
     printf '%s' "$rev" | grep -qF 'KWR_CLONE_ROOT: /kwr' \
         || fail "KID_ROOT set but reviewer-$n has no KWR_CLONE_ROOT (would silently review without prior art)"
-    printf '%s' "$rev" | grep -qF '/srv/kid-index:/kwr:ro' \
+    printf '%s' "$rev" | grep -qF "$KID_INDEX:/kwr:ro" \
         || fail "KID_ROOT set but reviewer-$n has no read-only index mount"
 done
 
@@ -137,6 +143,8 @@ assert_render_fails "duplicate worker id" "1  codex-account-a
 assert_render_fails "malformed row" "1  codex-account-a  extra-field"
 assert_render_fails "non-numeric worker id" "one  codex-account-a"
 assert_render_fails "absent account dir" "1  codex-account-zzz"
+assert_render_fails "KID_ROOT names a missing dir" "1  codex-account-a
+2  codex-account-b" "KID_ROOT=$SANDBOX/no-such-kid-index"
 
 rm -f "$SANDBOX/fleet.conf"
 SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
@@ -151,7 +159,7 @@ SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
 printf '1  codex-account-a\n2  codex-account-b\n3  codex-account-c\n4  codex-account-d\n' \
     > "$SANDBOX/fleet.conf"
 rm -f "$SANDBOX/out.yml"
-( ulimit -f 1
+( ulimit -c 0; ulimit -f 1
   SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
       CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
       bash "$RENDER" ) >/dev/null 2>&1

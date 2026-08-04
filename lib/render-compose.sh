@@ -27,6 +27,8 @@ KID_ROOT="$(
     [ -f "$CONFIG_ENV" ] && . "$CONFIG_ENV" >/dev/null 2>&1
     printf '%s' "${KID_ROOT:-}"
 )"
+[ -z "$KID_ROOT" ] || [ -d "$KID_ROOT" ] \
+    || die "KID_ROOT=$KID_ROOT is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
 
 # --- parse + validate -------------------------------------------------------
 ids=(); accounts=()
@@ -134,6 +136,19 @@ x-reviewer-env: &reviewer-env
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
   REPO_ENV_DIR: /root/.kwr/repo-env       # root-only mount of operator per-repo secret env files (e.g. plow-pbc_plow/api/.env.test-live — live test-scenario creds CI has but a fresh container lacks). review-one-pr.sh seeds them into the canonical clone so the trusted-author .env mirror copies them into the per-PR test dir. Empty/absent = no-op.
 
+# Per-unit mount notes (apply identically to every reviewer-N below; stated
+# once here rather than repeated on each generated block):
+#   - The codex-account mount is writable (NOT :ro): codex loads/migrates
+#     config and refreshes its OAuth token inside its home — a read-only
+#     mount makes every codex call die with "Error loading configuration:
+#     Read-only file system". The creds stay protected by /root's 0700 perms
+#     (the unprivileged test user can't reach /root at all), so dropping :ro
+#     doesn't widen test-user access.
+#   - The kwr-config mount's ${HOME} is left UNEXPANDED (unquoted heredoc,
+#     literal `\${HOME}`): it resolves at `compose up` time, giving one
+#     source of truth with the rendered systemd unit's path instead of
+#     baking the generating user's $HOME in at render time.
+
 services:
 STATIC_HEADER
 
@@ -175,7 +190,8 @@ cat >>"$TMP" <<'EOF'
 volumes:
   # EXTERNAL fixed-name so the shared review state (runs/ — the KNOWN_SHA dedup
   # history) survives project rename / down -v / prune. Setup + migration:
-  # README § Containerized deployment.
+  # README § Containerized deployment. (reviewerN-local / dindN-lib stay
+  # compose-managed — rebuildable state, not dedup history.)
   claims:
     external: true
     name: kwr_claims
