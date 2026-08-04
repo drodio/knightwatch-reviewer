@@ -21,13 +21,16 @@ mkdir -p "$SECRETS"/codex-account-{a,b,d} "$SECRETS/claude-standards"
 
 # $SECRETS sits under $OUT's dir, so the generator emits the same
 # compose-relative form it ships with (./docker/secrets → ./secrets here).
+run_render() {  # the sandbox invocation, shared with the absent-fleet.conf case
+    SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
+        CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
+        bash "$REPO_ROOT/lib/render-compose.sh" >"$SANDBOX/render.log" 2>&1
+}
 render() {  # render <fleet-conf> [config-env] -> $SANDBOX/out.yml
     printf '%s\n' "$1" > "$SANDBOX/fleet.conf"
     printf '%s\n' "${2:-}" > "$SANDBOX/config.env"
     rm -f "$SANDBOX/out.yml"
-    SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \
-        CONFIG_ENV="$SANDBOX/config.env" OUT="$SANDBOX/out.yml" \
-        bash "$REPO_ROOT/lib/render-compose.sh" >"$SANDBOX/render.log" 2>&1
+    run_render
 }
 valid() { docker compose -f "$SANDBOX/out.yml" config --quiet || fail "$1"; }
 count() { grep -cF "$1" "$SANDBOX/out.yml"; }  # 2 == "on every unit"
@@ -117,9 +120,13 @@ for away in claude-standards config.env repos.conf; do  # the silent-degradation
     mv "$SANDBOX/mount-away" "$SECRETS/$away"
 done
 
+# On the MESSAGE, not just the exit code: without the generator's own guard the
+# read redirection fails non-zero anyway, so an exit-only assert stays green
+# while the README-cited diagnosis (§ migration step 1) is gone.
 rm -f "$SANDBOX/fleet.conf" "$SANDBOX/out.yml"
-SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" CONFIG_ENV="$SANDBOX/config.env" \
-    OUT="$SANDBOX/out.yml" bash "$REPO_ROOT/lib/render-compose.sh" >/dev/null 2>&1 \
-    && fail "absent fleet.conf: render succeeded but must FATAL (README § migration step 1)"
+run_render && fail "absent fleet.conf: render succeeded but must FATAL"
+grep -q 'FATAL: no fleet.conf' "$SANDBOX/render.log" \
+    || fail "absent fleet.conf: died without the README-cited FATAL: $(cat "$SANDBOX/render.log")"
+[ ! -f "$SANDBOX/out.yml" ] || fail "absent fleet.conf: left a partial docker-compose.yml"
 
 echo "PASS: render-compose smoke"
