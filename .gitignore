@@ -269,6 +269,7 @@ prompts.new-design/
 .knightwatch-plan-draft.md
 .knightwatch-spec-draft.md
 docs/superpowers/
+.superpowers/
 
 # Reviewer container secrets — live per-account creds + tokens, never committed
 docker/secrets/
