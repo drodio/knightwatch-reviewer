@@ -14,6 +14,7 @@ cp -r docker/secrets.example docker/secrets
 | Path | Shared / per-account | Contents |
 | --- | --- | --- |
 | `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` (via `CONFIG_ENV_FILE`). Mounted at the **root-only** path `/root/.kwr/config.env` so the unprivileged `reviewer-test` user that runs `just test` can't read the token *file* (the `env -i` scrub only covers its environment). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. **Operator-managed review config (optional):** to activate it set `export KWR_CONFIG_REPO=https://github.com/<you>/kwr-config.git` here **and** in the host `~/.pr-reviewer/config.env` (both are sourced — host `install.sh`/org-sync pull the `${HOME}/services/kwr-config` cache, the containers read it via the read-only `/root/.kwr-config` mount). Unset = the config layer is a no-op. Use a credential helper / ssh key for a private repo — never an inline-credential URL (the worker rejects userinfo/token-bearing URLs). |
+| `fleet.conf` | shared | The fleet topology `just fleet` renders `docker-compose.yml` from: one `<worker-id> <codex-account-dir>` row per unit. **Edit before first bring-up** — the shipped example declares two placeholder units, and it renders cleanly on any host where those two account dirs exist. See its own header for the format and the park/retire notes. |
 | `repos.conf` | shared | The tracked-target manifest. For whole-org coverage set `ORGS=(...)` (every non-archived open PR in the org is reviewed, new repos included, via one batched search per org per tick); reserve `REPOS=(...)` for specific repos in partially-tracked orgs (kept OUT of ORGS). Also holds `KID_PATHS`/`SOURCE_PATHS`. Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
 | `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/plow-pbc_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
@@ -89,27 +90,28 @@ Only `auth.json` is strictly required; copying the whole dir is simplest.
 ## Adding the Nth account (scale-out)
 
 Accounts are lettered in worker order: `codex-account-a` → reviewer-1,
-`-b` → reviewer-2, and so on. For a new worker N (letter L):
+`-b` → reviewer-2, and so on — a convention, not a requirement, since
+`fleet.conf` names the account dir explicitly, so any name works. For a new
+worker N (letter L):
 
 1. `CODEX_HOME=docker/secrets/codex-account-<L> codex login --device-auth`
    (or `cp -r ~/.codex docker/secrets/codex-account-<L>` from a machine already
    logged into that account). Host-side works here because the dir is still
    empty; once the container has run, re-login goes through `docker exec` —
    see the `codex-account-a/` row above.
-2. In `docker-compose.yml`, add a `dind-N` (`<<: *dind` + its `dindN-lib` and
-   `scenario-sharedN:/scenario-shared` volumes) and a `reviewer-N` that reuses
-   the shared contract — `<<: *reviewer` and `<<: *reviewer-env` — overriding
-   only `network_mode: service:dind-N`, `WORKER_ID: "N"`, the `reviewerN-local`
-   volume, the `scenario-sharedN:/scenario-shared` bridge (same path as dind-N,
-   so the nested-dind scenario token mount resolves), the shared
-   `./docker/secrets/repo-env:/root/.kwr/repo-env:ro` mount (same on every
-   reviewer), and the `codex-account-<L>` mount. Add `reviewerN-local` +
-   `dindN-lib` + `scenario-sharedN` to the
-   `volumes:` block.
-3. `docker compose up -d` to create the new pair, then `sudo systemctl start
-   knightwatch-reviewer.service` to keep the fleet under systemd ownership
-   (graceful `stop` + `PartOf`), matching the main README's bring-up — a no-op if
-   the unit is already active.
+2. Append a row to `docker/secrets/fleet.conf`:
+
+       6  codex-account-f
+
+3. `just fleet && docker compose up -d --remove-orphans && sudo systemctl start knightwatch-reviewer.service`
+
+   `up -d` creates only the new pair and leaves the running units alone; the
+   `start` re-establishes systemd ownership and is a no-op if the unit is
+   already active. `--remove-orphans` is harmless when adding, and load-bearing
+   when *parking* a unit (commenting its row out): it is what tears the removed
+   container down. It cannot be left to `ExecStart` — that no-op `start` never
+   re-runs it. Use `restart` only when you mean to bounce the whole fleet — it
+   stops every reviewer, killing any review in flight.
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
 toward the box's total — keep headroom for production Plow.

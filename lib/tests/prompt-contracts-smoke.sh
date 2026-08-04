@@ -463,8 +463,14 @@ assert_grep 'fleet unit must set RemainAfterExit=yes so ExecStop fires on shutdo
     'RemainAfterExit=yes' systemd/knightwatch-reviewer.service
 assert_grep 'fleet unit must bring the stack up via compose up -d' \
     'ExecStart=/usr/bin/docker compose up -d' systemd/knightwatch-reviewer.service
-assert_grep 'fleet unit must gracefully stop via compose stop (not SIGKILL)' \
-    'ExecStop=/usr/bin/docker compose stop' systemd/knightwatch-reviewer.service
+# One pin covers both halves: the graceful `compose stop` (not SIGKILL) AND the
+# CHAINING in front of it. `;` there swallows a FATAL from the render and hands
+# compose no file — the bug this line fixes — and the guard substring alone
+# matches both forms, so a revert to `;` stayed green.
+assert_grep 'fleet unit ExecStop must render docker-compose.yml if absent, then gracefully stop via compose stop ONLY if that render succeeded (self-healing across the migration window; there is no ExecStopPre)' \
+    '[ -f docker-compose.yml ] || bash lib/render-compose.sh; } && exec /usr/bin/docker compose stop' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must render the compose file before up (it is generated, not committed)' \
+    'ExecStartPre=/bin/bash lib/render-compose.sh' systemd/knightwatch-reviewer.service
 # PartOf was the property misunderstood in review round 1 — `Requires=` alone does
 # NOT re-run the unit on a `systemctl restart docker`, so without PartOf the fleet
 # strands on a daemon restart. Pin it so a drop goes red, not silently broken.

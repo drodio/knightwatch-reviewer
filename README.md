@@ -82,6 +82,7 @@ Runs N reviewer containers on one host, each pinned to its own OpenAI account an
 
 ```sh
 cp -r docker/secrets.example docker/secrets   # then populate — see docker/secrets.example/README.md
+# fleet.conf comes along with the -r copy above; edit it to list your accounts.
 docker build -f docker/Dockerfile -t knightwatch-reviewer:dev .
 # Create the EXTERNAL `claims` volume that holds the shared review state (runs/ —
 # the KNOWN_SHA dedup history). It's external (fixed name) so it survives project
@@ -104,6 +105,7 @@ docker volume create kwr_claims
 # containers but leaves this unit inactive, so graceful stop + PartOf don't apply
 # until the next boot. (A redeploy does its staggered `up -d` for zero downtime,
 # then `systemctl start` here to re-establish systemd ownership.)
+just fleet   # renders docker-compose.yml from docker/secrets/fleet.conf — not in git
 sudo systemctl start knightwatch-reviewer.service
 docker compose logs -f reviewer-1
 ```
@@ -114,9 +116,30 @@ The auxiliary host timers (`-poll` — the merged /srosro-approve + re-request-r
 
 Fully reconciling these into one shared host/container seam is the tracked follow-up in `REVIEW.md`.
 
+**Redeploying onto this fleet.conf migration.** `docker-compose.yml` is generated (`just fleet`) and no longer tracked in git, so `git pull` deletes the working-tree file the moment the merge commit lands — until a render runs, `docker compose` (including systemd's `ExecStop`) has no file to act on. In order:
+
+1. **Author `docker/secrets/fleet.conf` first**, while the old tracked compose file is still on disk. Write it out directly rather than copying `docker/secrets.example/fleet.conf` — that example is delivered by the very `git pull` in step 3, so it does not exist on the deployed checkout yet. It must name every account **currently running**; a file listing fewer units than are up will make `docker compose up -d --remove-orphans` tear down the missing ones. On the production host today that is these five rows verbatim:
+
+   ```sh
+   cat > docker/secrets/fleet.conf <<'EOF'
+   # <worker-id>  <codex-account-dir, relative to docker/secrets/>
+   1  codex-account-a
+   2  codex-account-b
+   3  codex-account-c
+   4  codex-account-d
+   5  codex-account-e
+   EOF
+   ```
+
+   A missing `fleet.conf` fails loudly at render time (`render-compose: FATAL: no fleet.conf …`) by design; it does not silently render an empty fleet.
+2. **Retire any deployed `docker-compose.override.yml`**, still ahead of the render. Port **every** mount it declares into `docker/secrets/config.env` — the clone root into `KID_ROOT`, any other index into `KID_EXTRA_MOUNTS` (see [kid prior-art](#kid-prior-art); on the production host today that is `KID_ROOT=/home/odio/services/kwr-repos` plus `KID_EXTRA_MOUNTS=/home/odio/Hacking/plow-kid`, and dropping the second one silently disables prior art on plow). Then delete the override — it stays gitignored so an uncleaned deployment doesn't trip the deploy preflight, but leaving it in place means compose keeps auto-merging a file the generator no longer expects. If the deployment also carries a `config.env.bak-kid`, check whether it holds kid wiring that needs porting alongside the override before deleting either. This is `config.env` **only** — the `repos.conf` edit belongs in step 5.
+3. `git pull && just fleet` as **one step**, never split across a pause — that pause is the no-compose-file window above.
+4. `./install.sh` — idempotent, and the only step that copies `systemd/*.service` into place + daemon-reloads. This migration *edits* the fleet unit (`ExecStartPre` renders the compose file before every `up`; `ExecStop` self-heals a missing one). Skip it and step 5 restarts the **pre-migration** unit with no signal that anything is missing — step 3 already left a compose file on disk, so the next `up` succeeds and the render-before-up guarantee simply never lands.
+5. `sudo systemctl restart knightwatch-reviewer.service` — **always, whatever the kid wiring**: this is what puts step 4's freshly-installed unit in charge and recreates every container against the re-rendered mounts. One rider, only if the deployment sets `KID_EXTRA_MOUNTS` (prod does): **immediately** before that restart, never split across a pause from it, change `docker/secrets/repos.conf`'s `KID_PATHS` entry for `["plow-pbc/plow"]` from `/kid-ro/plow-kid` to `/home/odio/Hacking/plow-kid`, since each extra index now mounts at the **same path inside the container**. Either half alone is inconsistent: the containers re-source `/shared/repos.conf` per review so the new value takes effect the instant it lands, while the matching mount only arrives when the restart recreates them — pause in between and every plow review silently falls through to `kid index not yet built … — skipping prior-art lookup`. (Follow-up, not this PR: relocating plow's index under `KID_ROOT` would remove the need for `KID_EXTRA_MOUNTS`, and this rider, altogether.)
+
 **Security note — before you deploy:** the dind sidecar runs `--privileged`, and the sandbox-bypassed codex agents share its network namespace (`DOCKER_HOST`), so a successful prompt-injection of a review agent could drive the daemon → host root. Untrusted `just test` is already skipped, but the codex path is an **accepted v1 residual to resolve at bring-up** — make the daemon unprivileged (rootless dind / sysbox) or run codex in a container that doesn't share dind, and verify against the live suite, before standing this up against real PRs.
 
-`docker compose config` validates the topology before bringing it up. Add an account by dropping in another `~/.codex` and adding a `dind-N` + `reviewer-N` pair (see `docker/secrets.example/README.md`). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
+`docker compose config` validates the topology before bringing it up. Add an account by appending a row to `docker/secrets/fleet.conf` and re-running `just fleet` (see `docker/secrets.example/README.md` § Adding the Nth account). Each unit's `reviewer` + `dind` memory limits sum toward the host budget — keep headroom for anything else on the box.
 
 **Watching one review.** `docker compose logs -f reviewer-1` follows a whole unit; to follow a single PR instead, read its per-run dir on the shared `claims` volume. Every worker writes `runs/<slug>__<pr>__<ts>__<sha7>/` containing `run.log` (the worker's own log lines), plus per-agent `prompt.txt` (what the agent was sent), `output.md` (its verdict), `log.txt` (codex **stdout** — model reasoning), and `err.txt` (codex **stderr** — quota / auth / network errors land here, so this is the file to check on a failure). Any reviewer container can read the volume, so pick one and resolve the PR's newest run:
 
@@ -164,7 +187,7 @@ The host auxiliary timers pick it up on their next tick. **The containerized rev
 
 A DRY pre-pass: before the specialists run, `lib/review-one-pr.sh` runs [`kid`](https://github.com/srosro/knightwatch-kid) (`keepitdry`) against a semantic index of your canonical code and surfaces existing code similar to each new block, so the reviewer can flag duplication. It's **opt-in** — a no-op unless a repo has a `KID_PATHS` entry.
 
-Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<repo>` into `<repo>/.keepitdry`) and consumed **read-only** by the containers. To enable it: copy [`docker-compose.override.yml.example`](docker-compose.override.yml.example) to `docker-compose.override.yml`, bind-mount your kid **clone root** — the dir holding `knightwatch-kid/scripts/` and, by convention, the per-repo `.keepitdry` indices — at `/kwr` (plus any out-of-root indices), then set `KID_PATHS`, `KID_OLLAMA_URL`, and `KID_EMBED_MODEL` in `docker/secrets/`. Because ChromaDB's sqlite needs write access even for a query, the worker copies the read-only index into a per-container scratch dir before querying. Pin the mounted `knightwatch-kid` clone to the same commit as the image's `kid` binary to avoid script/binary skew.
+Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<repo>` into `<repo>/.keepitdry`) and consumed **read-only** by the containers. To enable it: set `KID_ROOT` in `docker/secrets/config.env` to your kid **clone root** — the dir holding `knightwatch-kid/scripts/` and, by convention, the per-repo `.keepitdry` indices — then set `KID_PATHS`, `KID_OLLAMA_URL`, and `KID_EMBED_MODEL` in `docker/secrets/`, and re-run `just fleet` to render the `/kwr` bind mount into every unit. An index that lives *outside* the clone root needs its own mount: list its **host path** in `KID_EXTRA_MOUNTS` (space-separated, each rendered read-only on every unit) — e.g. `KID_EXTRA_MOUNTS=/home/odio/Hacking/plow-kid` with `["plow-pbc/plow"]="/home/odio/Hacking/plow-kid"`. Each extra index is deliberately mounted at the **same path inside the container as on the host**, so that one `KID_PATHS` value is valid in *both* manifests: the repo-root `repos.conf` (host timers — `plow-kid-refresh.sh` git-pulls + re-indexes each value as a checkout, `install.sh` grants it in the kid-refresh unit's `ReadWritePaths`) and `docker/secrets/repos.conf` (the containers' query path). A split host/container path would silently force those two same-named files to diverge on that key. Because ChromaDB's sqlite needs write access even for a query, the worker copies the read-only index into a per-container scratch dir before querying. Pin the mounted `knightwatch-kid` clone to the same commit as the image's `kid` binary to avoid script/binary skew.
 
 ## Use on a PR
 

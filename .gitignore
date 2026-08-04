@@ -269,11 +269,24 @@ prompts.new-design/
 .knightwatch-plan-draft.md
 .knightwatch-spec-draft.md
 docs/superpowers/
+.superpowers/
 
 # Reviewer container secrets — live per-account creds + tokens, never committed
 docker/secrets/
 
-# Operator-specific compose overrides (e.g. kid prior-art index mounts pointing
-# at a deployment's own host paths). Committed code stays generic; see
-# docker-compose.override.yml.example.
+# Generated from docker/secrets/fleet.conf by lib/render-compose.sh (`just fleet`).
+# Operator-specific by construction — unit count, account dirs, and the kid
+# prior-art mounts all come from that file, so it is never committed.
+docker-compose.yml
+docker-compose.yml.*
+
+# Retired: kid prior-art wiring now comes from KID_ROOT in docker/secrets/
+# config.env (rendered by lib/render-compose.sh), not a hand-maintained
+# compose override. This entry stays even though the mechanism is gone — a
+# not-yet-cleaned-up deployment still has the file on disk (retiring it is a
+# deploy-runbook step, not something this repo change can reach), and an
+# unignored docker-compose.override.yml would both trip the deploy
+# preflight's clean-tree check and get auto-merged by compose against
+# services the generated base no longer names, invalidating the whole
+# project.
 docker-compose.override.yml

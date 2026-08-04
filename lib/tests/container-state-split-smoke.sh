@@ -36,75 +36,9 @@ grep -q 'acquire_just_test_lock "\$STATE_DIR"' "$HERE/review-one-pr.sh" \
 grep -q 'CANONICAL_LOCK_DIR="\$LOCAL_STATE_DIR/canonical-locks"' "$HERE/review-one-pr.sh" \
   || fail "canonical lock not pointed at LOCAL_STATE_DIR (per-container)"
 
-# The shared `claims` volume (runs/ — the KNOWN_SHA dedup history) MUST be an
-# external fixed-name volume so it survives project rename / `down -v` / prune;
-# a compose-managed volume is lost on those and the reviewer re-reviews every
-# open PR (duplicate comments + codex burn). PR #130's durability contract.
-# Match the top-level `claims:` block (2-space indent under `volumes:`), not the
-# `- claims:/shared` mounts. Pure text assertion (no docker needed at test time).
-COMPOSE="$(cd "$HERE/.." && pwd)/docker-compose.yml"
-OVERRIDE_EXAMPLE="$(cd "$HERE/.." && pwd)/docker-compose.override.yml.example"
-claims_block=$(awk '/^  claims:/{f=1;next} /^  [a-z]/{f=0} f' "$COMPOSE")
-printf '%s\n' "$claims_block" | grep -q 'external: true' \
-  || fail "claims volume is not external:true (durable review state regressed — PR #130)"
-printf '%s\n' "$claims_block" | grep -q 'name: kwr_claims' \
-  || fail "claims external name is not kwr_claims (durability contract regressed — PR #130)"
-
-# kwr-config cache delivery: the convention/standards cache reaches the fleet ONLY
-# via the read-only host mount + KWR_CONFIG_DIR env. Pin both for EVERY reviewer —
-# a reviewer missing either silently can't find the convention cache (and would
-# fail loud at review time when KWR_CONFIG_REPO is set). Pure text assertion.
-grep -qF 'KWR_CONFIG_DIR: /root/.kwr-config' "$COMPOSE" \
-  || fail "x-reviewer-env missing KWR_CONFIG_DIR: /root/.kwr-config (containers can't locate the convention cache)"
-# `|| true` on every count below: grep exits 1 on zero matches, which under
-# `set -e` would abort at the assignment — losing the labeled `fail` message
-# for exactly the cases these counts exist to catch (no reviewers found,
-# mount missing).
-n_reviewers=$(grep -cE '^  reviewer-[0-9]+:' "$COMPOSE" || true)
-n_mounts=$(grep -cF '${HOME}/services/kwr-config:/root/.kwr-config:ro' "$COMPOSE" || true)
-[ "$n_reviewers" -ge 1 ] || fail "no reviewer-N services found in compose"
-[ "$n_mounts" -eq "$n_reviewers" ] \
-  || fail "kwr-config cache mount on $n_mounts of $n_reviewers reviewers — every reviewer must mount it read-only"
-
-# Per-repo secret env seam: every reviewer mounts the operator repo-env dir
-# read-only under /root, and x-reviewer-env points REPO_ENV_DIR at it. review-
-# one-pr.sh seeds these into the canonical clone for the trust-gated .env mirror
-# (e.g. plow's api/.env.test-live); dropping the mount/env silently re-breaks
-# test-scenarios on the ANTHROPIC_API_KEY gate while THIS suite stays green.
-grep -qF 'REPO_ENV_DIR: /root/.kwr/repo-env' "$COMPOSE" \
-  || fail "x-reviewer-env missing REPO_ENV_DIR: /root/.kwr/repo-env (per-repo secret seam regressed)"
-n_repo_env=$(grep -cF './docker/secrets/repo-env:/root/.kwr/repo-env:ro' "$COMPOSE" || true)
-[ "$n_repo_env" -eq "$n_reviewers" ] \
-  || fail "repo-env mount on $n_repo_env of $n_reviewers reviewers — every reviewer must mount it read-only"
-
-# kid prior-art parity: the override example must list EVERY reviewer. A unit
-# missing there gets no /kwr mount, so kid_dry_check.py is unreachable and
-# review-one-pr.sh skips prior-art — review depth then depends on which account
-# claims the PR. The live override is gitignored, so the example is the only
-# checkable copy; pinning parity here is what makes the deploy-side edit hard to
-# forget on the next unit. Compare NAME SETS, not counts: equal counts still pass
-# when the numbering diverges (compose gains reviewer-6, the override reviewer-7),
-# which is the exact shape that invalidates the whole compose project.
-# Match on the *kid ANCHOR, not the bare `reviewer-N:` key: a hand-added
-# `reviewer-6:` carrying its own partial block is the natural edit when someone
-# misses the anchor convention, and it gets no /kwr mount despite looking present.
-# `|| true` per the note above — without it a wiring-free override makes grep exit
-# 1 and `set -e` kills the script with NO labeled failure, silently skipping every
-# assertion below (the loudest regression producing the quietest failure).
-#
-# Scoped to the EXAMPLE deliberately. The deployed override is gitignored and
-# hand-maintained, so its YAML style is free to diverge (expanded blocks, a
-# `<<: *kid` merge key, or a unit needing its own block for an index outside the
-# shared root — the header contemplates exactly that). Any text predicate is
-# therefore wrong in both directions on that file. The deployed config is covered
-# at RUNTIME instead, by the kid_dry_check.py reachability branch in
-# review-one-pr.sh, which is style-independent by construction.
-kid_set=$(grep -oE '^  reviewer-[0-9]+: (\*kid|&kid)' "$OVERRIDE_EXAMPLE" \
-            | grep -oE 'reviewer-[0-9]+' | sort || true)
-cmp_out=$(diff <(grep -oE '^  reviewer-[0-9]+:' "$COMPOSE" | tr -d ' :' | sort) \
-               <(printf '%s\n' "$kid_set")) \
-  || fail "docker-compose.override.yml.example: *kid reviewer set differs from docker-compose.yml (< compose-only, > override-only):
-$cmp_out"
+# The compose-render contract (external `claims` volume, KWR_CONFIG_DIR,
+# REPO_ENV_DIR, the per-unit mounts) lives in render-compose-smoke.sh, which
+# already drives the generator — this suite is only about locking/state-split.
 
 # docker compose plugin: the static docker tarball ships only the client, so the
 # reviewer image must install the compose plugin into the default cli-plugins dir
@@ -143,23 +77,5 @@ grep -qF -- '-o /usr/local/bin/jq' "$DOCKERFILE" \
   || fail "Dockerfile not installing jq to /usr/local/bin/jq (PR #160)"
 grep -qF 'chmod +x /usr/local/bin/jq' "$DOCKERFILE" \
   || fail "Dockerfile not making the jq binary executable (PR #160)"
-
-# Nested-dind token bridge: plow's test-scenarios passes a token to a stack
-# container via a host bind mount the dind daemon resolves in ITS filesystem, so
-# the path must live on a volume mounted at the SAME location in both reviewer-N
-# and dind-N. Pin both mounts per pair + the volume declaration so a compose edit
-# can't silently drop the bridge and re-break "Unable to reach your agent". (PR #161.)
-# Driven off the reviewer count derived above so the fence extends with every
-# scale-out instead of silently lagging the fleet.
-for n in $(seq 1 "$n_reviewers"); do
-  dind_block=$(awk "/^  dind-$n:/{f=1;next} /^  [a-z]/{f=0} f" "$COMPOSE")
-  printf '%s\n' "$dind_block" | grep -qF "scenario-shared$n:/scenario-shared" \
-    || fail "dind-$n missing scenario-shared$n:/scenario-shared mount (nested-dind token bridge regressed — PR #161)"
-  rev_block=$(awk "/^  reviewer-$n:/{f=1;next} /^  [a-z]/{f=0} f" "$COMPOSE")
-  printf '%s\n' "$rev_block" | grep -qF "scenario-shared$n:/scenario-shared" \
-    || fail "reviewer-$n missing scenario-shared$n:/scenario-shared mount (nested-dind token bridge regressed — PR #161)"
-  grep -qE "^  scenario-shared$n:" "$COMPOSE" \
-    || fail "scenario-shared$n volume not declared (PR #161)"
-done
 
 echo "PASS: container-state-split-smoke"
