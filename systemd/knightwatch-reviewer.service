@@ -22,8 +22,8 @@ Type=oneshot
 RemainAfterExit=yes
 User=odio
 Group=odio
-# Deployed clone (~/services per the code-vs-deploy split) — the compose file
-# and its override live here, not in ~/.pr-reviewer. Host-specific by design,
+# Deployed clone (~/services per the code-vs-deploy split) — the rendered
+# compose file lives here, not in ~/.pr-reviewer. Host-specific by design,
 # matching the /home/odio/ paths baked into the sibling units.
 WorkingDirectory=/home/odio/services/knightwatch-reviewer
 Environment=HOME=/home/odio
@@ -51,7 +51,10 @@ ExecStart=/usr/bin/docker compose up -d --remove-orphans
 # `systemctl restart docker` mid-window). Without the render-if-absent guard,
 # `docker compose stop` fails outright there and the containers take the exact
 # SIGKILL this unit exists to prevent.
-ExecStop=/bin/bash -c '[ -f docker-compose.yml ] || bash lib/render-compose.sh; exec /usr/bin/docker compose stop'
+# Chained on success, not `;`: a `;` discards the render's exit status, so a
+# FATAL (no fleet.conf) would be followed by compose's generic "no configuration
+# file provided" — the render's actionable diagnostic replaced by a vaguer one.
+ExecStop=/bin/bash -c '{ [ -f docker-compose.yml ] || bash lib/render-compose.sh; } && exec /usr/bin/docker compose stop'
 # A first boot with images absent pulls docker:27-dind (and the reviewer image
 # if not yet built by the deploy); give compose room before systemd calls the
 # start a failure.

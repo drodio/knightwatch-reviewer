@@ -18,7 +18,11 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Build a fake secrets dir. Account dirs must exist — the generator rejects a
 # row naming a missing one (docker would otherwise auto-create it empty).
 SECRETS="$SANDBOX/secrets"
-mkdir -p "$SECRETS"/codex-account-{a,b,c,d}
+mkdir -p "$SECRETS"/codex-account-{a,b,c,d} "$SECRETS/claude-standards"
+# Separated from the check below so a host without pyyaml gets its own name
+# rather than reading as invalid generator output.
+python3 -c 'import yaml' 2>/dev/null \
+    || fail "pyyaml required for the compose structural check (apt install python3-yaml)"
 # $SECRETS sits under $OUT's dir, so the generator renders the same
 # compose-relative form it ships with (./docker/secrets → ./secrets here).
 SECRETS_REF="./secrets"
@@ -172,6 +176,9 @@ assert_render_fails "KID_EXTRA_MOUNTS pair is malformed" "1  codex-account-a" \
 KID_EXTRA_MOUNTS=$PLOW_INDEX"
 assert_render_fails "KID_EXTRA_MOUNTS without KID_ROOT" "1  codex-account-a" \
     "KID_EXTRA_MOUNTS=$PLOW_INDEX:/kid-ro/plow-kid"
+mv "$SECRETS/claude-standards" "$SANDBOX/standards-away"
+assert_render_fails "absent claude-standards" "1  codex-account-a"
+mv "$SANDBOX/standards-away" "$SECRETS/claude-standards"
 
 rm -f "$SANDBOX/fleet.conf"
 SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" \

@@ -79,6 +79,13 @@ done < "$FLEET_CONF"
 [ "${#ids[@]}" -gt 0 ] \
     || die "$FLEET_CONF: no enabled units — an empty services block takes the whole fleet down on the next 'compose up'"
 
+# Same silent-degradation class as KID_ROOT, one mount over: docker auto-creates
+# an absent claude-standards EMPTY, and conventions.sh stages the standards with
+# `[ -f … ] && cat`, so every review would run with no standards and zero signal.
+# (repo-env stays unguarded — absent is a documented no-op.)
+[ -d "$SECRETS_DIR/claude-standards" ] \
+    || die "$SECRETS_DIR/claude-standards not found — docker would auto-create it empty and every review would run with no coding/review standards"
+
 # The secrets mounts must render from the SAME path the rows were validated
 # against, or an overridden SECRETS_DIR validates dir A and mounts dir B (and
 # the smokes then never exercise the string that ships). Compose resolves a

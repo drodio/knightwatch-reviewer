@@ -39,6 +39,8 @@ ARG CODEX_CLI_VERSION=0.144.1
 # own CI — keep this in sync with it (don't invent a second dep declaration):
 #   - sqlite3: knightwatch-reviewer reviewing ITSELF (its suite uses the bakeoff.db
 #     store); without it `just test` exit-127s → "🧪 Tests not run".
+#   - python3-yaml: knightwatch-reviewer's own render-compose smoke parses the
+#     generated compose file; absent, that suite fails loud on the import.
 #   - ffmpeg: plow's `just test` (the local-dev path the reviewer runs) — dtu/linq
 #     audio conversion + test_ffmpeg_real_conversion. plow CI declares exactly this
 #     one apt dep (.github/workflows/test.yml). Pairs with the compose plugin (#157)

@@ -14,6 +14,7 @@ cp -r docker/secrets.example docker/secrets
 | Path | Shared / per-account | Contents |
 | --- | --- | --- |
 | `config.env` | shared | Ops knobs + child-process tokens, **shell-sourced** by `review.sh` (via `CONFIG_ENV_FILE`). Mounted at the **root-only** path `/root/.kwr/config.env` so the unprivileged `reviewer-test` user that runs `just test` can't read the token *file* (the `env -i` scrub only covers its environment). Use `export GH_TOKEN=…` so `gh` and the worker inherit it. `ANTHROPIC_API_KEY` does NOT belong here — it's a `just test` dependency delivered via the `.env` mirror below, not the reviewer env. **Operator-managed review config (optional):** to activate it set `export KWR_CONFIG_REPO=https://github.com/<you>/kwr-config.git` here **and** in the host `~/.pr-reviewer/config.env` (both are sourced — host `install.sh`/org-sync pull the `${HOME}/services/kwr-config` cache, the containers read it via the read-only `/root/.kwr-config` mount). Unset = the config layer is a no-op. Use a credential helper / ssh key for a private repo — never an inline-credential URL (the worker rejects userinfo/token-bearing URLs). |
+| `fleet.conf` | shared | The fleet topology `just fleet` renders `docker-compose.yml` from: one `<worker-id> <codex-account-dir>` row per unit. **Edit before first bring-up** — the shipped example declares two placeholder units, and it renders cleanly on any host where those two account dirs exist. See its own header for the format and the park/retire notes. |
 | `repos.conf` | shared | The tracked-target manifest. For whole-org coverage set `ORGS=(...)` (every non-archived open PR in the org is reviewed, new repos included, via one batched search per org per tick); reserve `REPOS=(...)` for specific repos in partially-tracked orgs (kept OUT of ORGS). Also holds `KID_PATHS`/`SOURCE_PATHS`. Mounted into the shared volume at `/shared/repos.conf`. Start from the repo-root `repos.conf.example`. |
 | `claude-standards/` | shared | The four review-standards files the worker stages into the prompt: `CODING_STANDARDS.md`, `REVIEW_PRACTICES.md`, `TESTING.md`, `COMMENT_REVIEW_MISTAKES.md`. Mounted read-only at `/root/.claude`. Copy just these four from your `~/.claude` — NOT the whole dir, so prompt-injectable review agents can't read global config/secrets. |
 | `repo-env/` | shared | Operator per-repo secret env files seeded into each reviewed repo's canonical clone for the trusted-author `.env` mirror (live `just test` creds CI has but a fresh container lacks — e.g. plow's `ANTHROPIC_API_KEY`). Layout: `repo-env/<repo-slug>/<relpath>` (e.g. `repo-env/plow-pbc_plow/api/.env.test-live`). Mounted **read-only** at the root-only `/root/.kwr/repo-env`. Optional — omit for repos needing no live creds. See *Live-credential `just test`* below. |
@@ -102,7 +103,12 @@ worker N (letter L):
 
        6  codex-account-f
 
-3. `just fleet && sudo systemctl restart knightwatch-reviewer.service`
+3. `just fleet && docker compose up -d && sudo systemctl start knightwatch-reviewer.service`
+
+   `up -d` creates only the new pair and leaves the running units alone; the
+   `start` re-establishes systemd ownership and is a no-op if the unit is
+   already active. Use `restart` only when you mean to bounce the whole fleet —
+   it stops every reviewer, killing any review in flight.
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
 toward the box's total — keep headroom for production Plow.
