@@ -108,6 +108,23 @@ if [[ -f "$REPO_DIR/repos.conf.example" ]] && cmp -s "$REPO_DIR/repos.conf" "$RE
     exit 0
 fi
 
+# --- 0b. Bootstrap fleet.conf from .example ----------------------------------
+# fleet.conf drives the containerized review fleet (lib/render-compose.sh),
+# separate from the host timers repos.conf gates above. It's per-operator and
+# gitignored (docker/secrets/ as a whole never lands in git); the tracked
+# template lives at docker/secrets.example/fleet.conf. Bootstrap it the same
+# way as repos.conf, but don't exit — the fleet unit's own ExecStartPre
+# renders against it independently of this script, and a placeholder fleet.conf
+# fails loud there (missing account dirs) rather than needing a gate here.
+if [[ ! -f "$REPO_DIR/docker/secrets/fleet.conf" ]]; then
+    if [[ -f "$REPO_DIR/docker/secrets.example/fleet.conf" ]]; then
+        mkdir -p "$REPO_DIR/docker/secrets"
+        cp "$REPO_DIR/docker/secrets.example/fleet.conf" "$REPO_DIR/docker/secrets/fleet.conf"
+        info "bootstrapped docker/secrets/fleet.conf from docker/secrets.example/fleet.conf"
+        info "edit $REPO_DIR/docker/secrets/fleet.conf and provision its codex account dirs, then run 'just fleet'"
+    fi
+fi
+
 # --- 1. Symlinks into $INSTALL_DIR ------------------------------------------
 # Discover the script list from the systemd unit files' ExecStart=
 # directives — the units are the source of truth for what runs in

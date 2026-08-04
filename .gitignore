@@ -274,7 +274,8 @@ docs/superpowers/
 # Reviewer container secrets — live per-account creds + tokens, never committed
 docker/secrets/
 
-# Operator-specific compose overrides (e.g. kid prior-art index mounts pointing
-# at a deployment's own host paths). Committed code stays generic; see
-# docker-compose.override.yml.example.
-docker-compose.override.yml
+# Generated from docker/secrets/fleet.conf by lib/render-compose.sh (`just fleet`).
+# Operator-specific by construction — unit count, account dirs, and the kid
+# prior-art mounts all come from that file, so it is never committed.
+docker-compose.yml
+docker-compose.yml.*

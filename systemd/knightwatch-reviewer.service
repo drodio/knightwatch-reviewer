@@ -31,6 +31,13 @@ Environment=HOME=/home/odio
 # (no writable user dir searched ahead of /usr). ExecStart uses an absolute
 # docker path, so this is belt-and-suspenders for any helper compose invokes.
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# docker-compose.yml is generated from docker/secrets/fleet.conf and is NOT in
+# git, so a `git pull` deploy leaves whatever the last render produced — or,
+# on the migration commit that untracked it, nothing at all. Render before
+# every up so the unit can never come up against a stale or absent topology.
+# Invoked directly, not via `just`: this unit's PATH is system dirs only by
+# design, and just lives under ~/.local/bin.
+ExecStartPre=/bin/bash lib/render-compose.sh
 # `compose up -d` returns once containers are started; RemainAfterExit keeps the
 # unit active so ExecStop fires on shutdown/restart. --remove-orphans drops any
 # service renamed/removed by a prior compose revision.

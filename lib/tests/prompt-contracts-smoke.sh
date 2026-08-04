@@ -465,6 +465,8 @@ assert_grep 'fleet unit must bring the stack up via compose up -d' \
     'ExecStart=/usr/bin/docker compose up -d' systemd/knightwatch-reviewer.service
 assert_grep 'fleet unit must gracefully stop via compose stop (not SIGKILL)' \
     'ExecStop=/usr/bin/docker compose stop' systemd/knightwatch-reviewer.service
+assert_grep 'fleet unit must render the compose file before up (it is generated, not committed)' \
+    'ExecStartPre=/bin/bash lib/render-compose.sh' systemd/knightwatch-reviewer.service
 # PartOf was the property misunderstood in review round 1 — `Requires=` alone does
 # NOT re-run the unit on a `systemctl restart docker`, so without PartOf the fleet
 # strands on a daemon restart. Pin it so a drop goes red, not silently broken.
