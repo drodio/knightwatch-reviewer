@@ -20,15 +20,34 @@ die() { printf 'render-compose: FATAL: %s\n' "$*" >&2; exit 1; }
 [ -f "$FLEET_CONF" ] \
     || die "no fleet.conf at $FLEET_CONF — copy docker/secrets.example/fleet.conf and edit it"
 
-# KID_ROOT is optional prior-art wiring. Sourced in a SUBSHELL: config.env also
-# carries GH_TOKEN, and nothing from it is echoed or exported into the render.
-KID_ROOT="$(
+# KID_ROOT (clone root, mounted at /kwr — carries kid_dry_check.py) and the
+# optional KID_EXTRA_MOUNTS (space-separated <host-path>:<container-path> pairs
+# for indices that live OUTSIDE the clone root, e.g. plow's) are the prior-art
+# wiring. Read in a SUBSHELL: config.env also carries GH_TOKEN, and nothing
+# from it is echoed or exported into the render.
+# The trailing '.' is load-bearing: command substitution strips trailing
+# newlines, so without it an empty KID_EXTRA_MOUNTS collapses the two fields
+# into one and the second read yields KID_ROOT's value.
+kid_cfg="$(
     set +u
     [ -f "$CONFIG_ENV" ] && . "$CONFIG_ENV" >/dev/null 2>&1
-    printf '%s' "${KID_ROOT:-}"
+    printf '%s\n%s.' "${KID_ROOT:-}" "${KID_EXTRA_MOUNTS:-}"
 )"
+KID_ROOT="${kid_cfg%%$'\n'*}"
+KID_EXTRA_MOUNTS="${kid_cfg#*$'\n'}"; KID_EXTRA_MOUNTS="${KID_EXTRA_MOUNTS%.}"
+
+# A missing bind source is auto-created EMPTY by docker, so every reviewer would
+# start clean and silently skip prior art instead of failing — hence -d, here.
 [ -z "$KID_ROOT" ] || [ -d "$KID_ROOT" ] \
     || die "KID_ROOT=$KID_ROOT is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
+[ -z "$KID_EXTRA_MOUNTS" ] || [ -n "$KID_ROOT" ] \
+    || die "KID_EXTRA_MOUNTS is set but KID_ROOT is empty — extra indices are unreachable without the clone root that carries kid_dry_check.py"
+for pair in $KID_EXTRA_MOUNTS; do
+    [ "${pair//[!:]/}" = ":" ] && [ "${pair%%:*}" ] && [ "${pair##*:}" ] \
+        || die "KID_EXTRA_MOUNTS: expected '<host-path>:<container-path>', got: $pair"
+    [ -d "${pair%%:*}" ] \
+        || die "KID_EXTRA_MOUNTS: ${pair%%:*} is not a directory — docker would auto-create it empty and every reviewer would silently skip prior art"
+done
 
 # --- parse + validate -------------------------------------------------------
 ids=(); accounts=()
@@ -45,9 +64,11 @@ while IFS= read -r raw || [ -n "$raw" ]; do
     case "$id" in
         ''|*[!0-9]*) die "$FLEET_CONF:$lineno: worker id must be a positive integer, got: $id" ;;
     esac
-    for seen in ${ids[@]+"${ids[@]}"}; do
-        [ "$seen" = "$id" ] \
+    for j in ${ids[@]+"${!ids[@]}"}; do
+        [ "${ids[$j]}" = "$id" ] \
             && die "$FLEET_CONF:$lineno: duplicate worker id $id — two units would share /shared/pool/$id/ and corrupt each other's quota-pause and offline state"
+        [ "${accounts[$j]}" = "$acct" ] \
+            && die "$FLEET_CONF:$lineno: duplicate account dir $acct — two units would refresh one auth.json concurrently, and their quota-pause state would split across /shared/pool/, so one pausing wouldn't stop the other hammering the exhausted account"
     done
     [ -d "$SECRETS_DIR/$acct" ] \
         || die "$FLEET_CONF:$lineno: account dir not found: $SECRETS_DIR/$acct (a missing dir is auto-created EMPTY by docker's bind mount, so the unit would start and immediately fail its auth guard)"
@@ -57,6 +78,18 @@ done < "$FLEET_CONF"
 
 [ "${#ids[@]}" -gt 0 ] \
     || die "$FLEET_CONF: no enabled units — an empty services block takes the whole fleet down on the next 'compose up'"
+
+# The secrets mounts must render from the SAME path the rows were validated
+# against, or an overridden SECRETS_DIR validates dir A and mounts dir B (and
+# the smokes then never exercise the string that ships). Compose resolves a
+# relative source against the compose file's own dir, so express it that way
+# when possible — the shipped default renders as ./docker/secrets.
+OUT_DIR="$(cd "$(dirname "$OUT")" && pwd)"
+SECRETS_ABS="$(cd "$SECRETS_DIR" && pwd)"
+case "$SECRETS_ABS" in
+    "$OUT_DIR"/*) SECRETS_REF="./${SECRETS_ABS#"$OUT_DIR"/}" ;;
+    *)            SECRETS_REF="$SECRETS_ABS" ;;
+esac
 
 # --- render (temp file; only moved into place once fully written) -----------
 TMP="$(mktemp "${OUT}.XXXXXX")"
@@ -175,14 +208,17 @@ EOF
       - claims:/shared
       - reviewer$n-local:/local
       - scenario-shared$n:/scenario-shared
-      - ./docker/secrets/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
-      - ./docker/secrets/repos.conf:/shared/repos.conf:ro
-      - ./docker/secrets/config.env:/root/.kwr/config.env:ro
-      - ./docker/secrets/repo-env:/root/.kwr/repo-env:ro
-      - ./docker/secrets/claude-standards:/root/.claude:ro
+      - $SECRETS_REF/$acct:/root/.codex          # writable: codex refreshes its OAuth token in-home
+      - $SECRETS_REF/repos.conf:/shared/repos.conf:ro
+      - $SECRETS_REF/config.env:/root/.kwr/config.env:ro
+      - $SECRETS_REF/repo-env:/root/.kwr/repo-env:ro
+      - $SECRETS_REF/claude-standards:/root/.claude:ro
       - \${HOME}/services/kwr-config:/root/.kwr-config:ro
 EOF
-    [ -n "$KID_ROOT" ] && printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"
+    if [ -n "$KID_ROOT" ]; then
+        printf '      - %s:/kwr:ro\n' "$KID_ROOT" >>"$TMP"
+        for pair in $KID_EXTRA_MOUNTS; do printf '      - %s:ro\n' "$pair" >>"$TMP"; done
+    fi
     printf '\n' >>"$TMP"
 done
 

@@ -1041,12 +1041,12 @@ elif [ -z "$KID_PROJECT_PATH" ]; then
 # Test the kid ENTRYPOINT's reachability, not `-z KWR_CLONE_ROOT`: tracked-repos.sh
 # defaults KWR_CLONE_ROOT unconditionally, so an unset test can never fire and this
 # misconfig used to fall through to the "index not yet built" message below —
-# indistinguishable from the legitimate pre-index state. A reviewer left out of the
-# compose override has no /kwr mount, so the entrypoint is simply absent.
+# indistinguishable from the legitimate pre-index state. With KID_ROOT unset in
+# config.env the fleet renders no /kwr mount at all, so the entrypoint is simply absent.
 elif [ ! -f "${KWR_CLONE_ROOT:-}/knightwatch-kid/scripts/kid_dry_check.py" ]; then
-    log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (this reviewer missing from the compose override?)"
+    log "$PR_ID: no kid_dry_check.py under KWR_CLONE_ROOT=${KWR_CLONE_ROOT:-} — skipping prior-art lookup (KID_ROOT unset in config.env, or 'just fleet' not re-run?)"
 elif [ -n "$KID_INPUT_DIFF" ]; then
-    log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup"
+    log "$PR_ID: kid index not yet built at $KID_PROJECT_PATH — skipping prior-art lookup (an index outside KID_ROOT also needs a KID_EXTRA_MOUNTS pair in config.env)"
 fi
 
 # ---- touched-files derivation (shared by dead-code + strict-typing) ----
