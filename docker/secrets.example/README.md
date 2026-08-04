@@ -89,27 +89,20 @@ Only `auth.json` is strictly required; copying the whole dir is simplest.
 ## Adding the Nth account (scale-out)
 
 Accounts are lettered in worker order: `codex-account-a` → reviewer-1,
-`-b` → reviewer-2, and so on. For a new worker N (letter L):
+`-b` → reviewer-2, and so on — a convention, not a requirement, since
+`fleet.conf` names the account dir explicitly, so any name works. For a new
+worker N (letter L):
 
 1. `CODEX_HOME=docker/secrets/codex-account-<L> codex login --device-auth`
    (or `cp -r ~/.codex docker/secrets/codex-account-<L>` from a machine already
    logged into that account). Host-side works here because the dir is still
    empty; once the container has run, re-login goes through `docker exec` —
    see the `codex-account-a/` row above.
-2. In `docker-compose.yml`, add a `dind-N` (`<<: *dind` + its `dindN-lib` and
-   `scenario-sharedN:/scenario-shared` volumes) and a `reviewer-N` that reuses
-   the shared contract — `<<: *reviewer` and `<<: *reviewer-env` — overriding
-   only `network_mode: service:dind-N`, `WORKER_ID: "N"`, the `reviewerN-local`
-   volume, the `scenario-sharedN:/scenario-shared` bridge (same path as dind-N,
-   so the nested-dind scenario token mount resolves), the shared
-   `./docker/secrets/repo-env:/root/.kwr/repo-env:ro` mount (same on every
-   reviewer), and the `codex-account-<L>` mount. Add `reviewerN-local` +
-   `dindN-lib` + `scenario-sharedN` to the
-   `volumes:` block.
-3. `docker compose up -d` to create the new pair, then `sudo systemctl start
-   knightwatch-reviewer.service` to keep the fleet under systemd ownership
-   (graceful `stop` + `PartOf`), matching the main README's bring-up — a no-op if
-   the unit is already active.
+2. Append a row to `docker/secrets/fleet.conf`:
+
+       6  codex-account-f
+
+3. `just fleet && sudo systemctl restart knightwatch-reviewer.service`
 
 Mind the host memory budget: each unit's `reviewer` + `dind` mem_limits sum
 toward the box's total — keep headroom for production Plow.
