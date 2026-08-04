@@ -44,8 +44,14 @@ ExecStartPre=/bin/bash lib/render-compose.sh
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 # Graceful stop on shutdown/restart — avoids the SIGKILL (exit 137) the reviewers
 # took when the host reboot tore the daemon down underneath them. `stop` (not
-# `down`) preserves containers/networks so the next `up` is fast.
-ExecStop=/usr/bin/docker compose stop
+# `down`) preserves containers/networks so the next `up` is fast. Self-healing:
+# there's no ExecStopPre (systemd has no such directive), and a stop can land
+# with no compose file on disk — right after a `git pull` deploy untracks it
+# and before the next start's ExecStartPre has rendered it (reboot, or a bare
+# `systemctl restart docker` mid-window). Without the render-if-absent guard,
+# `docker compose stop` fails outright there and the containers take the exact
+# SIGKILL this unit exists to prevent.
+ExecStop=/bin/bash -c '[ -f docker-compose.yml ] || bash lib/render-compose.sh; exec /usr/bin/docker compose stop'
 # A first boot with images absent pulls docker:27-dind (and the reviewer image
 # if not yet built by the deploy); give compose room before systemd calls the
 # start a failure.
