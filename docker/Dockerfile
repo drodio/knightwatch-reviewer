@@ -47,7 +47,7 @@ ARG CODEX_CLI_VERSION=0.144.1
 # `# shellcheck source=` lines are directives for external linting, not runs.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git ca-certificates curl gnupg coreutils procps python3 python3-venv \
-      sqlite3 ffmpeg \
+      python3-yaml sqlite3 ffmpeg \
  && curl -fsSL "https://github.com/jqlang/jq/releases/download/jq-${JQ_VERSION}/jq-linux-amd64" -o /usr/local/bin/jq \
  && chmod +x /usr/local/bin/jq \
  && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb" -o /tmp/gh.deb \

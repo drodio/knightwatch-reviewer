@@ -106,10 +106,7 @@ grep -q 'KWR_CLONE_ROOT' "$SANDBOX/out.yml" \
 echo "  4: output parses as YAML..."
 python3 - "$SANDBOX/out.yml" <<'PY' || fail "rendered compose is not valid YAML"
 import sys
-try:
-    import yaml
-except ImportError:
-    sys.exit(0)   # pyyaml absent: skip rather than fail the suite
+import yaml
 with open(sys.argv[1]) as fh:
     doc = yaml.safe_load(fh)
 assert "services" in doc and doc["services"], "no services rendered"
