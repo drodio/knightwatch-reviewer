@@ -118,7 +118,20 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 
 **Redeploying onto this fleet.conf migration.** `docker-compose.yml` is generated (`just fleet`) and no longer tracked in git, so `git pull` deletes the working-tree file the moment the merge commit lands — until a render runs, `docker compose` (including systemd's `ExecStop`) has no file to act on. In order:
 
-1. **Author `docker/secrets/fleet.conf` first**, while the old tracked compose file is still on disk: `cp docker/secrets.example/fleet.conf docker/secrets/fleet.conf`, then edit it to list every account **currently running** — a file naming fewer units than are up will make `docker compose up -d --remove-orphans` tear down the missing ones. On the production host today that's 5 units, `codex-account-a` … `codex-account-e`, worker ids 1-5. A missing `fleet.conf` fails loudly at render time (`render-compose: FATAL: no fleet.conf …`) by design; it does not silently render an empty fleet.
+1. **Author `docker/secrets/fleet.conf` first**, while the old tracked compose file is still on disk. Write it out directly rather than copying `docker/secrets.example/fleet.conf` — that example is delivered by the very `git pull` in step 3, so it does not exist on the deployed checkout yet. It must name every account **currently running**; a file listing fewer units than are up will make `docker compose up -d --remove-orphans` tear down the missing ones. On the production host today that is these five rows verbatim:
+
+   ```sh
+   cat > docker/secrets/fleet.conf <<'EOF'
+   # <worker-id>  <codex-account-dir, relative to docker/secrets/>
+   1  codex-account-a
+   2  codex-account-b
+   3  codex-account-c
+   4  codex-account-d
+   5  codex-account-e
+   EOF
+   ```
+
+   A missing `fleet.conf` fails loudly at render time (`render-compose: FATAL: no fleet.conf …`) by design; it does not silently render an empty fleet.
 2. **Retire any deployed `docker-compose.override.yml`**, still ahead of the render. Port **every** mount it declares into `docker/secrets/config.env` — the clone root into `KID_ROOT`, any other index into `KID_EXTRA_MOUNTS` (see [kid prior-art](#kid-prior-art); on the production host today that is `KID_ROOT=/home/odio/services/kwr-repos` plus `KID_EXTRA_MOUNTS=/home/odio/Hacking/plow-kid`, and dropping the second one silently disables prior art on plow). Then delete the override — it stays gitignored so an uncleaned deployment doesn't trip the deploy preflight, but leaving it in place means compose keeps auto-merging a file the generator no longer expects. If the deployment also carries a `config.env.bak-kid`, check whether it holds kid wiring that needs porting alongside the override before deleting either. This is `config.env` **only** — the `repos.conf` edit belongs in step 5.
 3. `git pull && just fleet` as **one step**, never split across a pause — that pause is the no-compose-file window above.
 4. `./install.sh` — idempotent, and the only step that copies `systemd/*.service` into place + daemon-reloads. This migration *edits* the fleet unit (`ExecStartPre` renders the compose file before every `up`; `ExecStop` self-heals a missing one). Skip it and step 5 restarts the **pre-migration** unit with no signal that anything is missing — step 3 already left a compose file on disk, so the next `up` succeeds and the render-before-up guarantee simply never lands.
