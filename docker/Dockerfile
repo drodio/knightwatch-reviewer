@@ -17,6 +17,9 @@ ARG DOCKER_CLI_VERSION=27.3.1
 # died at db-setup with "unknown flag: --env-file" → "databases not ready" → a
 # guaranteed false "🧪 Tests failed" on every PR. v5.1.x matches the dev host's
 # compose line, so the reviewer runs what plow is actually tested against.
+# knightwatch-reviewer's OWN suite needs it too: render-compose-smoke.sh accepts
+# the generated file with `docker compose config` (client-side, no daemon), so
+# this stays required even if no reviewed repo drives compose.
 ARG COMPOSE_VERSION=5.1.4
 # jq: PINNED to a static 1.7.x binary instead of bookworm's apt 1.6. plow's
 # containers/plow-starter/start.sh gates agent startup on a readiness loop —

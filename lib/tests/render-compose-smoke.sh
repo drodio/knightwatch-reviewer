@@ -33,6 +33,10 @@ valid() { docker compose -f "$SANDBOX/out.yml" config --quiet || fail "$1"; }
 count() { grep -cF "$1" "$SANDBOX/out.yml"; }  # 2 == "on every unit"
 
 echo "=== render-compose smoke ==="
+# Named separately so a host missing the plugin gets its own diagnosis rather
+# than reading as invalid generator output (docker/Dockerfile records the dep).
+docker compose version >/dev/null 2>&1 \
+    || fail "the docker compose plugin is required to validate the render"
 
 # --- 1. non-consecutive units: a commented row is excluded, not renumbered ---
 echo "  1: rendered structure..."
@@ -45,7 +49,13 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
              'WORKER_ID: "4"' 'network_mode: "service:dind-4"' "depends_on: [dind-4]" \
              "claims:/shared" "reviewer4-local:/local" "dind4-lib:/var/lib/docker" \
              "./secrets/codex-account-d:/root/.codex" \
-             "./secrets/claude-standards:/root/.claude:ro" "name: kwr_claims" "GENERATED"; do
+             "./secrets/repos.conf:/shared/repos.conf:ro" \
+             "./secrets/config.env:/root/.kwr/config.env:ro" \
+             "./secrets/repo-env:/root/.kwr/repo-env:ro" \
+             "./secrets/claude-standards:/root/.claude:ro" \
+             '${HOME}/services/kwr-config:/root/.kwr-config:ro' \
+             "KWR_CONFIG_DIR: /root/.kwr-config" "REPO_ENV_DIR: /root/.kwr/repo-env" \
+             "external: true" "name: kwr_claims" "GENERATED"; do
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
 grep -qF codex-account-c "$SANDBOX/out.yml" && fail "a commented fleet.conf row was rendered"
@@ -55,14 +65,15 @@ grep -qF codex-account-c "$SANDBOX/out.yml" && fail "a commented fleet.conf row 
 
 # --- 2. kid wiring is conditional on KID_ROOT -------------------------------
 echo "  2: kid wiring conditional..."
-KID="$SANDBOX/kid-index"; EXTRA="$SANDBOX/plow-kid"; mkdir -p "$KID" "$EXTRA"
+KID="$SANDBOX/kid-index"; EXTRA="$SANDBOX/plow-kid"; EXTRA2="$SANDBOX/second-kid"
+mkdir -p "$KID" "$EXTRA" "$EXTRA2"
 render "1  codex-account-a
 2  codex-account-b" "KID_ROOT=$KID
-KID_EXTRA_MOUNTS=$EXTRA" || fail "kid render exited non-zero: $(cat "$SANDBOX/render.log")"
+KID_EXTRA_MOUNTS=\"$EXTRA $EXTRA2\"" || fail "kid render exited non-zero: $(cat "$SANDBOX/render.log")"
 valid "kid-wired render is not a valid compose project"
 # The extra index mounts at the same host and container path (one KID_PATHS
 # value serves both namespaces).
-for want in "KWR_CLONE_ROOT: /kwr" "$KID:/kwr:ro" "$EXTRA:$EXTRA:ro"; do
+for want in "KWR_CLONE_ROOT: /kwr" "$KID:/kwr:ro" "$EXTRA:$EXTRA:ro" "$EXTRA2:$EXTRA2:ro"; do
     [ "$(count "$want")" = 2 ] || fail "expected '$want' on both units, got $(count "$want")"
 done
 
@@ -98,10 +109,17 @@ assert_render_fails "absent account dir" "1  codex-account-zzz"
 assert_render_fails "KID_ROOT names a missing dir" "1  codex-account-a" "KID_ROOT=$SANDBOX/nope"
 assert_render_fails "KID_EXTRA_MOUNTS without KID_ROOT" "1  codex-account-a" \
     "KID_EXTRA_MOUNTS=$EXTRA"
+assert_render_fails "KID_EXTRA_MOUNTS names a missing dir" "1  codex-account-a" "KID_ROOT=$KID
+KID_EXTRA_MOUNTS=$SANDBOX/nope"
 for away in claude-standards config.env repos.conf; do  # the silent-degradation mounts
     mv "$SECRETS/$away" "$SANDBOX/mount-away"
     assert_render_fails "absent $away" "1  codex-account-a"
     mv "$SANDBOX/mount-away" "$SECRETS/$away"
 done
+
+rm -f "$SANDBOX/fleet.conf" "$SANDBOX/out.yml"
+SECRETS_DIR="$SECRETS" FLEET_CONF="$SANDBOX/fleet.conf" CONFIG_ENV="$SANDBOX/config.env" \
+    OUT="$SANDBOX/out.yml" bash "$REPO_ROOT/lib/render-compose.sh" >/dev/null 2>&1 \
+    && fail "absent fleet.conf: render succeeded but must FATAL (README § migration step 1)"
 
 echo "PASS: render-compose smoke"
