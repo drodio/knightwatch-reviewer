@@ -120,13 +120,13 @@ for away in claude-standards config.env repos.conf; do  # the silent-degradation
     mv "$SANDBOX/mount-away" "$SECRETS/$away"
 done
 
-# On the MESSAGE, not just the exit code: without the generator's own guard the
-# read redirection fails non-zero anyway, so an exit-only assert stays green
-# while the README-cited diagnosis (§ migration step 1) is gone.
+# On the FATAL token, not just the exit code: without the generator's own guard
+# the read redirection fails non-zero anyway, so an exit-only assert stays green.
+# Token, not prose — the wording is free to change (REVIEW.md § no prose-pinning).
 rm -f "$SANDBOX/fleet.conf" "$SANDBOX/out.yml"
 run_render && fail "absent fleet.conf: render succeeded but must FATAL"
-grep -q 'FATAL: no fleet.conf' "$SANDBOX/render.log" \
-    || fail "absent fleet.conf: died without the README-cited FATAL: $(cat "$SANDBOX/render.log")"
+grep -q 'FATAL' "$SANDBOX/render.log" \
+    || fail "absent fleet.conf: died without the generator's guard: $(cat "$SANDBOX/render.log")"
 [ ! -f "$SANDBOX/out.yml" ] || fail "absent fleet.conf: left a partial docker-compose.yml"
 
 echo "PASS: render-compose smoke"
