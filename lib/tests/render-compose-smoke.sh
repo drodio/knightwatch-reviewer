@@ -130,6 +130,33 @@ grep -q 'FATAL' "$SANDBOX/render.log" \
     || fail "absent fleet.conf: died without the generator's guard: $(cat "$SANDBOX/render.log")"
 [ ! -f "$SANDBOX/out.yml" ] || fail "absent fleet.conf: left a partial docker-compose.yml"
 
+# Couple the gate's deployment-env scrub to the env block rendered here. The
+# scrub list was hand-derived and drifted three rounds running (each new var
+# found by inspection, one round at a time), which is the same silent-reopen
+# the scrub exists to prevent — one level up. Every PATH-shaped key the
+# deployment exports must carry an explicit hermeticity decision: scrubbed in
+# the justfile, or named here as exempt. Adding a var to x-reviewer-env without
+# either now fails HERE, next to the token-by-token env assertions above,
+# instead of as a baffling cross-subsystem smoke failure months later.
+echo "  env-scrub coupling: every path-shaped x-reviewer-env key is scrubbed or exempted..."
+# Exempt, with the reason — these are NOT hermeticity holes:
+#   STATE_DIR / REPOS_DIR / WORKDIRS_DIR — every smoke exports its own sandboxed
+#   value, so an ambient one is overwritten before any consumer reads it.
+SCRUB_EXEMPT="STATE_DIR REPOS_DIR WORKDIRS_DIR"
+SCRUB_LINE=$(grep -E '^[[:space:]]*unset [A-Z_]' "$REPO_ROOT/justfile" | head -1)
+[ -n "$SCRUB_LINE" ] || fail "justfile has no deployment-env 'unset' line — the gate-wide scrub is gone"
+# Path-shaped = the rendered value begins with '/'. DOCKER_HOST (tcp://…) and
+# WORKER_ID (a number) are excluded by that test, not by an exemption.
+render "1  codex-account-a" || fail "env-scrub coupling: render failed: $(cat "$SANDBOX/render.log")"
+env_keys=$(awk '/^x-reviewer-env:/{f=1;next} /^[^ ]/{f=0} f && /^  [A-Z_]+:[[:space:]]*\//{sub(/:.*/,"",$1); print $1}' "$SANDBOX/out.yml")
+[ -n "$env_keys" ] || fail "env-scrub coupling: parsed zero path-shaped keys from x-reviewer-env — the parser drifted from the render"
+for key in $env_keys; do
+    case " $SCRUB_LINE $SCRUB_EXEMPT " in
+        *" $key "*) ;;
+        *) fail "x-reviewer-env exports '$key' but the justfile neither scrubs it nor lists it in SCRUB_EXEMPT — a deployment env var with no hermeticity decision" ;;
+    esac
+done
+
 # Legacy flat layout must FAIL LOUD, never fall back. A fallback would re-mount
 # repos.conf as a FILE — reinstating the stale-inode bug this layout removes.
 echo "  legacy flat repos.conf: refuses to render, names the migration..."
