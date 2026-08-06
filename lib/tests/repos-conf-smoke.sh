@@ -250,6 +250,33 @@ if STATE_DIR="$SAND_STATE" KWR_CONFIG_REPO="x" KWR_CONFIG_DIR="$SAND_STATE/nope-
 fi
 rm -rf "$KWRCFG"; rm -f "$SAND_STATE/repos.conf"
 
+# ----- Contract B7: REPOS_CONF_FILE override --------------------------------
+# The container fleet reads the manifest from a DIRECTORY mount so operator
+# edits apply without a restart (docker pins a FILE bind-mount to its inode, so
+# an editor's rename-over leaves every container on the pre-edit manifest with
+# no error). The override is what lets the mount point live off $STATE_DIR;
+# the default must keep working for the host/systemd path.
+echo "  B7: REPOS_CONF_FILE overrides the default \$STATE_DIR/repos.conf path..."
+B7_DIR="$(mktemp -d)"
+mkdir -p "$B7_DIR/state" "$B7_DIR/manifest"
+cat > "$B7_DIR/state/repos.conf" <<'CONF'
+REPOS=("decoy/should-not-load")
+CONF
+cat > "$B7_DIR/manifest/repos.conf" <<'CONF'
+REPOS=("override/wins")
+CONF
+out=$(STATE_DIR="$B7_DIR/state" REPOS_CONF_FILE="$B7_DIR/manifest/repos.conf" \
+    bash -c "set -euo pipefail; . '$LOADER'; printf '%s' \"\${REPOS[*]}\"")
+[ "$out" = "override/wins" ] \
+    || { echo "FAIL B7: REPOS_CONF_FILE ignored — expected 'override/wins', got '$out'"; exit 1; }
+
+echo "  B7b: unset REPOS_CONF_FILE still loads \$STATE_DIR/repos.conf (back-compat)..."
+out=$(STATE_DIR="$B7_DIR/state" \
+    bash -c "set -euo pipefail; . '$LOADER'; printf '%s' \"\${REPOS[*]}\"")
+[ "$out" = "decoy/should-not-load" ] \
+    || { echo "FAIL B7b: default manifest path not honored, got '$out'"; exit 1; }
+rm -rf "$B7_DIR"
+
 # ----- Contract C: every production consumer goes through the loader ------
 echo "  C: every production consumer sources lib/tracked-repos.sh..."
 # The manifest loader can be reached directly OR transitively via
@@ -457,4 +484,4 @@ if [ -e "$SAND_INSTALL3/repos.conf" ]; then
     exit 1
 fi
 
-echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
+echo "  PASS (A0: privacy-fence; A1-A4: shape; B1-B4: loader; B7: REPOS_CONF_FILE override; C: $(echo "${#CONSUMERS[@]}") consumers; D.1: bootstrap-exits; D.2: divergent-full-install; D.3: rawcopy-rejected)"
