@@ -48,7 +48,7 @@ test:
     # daemon) and STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own
     # sandboxed value). Per-command overrides in a scenario are unaffected; this
     # only clears what leaked in from the environment.
-    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT
 
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On

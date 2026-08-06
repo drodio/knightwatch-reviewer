@@ -145,11 +145,29 @@ echo "  env-scrub coupling: every path-shaped x-reviewer-env key is scrubbed or 
 SCRUB_EXEMPT="STATE_DIR REPOS_DIR WORKDIRS_DIR"
 SCRUB_LINE=$(grep -E '^[[:space:]]*unset [A-Z_]' "$REPO_ROOT/justfile" | head -1)
 [ -n "$SCRUB_LINE" ] || fail "justfile has no deployment-env 'unset' line — the gate-wide scrub is gone"
+# Render WITH kid wiring: KWR_CLONE_ROOT is emitted only when KID_ROOT is set,
+# and into the per-service `environment:` block rather than the anchor — so a
+# bare render cannot see it, and neither could a parse anchored to
+# x-reviewer-env. Production sets KID_ROOT, so that is the config the
+# scrub-or-exempt decision has to hold for.
+render "1  codex-account-a" "KID_ROOT=$KID" \
+    || fail "env-scrub coupling: render failed: $(cat "$SANDBOX/render.log")"
 # Path-shaped = the rendered value begins with '/'. DOCKER_HOST (tcp://…) and
-# WORKER_ID (a number) are excluded by that test, not by an exemption.
-render "1  codex-account-a" || fail "env-scrub coupling: render failed: $(cat "$SANDBOX/render.log")"
-env_keys=$(awk '/^x-reviewer-env:/{f=1;next} /^[^ ]/{f=0} f && /^  [A-Z_]+:[[:space:]]*\//{sub(/:.*/,"",$1); print $1}' "$SANDBOX/out.yml")
-[ -n "$env_keys" ] || fail "env-scrub coupling: parsed zero path-shaped keys from x-reviewer-env — the parser drifted from the render"
+# WORKER_ID (a number) are excluded by that test, not by an exemption. Scan the
+# EFFECTIVE env at any indent — the anchor block AND every per-service
+# environment: block — so a conditionally emitted var can't slip the check.
+env_keys=$(awk '
+    /^x-reviewer-env:/            {inenv=1; next}
+    /^[[:space:]]*environment:/   {inenv=1; next}
+    /^[^[:space:]]/               {inenv=0}
+    inenv && /^[[:space:]]+[A-Z_]+:[[:space:]]*\// {
+        sub(/^[[:space:]]+/, ""); sub(/:.*/, ""); print
+    }
+' "$SANDBOX/out.yml" | sort -u)
+[ -n "$env_keys" ] || fail "env-scrub coupling: parsed zero path-shaped env keys — the parser drifted from the render"
+# The var that exposed the anchor-only blind spot; pin it so the parse can't regress to it.
+printf '%s\n' "$env_keys" | grep -qx KWR_CLONE_ROOT \
+    || fail "env-scrub coupling: KWR_CLONE_ROOT not seen — the parse no longer reaches per-service environment: blocks"
 for key in $env_keys; do
     case " $SCRUB_LINE $SCRUB_EXEMPT " in
         *" $key "*) ;;
