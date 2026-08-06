@@ -34,14 +34,11 @@ export LOG="$STATE_DIR/org-sync.log"
 # unreachable. The value is identical to that default, so scenarios are unchanged;
 # the variable stays in scope for the test body's own reads/writes.
 CONF="$STATE_DIR/repos.conf"
-# ...but the sandbox boundary the export used to provide still has to exist:
-# org-sync.sh and the loader both fall through to ${REPOS_CONF_FILE:-…}, and
-# this branch puts REPOS_CONF_FILE in every reviewer container's env. KWR
-# reviews itself, so a self-review's `just test` would otherwise run these
-# scenarios against the LIVE manifest (scenario 1 asserts zero gh calls on
-# empty ORGS; the real manifest has ORGS set). Scenario 14 sets it per-command,
-# which is unaffected. Unlike LOCK, this one IS exported by the deployment.
-unset REPOS_CONF_FILE
+# The sandbox boundary the export used to provide is NOT re-created here: the
+# deployment-env scrub (REPOS_CONF_FILE, CONFIG_ENV_FILE, …) lives once in the
+# justfile's `test` recipe, next to its GIT_CONFIG_GLOBAL detach, because a
+# dozen smokes source this loader and a per-suite unset only fixes the suite
+# that remembers to add it. Scenario 14's per-command override still applies.
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
 

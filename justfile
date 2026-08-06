@@ -23,6 +23,21 @@ test:
     # enqueue at the source (--no-verify does NOT skip post-commit).
     export GIT_CONFIG_GLOBAL=/dev/null
 
+    # Same class, different source: detach the suite from the DEPLOYMENT's env.
+    # The reviewer containers export these operator-config paths (see
+    # lib/render-compose.sh's x-reviewer-env), and every consumer resolves them
+    # as ${VAR:-<sandbox default>} — so with one ambient, a smoke that writes
+    # its fixture to the default path silently reads the LIVE file instead and
+    # fails pointing at whatever subsystem owns that file. Not hypothetical:
+    # knightwatch reviews itself, so a self-review runs this gate with them set.
+    # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
+    # manifest loader and a thirteenth would silently reopen the hole. Scoped to
+    # the operator-config PATHS — DOCKER_HOST stays (render-compose-smoke needs
+    # a live daemon), and STATE_DIR/REPOS_DIR/WORKDIRS_DIR stay because each
+    # smoke exports its own sandboxed value. Per-command overrides in a scenario
+    # are unaffected; this only clears what leaked in from the environment.
+    unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR
+
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
     # smokes use declare -A in 12 files, so bash 4+ is required. On
     # macOS, `brew install bash` and ensure /opt/homebrew/bin is first
