@@ -34,6 +34,14 @@ export LOG="$STATE_DIR/org-sync.log"
 # unreachable. The value is identical to that default, so scenarios are unchanged;
 # the variable stays in scope for the test body's own reads/writes.
 CONF="$STATE_DIR/repos.conf"
+# ...but the sandbox boundary the export used to provide still has to exist:
+# org-sync.sh and the loader both fall through to ${REPOS_CONF_FILE:-…}, and
+# this branch puts REPOS_CONF_FILE in every reviewer container's env. KWR
+# reviews itself, so a self-review's `just test` would otherwise run these
+# scenarios against the LIVE manifest (scenario 1 asserts zero gh calls on
+# empty ORGS; the real manifest has ORGS set). Scenario 14 sets it per-command,
+# which is unaffected. Unlike LOCK, this one IS exported by the deployment.
+unset REPOS_CONF_FILE
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
 
@@ -426,22 +434,24 @@ rm -f "$STATE_DIR/config.env"
 # those two resolve different files the manual set comes back empty, every
 # manually listed repo falls into AUTO, and org-sync clones it (or dies on a
 # non-canonical origin) every hour. Pin it with a DIVERGENT pair: the override
-# lists acme/foo as manual, the stale default does not. Reading the wrong one
-# puts foo in the auto file.
+# lists acme/pinned as manual, the stale default does not. Reading the wrong one
+# puts pinned in the auto file AND clones it — "pinned" is deliberately a name no
+# earlier scenario checked out, so the clone probe is reachable (reusing "foo"
+# made it vacuous: scenario 2 already left a matching-origin checkout behind).
 echo "  scenario 14: REPOS_CONF_FILE overrides the default manifest path..."
 write_baseline_conf '"acme"'                      # stale default: no acme/foo
 MANIFEST_DIR="$TMPDIR/manifest"; mkdir -p "$MANIFEST_DIR"
 cat > "$MANIFEST_DIR/repos.conf" <<'CONF'
-REPOS=("acme/foo")
-declare -A KID_PATHS=(["acme/foo"]="/var/foo")
-declare -A SOURCE_PATHS=(["acme/foo"]="/var/foo")
+REPOS=("acme/pinned")
+declare -A KID_PATHS=(["acme/pinned"]="/var/pinned")
+declare -A SOURCE_PATHS=(["acme/pinned"]="/var/pinned")
 ORGS=("acme")
 CONF
 rm -f "$AUTO_CONF"
-MOCK_GH_LIST_acme="foo" REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf" run_sync \
+MOCK_GH_LIST_acme="pinned" REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf" run_sync \
     || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG"; exit 1; }
-if grep -q '"acme/foo"' "$AUTO_CONF" 2>/dev/null; then
-    echo "FAIL scenario 14: acme/foo landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
+if grep -q '"acme/pinned"' "$AUTO_CONF" 2>/dev/null; then
+    echo "FAIL scenario 14: acme/pinned landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
     cat "$AUTO_CONF"; exit 1
 fi
 n=$(count_gh "repo clone")
