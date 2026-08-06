@@ -27,7 +27,11 @@ export LOG="$STATE_DIR/org-sync.log"
 # LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
 # flows through (STATE_DIR is sandboxed), exercising the shared-lock
 # path systemd uses.
-export CONF="$STATE_DIR/repos.conf"
+# Fixture path only — org-sync no longer takes a CONF override; it reads
+# REPOS_CONF_FILE, whose single owner is lib/tracked-repos.sh. This is just
+# where the scenarios write the manifest, and it matches that default.
+MANIFEST="$STATE_DIR/repos.conf"
+# Deployment-env scrub lives once in the justfile's `test` recipe.
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
 
@@ -107,7 +111,7 @@ count_gh() { grep -c "^GH $1" "$STUB_GH_LOG" 2>/dev/null || true; }
 # overrides, customize only what matters per scenario.
 write_baseline_conf() {
     local orgs="${1:-}"
-    cat > "$CONF" <<CONF
+    cat > "$MANIFEST" <<CONF
 REPOS=("manual/keep")
 declare -A KID_PATHS=(["manual/keep"]="/var/manual")
 declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
@@ -177,7 +181,7 @@ expected_conf='REPOS=("manual/keep")
 declare -A KID_PATHS=(["manual/keep"]="/var/manual")
 declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
 ORGS=("acme")'
-[ "$(cat "$CONF")" = "$expected_conf" ] || { echo "FAIL scenario 2: repos.conf was modified — split-file boundary breached"; diff <(echo "$expected_conf") "$CONF"; exit 1; }
+[ "$(cat "$MANIFEST")" = "$expected_conf" ] || { echo "FAIL scenario 2: repos.conf was modified — split-file boundary breached"; diff <(echo "$expected_conf") "$MANIFEST"; exit 1; }
 [ -f "$AUTO_CONF" ] || { echo "FAIL scenario 2: $AUTO_CONF not created"; exit 1; }
 expected=$'acme/bar\nacme/foo\nmanual/keep'
 got=$(resolved_repos)
@@ -276,7 +280,7 @@ if grep -q 'acme/beta' "$AUTO_CONF"; then echo "FAIL scenario 8: 'acme/beta' sti
 # must keep `acme/special` out of the auto file so the operator's
 # custom KID_PATHS wins (no shadow-on-source-order).
 echo "  scenario 9: same-org manual entry — auto file excludes it, custom KID_PATHS wins..."
-cat > "$CONF" <<'CONF'
+cat > "$MANIFEST" <<'CONF'
 REPOS=("acme/special")
 declare -A KID_PATHS=(["acme/special"]="/var/operator/custom-special")
 declare -A SOURCE_PATHS=(["acme/special"]="/var/operator/custom-special")
@@ -415,4 +419,41 @@ grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG" || { echo "FAIL scenario 13: exp
 [ "$(auto_sha)" = "$SHA_BEFORE" ] || { echo "FAIL scenario 13: auto file mutated despite fail-loud abort"; exit 1; }
 rm -f "$STATE_DIR/config.env"
 
-echo "  PASS (13 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
+# --- Scenario 14: REPOS_CONF_FILE is the manifest owner, not $STATE_DIR ------
+# org-sync computes its MANUAL set from the manifest AND sources the loader. If
+# those two resolve different files the manual set comes back empty, every
+# manually listed repo falls into AUTO, and org-sync clones it (or dies on a
+# non-canonical origin) every hour. Pin it with a DIVERGENT pair: the override
+# lists acme/pinned as manual, the stale default does not. Reading the wrong one
+# puts pinned in the auto file AND clones it — "pinned" is deliberately a name no
+# earlier scenario checked out, so the clone probe is reachable (reusing "foo"
+# made it vacuous: scenario 2 already left a matching-origin checkout behind).
+echo "  scenario 14: REPOS_CONF_FILE overrides the default manifest path..."
+write_baseline_conf '"acme"'                      # stale default: no acme/foo
+MANIFEST_DIR="$TMPDIR/manifest"; mkdir -p "$MANIFEST_DIR"
+cat > "$MANIFEST_DIR/repos.conf" <<'CONF'
+REPOS=("acme/pinned")
+declare -A KID_PATHS=(["acme/pinned"]="/var/pinned")
+declare -A SOURCE_PATHS=(["acme/pinned"]="/var/pinned")
+ORGS=("acme")
+CONF
+rm -f "$AUTO_CONF"
+# Deliver the override through config.env, NOT the command env. This is the
+# shape that discriminates: the bug was an ORDERING one — org-sync resolved the
+# manifest path at the top of the file, before config.env was sourced — so a
+# per-command REPOS_CONF_FILE was already bound by then and passed on the broken
+# code too. Only a config.env-delivered value is unset at that point.
+cat > "$STATE_DIR/config.env" <<ENV
+export REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf"
+ENV
+MOCK_GH_LIST_acme="pinned" run_sync \
+    || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+if grep -q '"acme/pinned"' "$AUTO_CONF" 2>/dev/null; then
+    echo "FAIL scenario 14: acme/pinned landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
+    cat "$AUTO_CONF"; exit 1
+fi
+n=$(count_gh "repo clone")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 14: manual repo was cloned ($n) — manifest path owners diverged"; cat "$STUB_GH_LOG"; exit 1; }
+rm -f "$AUTO_CONF" "$STATE_DIR/config.env"
+
+echo "  PASS (14 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
