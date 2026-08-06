@@ -27,7 +27,13 @@ export LOG="$STATE_DIR/org-sync.log"
 # LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
 # flows through (STATE_DIR is sandboxed), exercising the shared-lock
 # path systemd uses.
-export CONF="$STATE_DIR/repos.conf"
+# CONF deliberately NOT exported — same reason as LOCK above. Exporting it
+# short-circuits org-sync's own `${CONF:-${REPOS_CONF_FILE:-$STATE_DIR/repos.conf}}`
+# resolution, so every scenario would run against a path the test picked rather
+# than the production default, and the REPOS_CONF_FILE term would be structurally
+# unreachable. The value is identical to that default, so scenarios are unchanged;
+# the variable stays in scope for the test body's own reads/writes.
+CONF="$STATE_DIR/repos.conf"
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
 
@@ -415,4 +421,31 @@ grep -q 'FATAL: KWR_CONFIG_REPO set but' "$LOG" || { echo "FAIL scenario 13: exp
 [ "$(auto_sha)" = "$SHA_BEFORE" ] || { echo "FAIL scenario 13: auto file mutated despite fail-loud abort"; exit 1; }
 rm -f "$STATE_DIR/config.env"
 
-echo "  PASS (13 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
+# --- Scenario 14: REPOS_CONF_FILE is the manifest owner, not $STATE_DIR ------
+# org-sync computes its MANUAL set from the manifest AND sources the loader. If
+# those two resolve different files the manual set comes back empty, every
+# manually listed repo falls into AUTO, and org-sync clones it (or dies on a
+# non-canonical origin) every hour. Pin it with a DIVERGENT pair: the override
+# lists acme/foo as manual, the stale default does not. Reading the wrong one
+# puts foo in the auto file.
+echo "  scenario 14: REPOS_CONF_FILE overrides the default manifest path..."
+write_baseline_conf '"acme"'                      # stale default: no acme/foo
+MANIFEST_DIR="$TMPDIR/manifest"; mkdir -p "$MANIFEST_DIR"
+cat > "$MANIFEST_DIR/repos.conf" <<'CONF'
+REPOS=("acme/foo")
+declare -A KID_PATHS=(["acme/foo"]="/var/foo")
+declare -A SOURCE_PATHS=(["acme/foo"]="/var/foo")
+ORGS=("acme")
+CONF
+rm -f "$AUTO_CONF"
+MOCK_GH_LIST_acme="foo" REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf" run_sync \
+    || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG"; exit 1; }
+if grep -q '"acme/foo"' "$AUTO_CONF" 2>/dev/null; then
+    echo "FAIL scenario 14: acme/foo landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
+    cat "$AUTO_CONF"; exit 1
+fi
+n=$(count_gh "repo clone")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 14: manual repo was cloned ($n) — manifest path owners diverged"; cat "$STUB_GH_LOG"; exit 1; }
+rm -f "$AUTO_CONF"
+
+echo "  PASS (14 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
