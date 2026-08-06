@@ -259,16 +259,23 @@ rm -rf "$KWRCFG"; rm -f "$SAND_STATE/repos.conf"
 echo "  B7: REPOS_CONF_FILE overrides the default \$STATE_DIR/repos.conf path..."
 B7_DIR="$(mktemp -d)"
 mkdir -p "$B7_DIR/state" "$B7_DIR/manifest"
+# The decoy sets a MARKER, not just a REPOS value. Comparing REPOS alone can't
+# catch the real regression shape — a loader that sources the default AND the
+# override — because the override's wholesale `REPOS=(...)` clobbers the decoy
+# either way. The marker is order-independent: if the default file is sourced
+# at all, it survives, and a stale default's KID_PATHS/SOURCE_PATHS/ORGS
+# leaking into the container's view is precisely what the override must prevent.
 cat > "$B7_DIR/state/repos.conf" <<'CONF'
+DECOY_WAS_SOURCED=1
 REPOS=("decoy/should-not-load")
 CONF
 cat > "$B7_DIR/manifest/repos.conf" <<'CONF'
 REPOS=("override/wins")
 CONF
 out=$(STATE_DIR="$B7_DIR/state" REPOS_CONF_FILE="$B7_DIR/manifest/repos.conf" \
-    bash -c "set -euo pipefail; . '$LOADER'; printf '%s' \"\${REPOS[*]}\"")
-[ "$out" = "override/wins" ] \
-    || { echo "FAIL B7: REPOS_CONF_FILE ignored — expected 'override/wins', got '$out'"; exit 1; }
+    bash -c "set -euo pipefail; . '$LOADER'; printf '%s|%s' \"\${REPOS[*]}\" \"\${DECOY_WAS_SOURCED:-unset}\"")
+[ "$out" = "override/wins|unset" ] \
+    || { echo "FAIL B7: expected 'override/wins|unset', got '$out' (a 'set' marker means the default manifest was ALSO sourced)"; exit 1; }
 
 echo "  B7b: unset REPOS_CONF_FILE still loads \$STATE_DIR/repos.conf (back-compat)..."
 out=$(STATE_DIR="$B7_DIR/state" \

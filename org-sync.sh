@@ -30,7 +30,11 @@ LOG="${LOG:-$STATE_DIR/org-sync.log}"
 # otherwise split the timer run's lock from an operator shell run's.
 LOCK="${LOCK:-$STATE_DIR/org-sync.lock}"
 REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
-CONF="${CONF:-$STATE_DIR/repos.conf}"
+# Same manifest the loader reads. org-sync sources lib/tracked-repos.sh, so
+# resolving this path independently would make the two disagree the moment
+# REPOS_CONF_FILE is set: MANUAL would come back empty and every manually
+# listed repo would fall into AUTO to be cloned. One owner of the path.
+CONF="${CONF:-${REPOS_CONF_FILE:-$STATE_DIR/repos.conf}}"
 AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
 

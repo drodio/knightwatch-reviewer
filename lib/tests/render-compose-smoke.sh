@@ -139,8 +139,14 @@ printf '%s\n' "1  codex-account-a" > "$SANDBOX/fleet.conf"
 printf '\n' > "$SANDBOX/config.env"
 rm -f "$SANDBOX/out.yml"
 run_render && fail "legacy flat repos.conf: render succeeded but must die"
-grep -q 'manifest/repos.conf' "$SANDBOX/render.log" \
-    || fail "legacy flat repos.conf: die message omits the migration path: $(cat "$SANDBOX/render.log")"
+# Assert on text UNIQUE to the legacy die. Matching just "manifest/repos.conf"
+# also matches the existence loop's not-found message, so the test would pass
+# with the legacy branch unreachable or deleted outright — which is exactly how
+# it first shipped unreachable.
+grep -q 'legacy flat layout' "$SANDBOX/render.log" \
+    || fail "legacy flat repos.conf: died without the legacy guard (unreachable or removed): $(cat "$SANDBOX/render.log")"
+grep -q 'mv .*manifest/repos.conf' "$SANDBOX/render.log" \
+    || fail "legacy flat repos.conf: die message omits the migration command: $(cat "$SANDBOX/render.log")"
 mv "$SANDBOX/mount-away" "$SECRETS/manifest/repos.conf"; rm -f "$SECRETS/repos.conf"
 
 echo "PASS: render-compose smoke"

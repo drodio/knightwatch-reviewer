@@ -122,7 +122,7 @@ fi
 # REPOS-only require_repos guard below instead).
 require_tracked_targets() {
     [ "${#REPOS[@]}" -ge 1 ] || [ "${#ORGS[@]}" -ge 1 ] || {
-        echo "FATAL: no tracked targets — populate $STATE_DIR/repos.conf with REPOS and/or ORGS (or set them in config.env)" >&2
+        echo "FATAL: no tracked targets — populate $REPOS_CONF_FILE with REPOS and/or ORGS (or set them in config.env)" >&2
         exit 1
     }
 }
