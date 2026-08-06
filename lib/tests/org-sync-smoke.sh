@@ -438,7 +438,15 @@ declare -A SOURCE_PATHS=(["acme/pinned"]="/var/pinned")
 ORGS=("acme")
 CONF
 rm -f "$AUTO_CONF"
-MOCK_GH_LIST_acme="pinned" REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf" run_sync \
+# Deliver the override through config.env, NOT the command env. This is the
+# shape that discriminates: the bug was an ORDERING one — org-sync resolved the
+# manifest path at the top of the file, before config.env was sourced — so a
+# per-command REPOS_CONF_FILE was already bound by then and passed on the broken
+# code too. Only a config.env-delivered value is unset at that point.
+cat > "$STATE_DIR/config.env" <<ENV
+export REPOS_CONF_FILE="$MANIFEST_DIR/repos.conf"
+ENV
+MOCK_GH_LIST_acme="pinned" run_sync \
     || { echo "FAIL scenario 14: org-sync exited non-zero"; cat "$LOG"; exit 1; }
 if grep -q '"acme/pinned"' "$AUTO_CONF" 2>/dev/null; then
     echo "FAIL scenario 14: acme/pinned landed in the auto file — org-sync read the stale default manifest, not REPOS_CONF_FILE"
@@ -446,6 +454,6 @@ if grep -q '"acme/pinned"' "$AUTO_CONF" 2>/dev/null; then
 fi
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 14: manual repo was cloned ($n) — manifest path owners diverged"; cat "$STUB_GH_LOG"; exit 1; }
-rm -f "$AUTO_CONF"
+rm -f "$AUTO_CONF" "$STATE_DIR/config.env"
 
 echo "  PASS (14 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
