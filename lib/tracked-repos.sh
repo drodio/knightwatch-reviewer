@@ -49,7 +49,9 @@ CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-${STATE_DIR}/config.env}"
 # a temp file and renames over the original — a new inode the mount never sees.
 # The host file then looks edited while every container serves the pre-edit
 # manifest, with no error. A directory mount re-resolves the name on each open,
-# so an operator edit lands on the next tick. Defaults to $STATE_DIR/repos.conf
+# so an operator edit lands without recreating containers — within one
+# enumerate window (ENUMERATE_SECS, 60s), since the shared queue.json can carry
+# already-enumerated specs for that long. Defaults to $STATE_DIR/repos.conf
 # (unchanged for the host/systemd path).
 REPOS_CONF_FILE="${REPOS_CONF_FILE:-${STATE_DIR}/repos.conf}"
 if [ -f "$CONFIG_ENV_FILE" ];             then . "$CONFIG_ENV_FILE"; fi

@@ -107,7 +107,7 @@ done < "$FLEET_CONF"
 # and its natural remedy, touching an empty manifest/repos.conf, renders fine
 # and brings the fleet up reviewing NOTHING with their real manifest stranded.
 if [ -f "$SECRETS_DIR/repos.conf" ] && [ ! -f "$SECRETS_DIR/manifest/repos.conf" ]; then
-    die "$SECRETS_DIR/repos.conf is the legacy flat layout — the manifest is a DIRECTORY mount now so operator edits apply on the next tick instead of needing every container recreated. Migrate with: mkdir -p $SECRETS_DIR/manifest && mv $SECRETS_DIR/repos.conf $SECRETS_DIR/manifest/repos.conf"
+    die "$SECRETS_DIR/repos.conf is the legacy flat layout — the manifest is a DIRECTORY mount now so operator edits apply within one enumerate window instead of needing every container recreated. Migrate with: mkdir -p $SECRETS_DIR/manifest && mv $SECRETS_DIR/repos.conf $SECRETS_DIR/manifest/repos.conf"
 fi
 for f in config.env manifest/repos.conf; do
     [ -f "$SECRETS_DIR/$f" ] \

@@ -17,8 +17,10 @@
 # and renames over the original — a new inode the mount never sees. The host
 # file then looks edited while every container keeps serving the pre-edit
 # manifest, with no error anywhere. A directory mount re-resolves the name on
-# each open, so an operator edit takes effect on the next 30s tick with no
-# container restart.
+# each open, so an operator edit takes effect with no container restart —
+# within one enumerate window (ENUMERATE_SECS, 60s) rather than instantly: the
+# shared queue.json is refreshed on that floor, so specs enumerated just before
+# the edit can still dispatch for up to a window afterward.
 #
 # config.env is deliberately NOT in manifest/: it carries GH_TOKEN and mounts
 # to the root-only /root/.kwr/config.env so the unprivileged reviewer-test

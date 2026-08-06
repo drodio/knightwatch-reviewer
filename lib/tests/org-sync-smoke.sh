@@ -27,18 +27,11 @@ export LOG="$STATE_DIR/org-sync.log"
 # LOCK NOT overridden — production default $STATE_DIR/org-sync.lock
 # flows through (STATE_DIR is sandboxed), exercising the shared-lock
 # path systemd uses.
-# CONF deliberately NOT exported — same reason as LOCK above. Exporting it
-# short-circuits org-sync's own `${CONF:-${REPOS_CONF_FILE:-$STATE_DIR/repos.conf}}`
-# resolution, so every scenario would run against a path the test picked rather
-# than the production default, and the REPOS_CONF_FILE term would be structurally
-# unreachable. The value is identical to that default, so scenarios are unchanged;
-# the variable stays in scope for the test body's own reads/writes.
-CONF="$STATE_DIR/repos.conf"
-# The sandbox boundary the export used to provide is NOT re-created here: the
-# deployment-env scrub (REPOS_CONF_FILE, CONFIG_ENV_FILE, …) lives once in the
-# justfile's `test` recipe, next to its GIT_CONFIG_GLOBAL detach, because a
-# dozen smokes source this loader and a per-suite unset only fixes the suite
-# that remembers to add it. Scenario 14's per-command override still applies.
+# Fixture path only — org-sync no longer takes a CONF override; it reads
+# REPOS_CONF_FILE, whose single owner is lib/tracked-repos.sh. This is just
+# where the scenarios write the manifest, and it matches that default.
+MANIFEST="$STATE_DIR/repos.conf"
+# Deployment-env scrub lives once in the justfile's `test` recipe.
 export AUTO_CONF="$STATE_DIR/repos.conf.auto"
 mkdir -p "$STATE_DIR"
 
@@ -118,7 +111,7 @@ count_gh() { grep -c "^GH $1" "$STUB_GH_LOG" 2>/dev/null || true; }
 # overrides, customize only what matters per scenario.
 write_baseline_conf() {
     local orgs="${1:-}"
-    cat > "$CONF" <<CONF
+    cat > "$MANIFEST" <<CONF
 REPOS=("manual/keep")
 declare -A KID_PATHS=(["manual/keep"]="/var/manual")
 declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
@@ -188,7 +181,7 @@ expected_conf='REPOS=("manual/keep")
 declare -A KID_PATHS=(["manual/keep"]="/var/manual")
 declare -A SOURCE_PATHS=(["manual/keep"]="/var/manual")
 ORGS=("acme")'
-[ "$(cat "$CONF")" = "$expected_conf" ] || { echo "FAIL scenario 2: repos.conf was modified — split-file boundary breached"; diff <(echo "$expected_conf") "$CONF"; exit 1; }
+[ "$(cat "$MANIFEST")" = "$expected_conf" ] || { echo "FAIL scenario 2: repos.conf was modified — split-file boundary breached"; diff <(echo "$expected_conf") "$MANIFEST"; exit 1; }
 [ -f "$AUTO_CONF" ] || { echo "FAIL scenario 2: $AUTO_CONF not created"; exit 1; }
 expected=$'acme/bar\nacme/foo\nmanual/keep'
 got=$(resolved_repos)
@@ -287,7 +280,7 @@ if grep -q 'acme/beta' "$AUTO_CONF"; then echo "FAIL scenario 8: 'acme/beta' sti
 # must keep `acme/special` out of the auto file so the operator's
 # custom KID_PATHS wins (no shadow-on-source-order).
 echo "  scenario 9: same-org manual entry — auto file excludes it, custom KID_PATHS wins..."
-cat > "$CONF" <<'CONF'
+cat > "$MANIFEST" <<'CONF'
 REPOS=("acme/special")
 declare -A KID_PATHS=(["acme/special"]="/var/operator/custom-special")
 declare -A SOURCE_PATHS=(["acme/special"]="/var/operator/custom-special")

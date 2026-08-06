@@ -40,14 +40,13 @@ test:
     # scrub: it is a token-exposure boundary first and a hermeticity one second.
     #
     # Scrubbed HERE, once, rather than per-suite: twelve smokes source the
-    # manifest loader and a thirteenth would silently reopen the hole. The list
-    # is pinned against x-reviewer-env by render-compose-smoke.sh, which fails if
-    # a new deployment var is added without a scrub-or-exempt decision — the same
-    # way git-global-hook-isolation-smoke.sh pins the GIT_CONFIG_GLOBAL detach
-    # above. Exempt by design: DOCKER_HOST (render-compose-smoke needs a live
-    # daemon) and STATE_DIR/REPOS_DIR/WORKDIRS_DIR (each smoke exports its own
-    # sandboxed value). Per-command overrides in a scenario are unaffected; this
-    # only clears what leaked in from the environment.
+    # manifest loader and a thirteenth would silently reopen the hole. Kept as a
+    # plain list rather than a test-enforced coupling to x-reviewer-env: at one
+    # operator and six path-shaped vars, a var added without a scrub entry is
+    # cheap to notice and fix when observed. Not scrubbed: DOCKER_HOST
+    # (render-compose-smoke needs a live daemon) and STATE_DIR/REPOS_DIR/
+    # WORKDIRS_DIR (each smoke exports its own sandboxed value). Per-command
+    # overrides in a scenario are unaffected; this only clears the environment.
     unset REPOS_CONF_FILE CONFIG_ENV_FILE REPO_ENV_DIR KWR_CONFIG_DIR LOCAL_STATE_DIR KWR_CLONE_ROOT
 
     # macOS /bin/bash is frozen at 3.2 (no associative arrays). The
