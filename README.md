@@ -118,7 +118,7 @@ Fully reconciling these into one shared host/container seam is the tracked follo
 
 **Redeploying onto this fleet.conf migration.** `docker-compose.yml` is generated (`just fleet`) and no longer tracked in git, so `git pull` deletes the working-tree file the moment the merge commit lands — until a render runs, `docker compose` (including systemd's `ExecStop`) has no file to act on. In order:
 
-1. **Author `docker/secrets/fleet.conf` first**, while the old tracked compose file is still on disk. Write it out directly rather than copying `docker/secrets.example/fleet.conf` — that example is delivered by the very `git pull` in step 3, so it does not exist on the deployed checkout yet. It must name every account **currently running**; a file listing fewer units than are up will make `docker compose up -d --remove-orphans` tear down the missing ones. On the production host today that is these five rows verbatim:
+1. **Author `docker/secrets/fleet.conf` first**, while the old tracked compose file is still on disk. Write it out directly rather than copying `docker/secrets.example/fleet.conf` — that example is delivered by the very `git pull` in step 4, so it does not exist on the deployed checkout yet. It must name every account **currently running**; a file listing fewer units than are up will make `docker compose up -d --remove-orphans` tear down the missing ones. On the production host today that is these five rows verbatim:
 
    ```sh
    cat > docker/secrets/fleet.conf <<'EOF'
