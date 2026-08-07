@@ -26,6 +26,8 @@
 # shared seam: any future caller of this endpoint goes through this
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"  # defines gh() — the rate-limit seam
+
 fetch_issue_comments() {
     local repo="$1" pr_num="$2" raw err
     # Capture gh's stderr (instead of 2>/dev/null) so a fetch failure logs its

@@ -73,6 +73,7 @@ jq -n \
 # then invoke pipeline.py against a fresh checkout at $SHA. The post-
 # pipeline gh-posting step is deliberately skipped — we only want the rendered review.
 . "$LIB_DIR/state-io.sh"
+. "$LIB_DIR/gh-retry.sh"   # gh_retry — replay spends the same PAT as the fleet
 . "$LIB_DIR/run-dir.sh"
 . "$LIB_DIR/scratch.sh"
 . "$LIB_DIR/knightwatch-config.sh"

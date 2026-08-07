@@ -40,6 +40,8 @@ mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 # org-sync.sh sources conventions.sh (kwr-config pull helper) before tracked-repos.
 cp "$PROJECT_ROOT/lib/conventions.sh" "$REVIEWER_LIB_DIR/conventions.sh"
+cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"    # org-sync sources it (gh_retry + the pause)
+cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"    # gh-retry.sh sources it
 
 # Provide a flock(1) stub on platforms where the binary is missing
 # (notably brew on macOS, which excludes flock from util-linux). The
@@ -455,5 +457,23 @@ fi
 n=$(count_gh "repo clone")
 [ "$n" -eq 0 ] || { echo "FAIL scenario 14: manual repo was cloned ($n) — manifest path owners diverged"; cat "$STUB_GH_LOG"; exit 1; }
 rm -f "$AUTO_CONF" "$STATE_DIR/config.env"
+# --- Scenario 15: GitHub rate-limit pause — skip the tick, touch nothing -------
+# The manifest rewrite below the discovery loop is unconditional, so a paused
+# tick must not reach it: a short or empty DISCOVERED would be published as the
+# org's full coverage and erase every repo that was never listed. Same
+# no-mutation contract as scenario 7's listing failure.
+echo "  scenario 15: github rate-limited — tick skipped, auto file untouched, no clone..."
+write_baseline_conf '"acme"'
+echo 'REPOS+=("prior/auto")' > "$AUTO_CONF"
+SHA_BEFORE=$(auto_sha)
+: > "$LOG"
+printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+MOCK_GH_LIST_acme=$'alpha\nbeta' run_sync || { echo "FAIL scenario 15: org-sync must exit 0 on a paused tick (a back-off is not a failure)"; cat "$LOG"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+assert_auto_unchanged "$SHA_BEFORE"
+n=$(count_gh "repo clone")
+[ "$n" -eq 0 ] || { echo "FAIL scenario 15: expected 0 clones while rate-limited, got $n"; exit 1; }
+grep -q 'github rate-limited — skipping org sync' "$LOG" || { echo "FAIL scenario 15: expected the rate-limit skip log line"; cat "$LOG"; exit 1; }
 
-echo "  PASS (14 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud)"
+
+echo "  PASS (15 scenarios: empty-orgs-truncates-stale, discover+clone, idempotent-rerun, existing-checkout-reuse, wrong-origin-fail-loud, spoof-host-fail-loud, gh-list-failure-no-mutation, auto-prune, same-org-manual-excluded, clone-failure-no-mutation, lock-held-defers, kwr-config-overlay, broken-config-fail-loud, repos-conf-file-override, rate-limit-skips-tick)"

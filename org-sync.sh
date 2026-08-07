@@ -33,6 +33,13 @@ REVIEWER_LIB_DIR="${REVIEWER_LIB_DIR:-$STATE_DIR/lib}"
 AUTO_CONF="${AUTO_CONF:-$STATE_DIR/repos.conf.auto}"
 CONFIG_ENV_FILE="${CONFIG_ENV_FILE:-$STATE_DIR/config.env}"
 
+# gh_retry + the fleet pause: org-sync is a timer entrypoint spending the same
+# shared PAT, so its listings/clones must stamp the pause and honor it. Sourced
+# BEFORE this script's own log() below — gh-retry.sh pulls in state-io.sh, whose
+# log() writes to $LOG_FILE, and org-sync writes to $LOG. Sourcing after would
+# silently redirect every line of this script's output away from its own log.
+. "$REVIEWER_LIB_DIR/gh-retry.sh"
+
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 mkdir -p "$STATE_DIR"
 
@@ -112,6 +119,16 @@ while IFS= read -r r; do [ -n "$r" ] && MANUAL[$r]=1; done <<< "$MANUAL_LIST"
 # Per-org listing failures are FATAL — silently treating a failed
 # list as "no repos" would erase that org's auto coverage on rewrite.
 declare -A DISCOVERED=()
+# Honor the pause like the sibling timers — BEFORE the loop, and skip the whole
+# tick. A mid-loop break would fall through to the manifest rewrite below with a
+# partial DISCOVERED, and this file's own guard two comments up says why that is
+# unacceptable: a short list is written out as the org's full coverage, erasing
+# the repos that were never listed. Nothing is written on this path.
+if gh_pause_active; then
+    log "github rate-limited — skipping org sync"
+    exit 0
+fi
+
 for org in "${ORGS[@]}"; do
     log "discovering org=$org"
     if ! out=$(gh repo list "$org" --source --no-archived --limit 1000 --json name --jq '.[].name' 2>>"$LOG"); then

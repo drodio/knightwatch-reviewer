@@ -258,6 +258,7 @@ cp "$REPO_ROOT/lib/bakeoff-parsers.sh"  "$REVIEWER_LIB_DIR/bakeoff-parsers.sh"
 cp "$REPO_ROOT/lib/bakeoff-store.sh"    "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 cp "$REPO_ROOT/lib/pr-enumerate.sh"     "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 cp "$REPO_ROOT/lib/gh-retry.sh"         "$REVIEWER_LIB_DIR/gh-retry.sh"
+cp "$REPO_ROOT/lib/state-io.sh"         "$REVIEWER_LIB_DIR/state-io.sh"   # gh-retry.sh sources it (gh_note_rate_limit)
 
 # Single tracked repo.
 cat > "$STATE_DIR/repos.conf" <<'CONF'
@@ -1100,9 +1101,16 @@ cat > "$DATE_STUB_DIR/date" <<'DATESTUB'
 # Pass through -d / -v invocations to the real date binary — these are
 # the renderer's window-math calls (e.g. date -u -d "14 days ago" ...).
 # Only intercept the bare `date -u +%FT%TZ` form used for walk timestamps.
+#
+# Epoch (`date +%s`) passes through too. The counter models "which walk
+# timestamp is this", so consuming a slot for an unrelated epoch read makes the
+# watermark assertion depend on how many times anything else asked for the time
+# — the fleet-pause gate at the top of the run is one such caller. Passing it
+# through keeps this scenario testing walk-timestamp ORDER, which is its stated
+# contract, rather than total date-call count.
 for arg in "$@"; do
     case "$arg" in
-        -d|-v|--date=*) exec /bin/date "$@" ;;
+        -d|-v|--date=*|+%s) exec /bin/date "$@" ;;
     esac
 done
 count=$(cat "$DATE_STUB_COUNTER" 2>/dev/null || echo 0)

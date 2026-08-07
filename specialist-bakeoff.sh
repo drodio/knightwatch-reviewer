@@ -86,6 +86,27 @@ fi
 # specialist-bakeoff-smoke scenario 31's date stub — the walk's first bare-date
 # call is the load-bearing walk_started_at watermark and must stay first.
 discovery_pass_start=$(date -u -d now +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Honor the GitHub rate-limit pause before the first fetch. This run is the
+# heaviest single consumer of the PAT — its own header notes hundreds of
+# commit/PR fetches across ~17 repos, and five of its call sites go through
+# gh_api_retry — so it is also a pause PRODUCER.
+#
+# Plain log-and-exit, same as the host pollers: a missed fire costs nothing.
+# WINDOW_HOURS=16 across two fires gives 32h/day of forward capacity against 24h
+# of real time, and the watermark never skips a comment, so the next fire burns
+# down the skipped one losslessly (see pr-reviewer-bakeoff.service). A wait
+# branch here would spend the walk's own TimeoutStartSec budget to avoid a loss
+# that the unit is already designed to absorb.
+#
+# Deliberately BELOW the watermark above: gh_pause_active calls `date`, and the
+# stanza above owns this run's first bare-date call (scenario 31). Still above
+# the first fetch, which is all the gate needs.
+if gh_pause_active; then
+    log "github rate-limited — skipping bakeoff run"
+    exit 0
+fi
+
 if ! active_list=$(repos_with_bot_activity_since "$discovery_floor" "$BOT_USER" 2>>"$LOG_FILE"); then
     log "PARTIAL RUN: batched bot-activity discovery failed (GitHub API budget?) — $OUT_FILE not updated"
     echo "PARTIAL: bot-activity discovery failed; $OUT_FILE not updated" >&2
@@ -95,6 +116,20 @@ declare -A active_repos=()
 while IFS= read -r _ar; do [ -n "$_ar" ] && active_repos["$_ar"]=1; done <<< "$active_list"
 
 for repo in "${REPOS[@]}"; do
+    # Mid-walk pause: stop at the repo boundary rather than paginating the rest
+    # against a throttled token. Lossless — an unwalked repo's watermark is not
+    # advanced, so the next fire picks it up exactly where this one stopped.
+    if gh_pause_active; then
+        # Count it as a fetch failure so the existing PARTIAL gate owns the
+        # outcome: a truncated walk must NOT rewrite $OUT_FILE. Without this the
+        # run falls through to the reporter and publishes a snapshot whose
+        # per-repo coverage silently mixes this run with older ones, logging
+        # "OK" and exiting 0 — while a SINGLE fetch failure twelve lines below
+        # is considered serious enough to refuse the overwrite.
+        fetch_failures=$(( fetch_failures + 1 ))
+        log "github rate-limited mid-walk — stopping the walk here (PARTIAL: $OUT_FILE left untouched)"
+        break
+    fi
     # Skip ORG repos with no bot activity since the floor (batched discovery
     # above). Stamp the skipped repo's walks row 0/0 at the discovery pass time
     # so a stale row can't pin the next run's floor (min last_walked_at) or
@@ -140,7 +175,7 @@ for repo in "${REPOS[@]}"; do
     fi
     log "scanning $repo since $window_floor through $window_ceiling (rewalk_floor=$rewalk_floor last_walked=${last_walked:-never})..."
 
-    comments_json=$(gh_api_retry --paginate \
+    comments_json=$(gh api --paginate \
         "repos/$repo/issues/comments?since=$window_floor" \
         2>>"$LOG_FILE" | jq -s 'add // []') \
         || { log "WARN: gh api comments failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
@@ -151,7 +186,7 @@ for repo in "${REPOS[@]}"; do
     # next run. Each consumer still applies its own floor and other predicates.
     comments_capped=$(printf '%s' "$comments_json" | jq --arg c "$window_ceiling" '[.[] | select(.created_at <= $c)]')
 
-    trusted_set=$(gh_api_retry --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
+    trusted_set=$(gh api --paginate "repos/$repo/collaborators?affiliation=direct" 2>>"$LOG_FILE" \
         | jq -rs '[.[][]] | map(select(.permissions.push == true) | .login) | .[]') \
         || { log "WARN: gh api collaborators failed for $repo, skipping"; fetch_failures=$((fetch_failures + 1)); repo_failures=$((repo_failures + 1)); continue; }
 
@@ -191,7 +226,7 @@ for repo in "${REPOS[@]}"; do
         # cited paths with PR touched paths and sum LOC across matched paths.
         cache_key="${repo}#${pr_num}"
         if [[ -z "${pr_paths_cache[$cache_key]+set}" ]]; then
-            if pr_files_tsv=$(gh_api_retry --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
+            if pr_files_tsv=$(gh api --paginate "repos/$repo/pulls/$pr_num/files" --jq '.[] | [.filename, .additions, .deletions] | @tsv' 2>>"$LOG_FILE"); then
                 pr_files_cache["$cache_key"]="$pr_files_tsv"
                 pr_paths_cache["$cache_key"]=$(printf '%s\n' "$pr_files_tsv" | cut -f1)
                 pr_files_ok_cache["$cache_key"]="1"
@@ -234,7 +269,7 @@ for repo in "${REPOS[@]}"; do
         if [[ -z "${pr_post_paths_cache[$post_review_key]+set}" ]]; then
             post_paths=""
             post_paths_ok=1
-            if commits_json=$(gh_api_retry --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
+            if commits_json=$(gh api --paginate "repos/$repo/pulls/$pr_num/commits" 2>>"$LOG_FILE"); then
                 # committer.date (not author.date) is the "landed on branch" timestamp —
                 # rebased or prewritten commits keep their original author.date but get
                 # a fresh committer.date when they land, which is what "after the review"
@@ -243,7 +278,7 @@ for repo in "${REPOS[@]}"; do
                     | jq -rs --arg t "$created_at" 'add // [] | .[] | select(.commit.committer.date > $t) | .sha')
                 while IFS= read -r sha; do
                     [ -z "$sha" ] && continue
-                    if commit_json=$(gh_api_retry "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
+                    if commit_json=$(gh api "repos/$repo/commits/$sha" 2>>"$LOG_FILE"); then
                         # Emit both filename AND previous_filename so a post-review
                         # rename (commit changes old.py → new.py) still matches a
                         # probe citing the pre-rename path.

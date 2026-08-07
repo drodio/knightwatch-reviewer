@@ -88,6 +88,10 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     # When set, no APPROVE log line is written so count_approves() sees
     # the failure as zero successful approves.
     if [ -n "${MOCK_FAIL_PR_REVIEW:-}" ]; then
+        # MOCK_PR_REVIEW_RATE_LIMITED makes the failure a rate limit rather than
+        # an ordinary one — the two now have different seen-marking contracts.
+        [ -n "${MOCK_PR_REVIEW_RATE_LIMITED:-}" ] \
+            && echo "gh: HTTP 403: API rate limit exceeded" >&2
         exit 1
     fi
     # Capture the approve invocation. The script passes:
@@ -107,6 +111,14 @@ elif [ "$1" = "pr" ] && [ "$2" = "review" ]; then
     # Use a sentinel to keep the body single-line in the log.
     body_oneline=$(printf '%s' "$body" | tr '\n' '|')
     echo "APPROVE repo=$repo pr=$pr_num body=$body_oneline" >> "$STUB_ACTIONS_LOG"
+    # MOCK_SIBLING_STAMPS_PAUSE simulates another host timer stamping the SHARED
+    # pause file in the window right after this approve succeeded. The pause file
+    # is fleet-shared, so global pause state says nothing about THIS call.
+    if [ -n "${MOCK_SIBLING_STAMPS_PAUSE:-}" ]; then
+        printf '%s\n' "$(( $(date +%s) + 300 ))" > "$STATE_DIR/gh-rate-limited-until"
+    fi
+    exit 0   # explicit: a trailing `[ … ] && …` would exit 1 whenever the var is
+             # unset, turning every ordinary successful approve into a failure
 elif [ "$1" = "api" ]; then
     # MOCK_GH_API_FAIL=1 simulates an API outage on the comments fetch.
     # The script's pipefail-aware `gh api ... | jq` should surface this
@@ -166,7 +178,7 @@ mkdir -p "$REVIEWER_LIB_DIR"
 cp "$PROJECT_ROOT/lib/bootstrap.sh"     "$REVIEWER_LIB_DIR/bootstrap.sh"  # sources the core below
 cp "$PROJECT_ROOT/lib/auth.sh"          "$REVIEWER_LIB_DIR/auth.sh"
 cp "$PROJECT_ROOT/lib/gh-retry.sh"      "$REVIEWER_LIB_DIR/gh-retry.sh"   # auth.sh sources it
-cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"
+cp "$PROJECT_ROOT/lib/state-io.sh"      "$REVIEWER_LIB_DIR/state-io.sh"   # gh-retry.sh sources it too
 cp "$PROJECT_ROOT/lib/tracked-repos.sh" "$REVIEWER_LIB_DIR/tracked-repos.sh"
 cp "$PROJECT_ROOT/lib/gh-comments.sh"   "$REVIEWER_LIB_DIR/gh-comments.sh"
 cp "$PROJECT_ROOT/lib/pr-enumerate.sh"  "$REVIEWER_LIB_DIR/pr-enumerate.sh"
@@ -302,6 +314,49 @@ n=$(count_approves)
 # PR only for test-org/probe-repo), so a regression turns those red too —
 # but this dedicated scenario produces a clear "REPOS override clobbered"
 # diagnostic before the broader cascade.
+# --- Scenario 10b: a RATE-LIMITED approve must NOT be marked seen -------------
+# Scenario 10's contract — mark seen even on failure, so we don't retry forever —
+# is right for real outcomes. A rate limit is not an outcome: the request never
+# reached GitHub, so marking it seen silently drops a trusted human's /approve
+# and makes them re-post because WE were throttled. Assert it stays eligible and
+# actually goes through once the window clears.
+echo "  scenario 10b: rate-limited approve — left unseen, submitted after the pause..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+rm -f "$STATE_DIR/gh-rate-limited-until"
+printf '[{"id":1011,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_FAIL_PR_REVIEW=1 MOCK_PR_REVIEW_RATE_LIMITED=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 10b: expected 0 approves while rate-limited, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+[ -z "$(jq -r '."test-org/probe-repo#1#1011" // empty' "$APPROVES_SEEN_FILE")" ] \
+    || { echo "FAIL scenario 10b: rate-limited approve marked seen — a trusted human's /approve is silently dropped"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+# Clear the window; the next healthy tick must submit it (proving it wasn't lost).
+rm -f "$STATE_DIR/gh-rate-limited-until"
+run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 10b: expected the deferred approve to submit after the pause, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+
+# Scenario 10c: a SUCCESSFUL approve stays marked seen even when a sibling timer
+# stamps the shared pause immediately afterwards. This is the half 10b cannot
+# see — there the failure and the pause coincide, so a pause-ONLY gate passes it.
+# Here the approve succeeded, so keying on global pause state would leave the key
+# unseen and the next tick would post a SECOND approve plus a duplicate public
+# comment: irreversible and user-visible.
+echo "  scenario 10c: successful approve + sibling stamps the pause → still marked seen..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+rm -f "$STATE_DIR/gh-rate-limited-until"
+printf '[{"id":1012,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
+MOCK_TRUSTED_USERS="someuser" MOCK_SIBLING_STAMPS_PAUSE=1 run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 10c: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+[ -n "$(jq -r '."test-org/probe-repo#1#1012" // empty' "$APPROVES_SEEN_FILE")" ] \
+    || { echo "FAIL scenario 10c: a SUCCESSFUL approve was left unseen because a sibling stamped the pause — next tick would post a duplicate approve"; cat "$APPROVES_SEEN_FILE"; cat "$LOG_FILE"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+MOCK_TRUSTED_USERS="someuser" run_approve
+n=$(count_approves)
+[ "$n" -eq 0 ] || { echo "FAIL scenario 10c: rerun produced a DUPLICATE approve ($n this tick) — the successful approve was not retained as seen"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+rm -f "$STATE_DIR/gh-rate-limited-until"
+
 echo "  scenario 11: REPOS override is observed (not clobbered by hardcoded default)..."
 echo '{}' > "$APPROVES_SEEN_FILE"
 echo "[]" > "$MOCK_COMMENTS_FILE"
@@ -354,9 +409,14 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 14: expected 0 approves under indeterminate trust, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 grep -q "permission check failed (API error)" "$LOG_FILE" || { echo "FAIL scenario 14: expected permission-fetch-failure log line"; cat "$LOG_FILE"; exit 1; }
 [ -z "$(jq -r '."test-org/probe-repo#1#1014" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 14: deferred approve marked seen (permanently dropped) — must retry next tick"; cat "$APPROVES_SEEN_FILE"; exit 1; }
-# Recovery: a later tick with the API healthy approves it — proves it was not dropped.
+# Recovery: a LATER tick with the API healthy approves it — proves it was not
+# dropped. The stub's 403 above is worded as a rate limit, so it now also stamps
+# the fleet-wide pause; clearing it is what makes the next tick "later" rather
+# than "immediately after", which is exactly when a real recovery tick runs. The
+# invariant under test is unchanged: deferred, never permanently dropped.
+rm -f "$STATE_DIR/gh-rate-limited-until"
 MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (14 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
+echo "  PASS (16 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"

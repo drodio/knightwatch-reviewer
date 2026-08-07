@@ -48,6 +48,14 @@ _enumerate_graphql_query='query($q: String!, $after: String) {
   }
 }'
 
+# The rate-limit seam (defines gh()). It was once sourced inside
+# repos_with_bot_activity_since alone so enumerate_open_prs stayed unburdened;
+# that split ended when enumerate_open_prs also moved onto the wrapper — it is
+# the fleet's highest-volume GitHub caller (graphql is the loaded bucket at
+# ~30 pts/min vs core ~0), so a rate limit that surfaces here has to trip the
+# fleet-wide pause rather than being swallowed as a bare non-zero exit.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
+
 owner_in_orgs() {
     local owner="$1" o
     for o in "${ORGS[@]}"; do
@@ -146,9 +154,6 @@ _bot_activity_graphql_query='query($q: String!, $after: String) {
 # failure policy — specialist-bakeoff.sh fails loud (PARTIAL + exit) rather than
 # re-entering the per-repo fan-out this batched path exists to retire.
 repos_with_bot_activity_since() {
-    # Source gh_api_retry here, not at file scope, so only this discovery path
-    # carries the dependency — enumerate_open_prs callers stay unburdened.
-    . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"
     local since="$1" bot="$2" owner q raw after pieces=()
     declare -A _seen_owners=() _tracked=()
     for owner in "${ORGS[@]}"; do
@@ -158,9 +163,9 @@ repos_with_bot_activity_since() {
         after=""
         while :; do
             if [ -n "$after" ]; then
-                raw=$(gh_api_retry graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh api graphql -F q="$q" -F after="$after" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             else
-                raw=$(gh_api_retry graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
+                raw=$(gh api graphql -F q="$q" -f query="$_bot_activity_graphql_query" 2>/dev/null) || return 1
             fi
             pieces+=("$(printf '%s' "$raw" | jq -r '.data.search.nodes[]?.repository.nameWithOwner')") || return 1
             # endCursor only when there is a next page (else empty → stop). A

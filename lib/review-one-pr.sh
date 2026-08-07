@@ -348,6 +348,10 @@ cleanup_eyes() {
     if [ "$EYES_RESOLVED" = "true" ] || [ -z "$EYES_COMMENT_ID" ]; then
         return 0
     fi
+    # Full retry budget: this PATCH is addressed by $EYES_COMMENT_ID and writes a
+    # fixed body, so a retry after a blip the server already applied just rewrites
+    # the same comment. Only the POST that CREATES a placeholder is
+    # non-idempotent, and that one alone caps retries.
     gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method PATCH \
         -f body="${PLACEHOLDER_HEADER}${EYES_ABORT_BODY}" \
         >/dev/null 2>&1 || true
@@ -556,6 +560,7 @@ if ALL_ISSUE_COMMENTS=$(fetch_issue_comments "$REPO" "$PR_NUM"); then
     if [ -n "$EYES_COMMENT_ID" ]; then
         log "$PR_ID: reusing prior placeholder (comment id=$EYES_COMMENT_ID) — not stacking a new one"
     else
+        # Creates a comment — gh_retry's create guard refuses the retry (see there).
         EYES_COMMENT_ID=$(gh api "repos/$REPO/issues/$PR_NUM/comments" \
             --method POST \
             -f body="${PLACEHOLDER_HEADER}👀 reviewing — [sam's ai review bot](https://github.com/srosro/knightwatch-reviewer)" \
@@ -1704,6 +1709,10 @@ fi
 # public — strip any remaining workdir/<sibling-abs>/.siblings prefixes.
 COMMENT_BODY=$(scrub_review_paths "$COMMENT_BODY" "$REPO_DIR" SOURCE_PATHS)
 
+# The fleet's heaviest WRITE, and GitHub's secondary limits are driven mainly by
+# content creation — so it is the call most likely to 403. As a bare `gh` it was
+# the one call that could not stamp the pause, and a throttled post meant the next
+# tick re-ran the entire review (full LLM spend) to POST into the same throttle.
 if ! gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT_BODY"; then
     log "$PR_ID: gh pr comment FAILED — not updating state (next tick will retry)"
     rm -rf "$REPO_DIR"
@@ -1729,6 +1738,8 @@ fi
 # the real review is already up.
 EYES_RESOLVED=true
 if [ -n "$EYES_COMMENT_ID" ]; then
+    # Full retry budget: DELETE of a specific comment id is idempotent, and a
+    # blip stranding the 👀 placeholder on the PR is the worse outcome.
     if gh api "repos/$REPO/issues/comments/$EYES_COMMENT_ID" --method DELETE \
             >/dev/null 2>&1; then
         log "Posted review on $PR_ID (deleted placeholder id=$EYES_COMMENT_ID)"

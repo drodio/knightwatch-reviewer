@@ -124,6 +124,133 @@ mark_auth_offline() {
         || echo 0 > "$(auth_offline_file)"
 }
 
+# GitHub rate-limit pause protocol. Same shape as the codex quota pause above,
+# with one deliberate difference: it is shared across ACCOUNTS, not per-account.
+#
+# Codex quota is per-account — six containers, six independent budgets — so a
+# capped account pauses only itself and its siblings carry the queue. The GitHub
+# PAT is the opposite: every actor authenticates as the SAME user, so a throttle
+# applies to all of them at once. Namespacing this under pool/<WORKER_ID>/ would
+# pause the one container that noticed and leave the other five hammering the
+# already-throttled token — the amplification this file exists to stop. Hence
+# bare $STATE_DIR, no WORKER_ID.
+#
+# SCOPE, precisely: the file is shared by everyone who shares a $STATE_DIR. That
+# is the six reviewer containers (STATE_DIR=/shared, the kwr_claims volume) as
+# one group, and the host systemd timers (STATE_DIR=$HOME/.pr-reviewer) as
+# another. Those are different filesystems, so a pause does NOT currently cross
+# the host↔container boundary even though both groups spend the same PAT — the
+# containers' bulk consumption can throttle the token without the host timers
+# learning of it, and vice versa. Unifying the two needs a shared mount plus
+# per-unit env, tracked separately; do not read the sharing here as fleet-total.
+gh_pause_file() { printf '%s' "${STATE_DIR:-$HOME/.pr-reviewer}/gh-rate-limited-until"; }
+
+# True while the pause window is still in the future. Missing file reads as
+# epoch 0 (not paused) — mirrors quota_active. Unlike quota_active this coerces
+# an EMPTY read to 0 as well: quota_active's file has one owner, but this one is
+# written by any of six containers, so a reader can land mid-write. `head` on a
+# truncated file succeeds with empty output (the `||` fallback never fires), and
+# `[ N -lt "" ]` would abort with "integer expression expected" — read as NOT
+# paused, the worst possible default here.
+gh_pause_active() {
+    local until
+    until=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
+    [ "$(date +%s)" -lt "${until:-0}" ]
+}
+
+# Producer side: called by gh_api_retry when a `gh api` failure carries GitHub's
+# rate-limit signature. Emits the diagnostic the fleet previously had none of,
+# and stamps the fleet-wide pause.
+#
+# Why it re-queries instead of parsing the 403 body: GitHub words the PRIMARY
+# (hourly bucket spent) and SECONDARY (burst/concurrency/abuse) limits
+# identically — both are "API rate limit exceeded for user ID N". The only thing
+# that tells them apart is live bucket state, so read it:
+#     remaining == 0 → PRIMARY. Pause until that bucket's own reset.
+#     remaining  > 0 → SECONDARY. /rate_limit CANNOT report secondary limits, so
+#                      a rate-limit 403 with budget left IS the secondary signal.
+#                      Pause a short fixed window (GitHub documents ~60s as the
+#                      minimum backoff when no Retry-After is supplied).
+# If /rate_limit can't be reached at all, fall back to the secondary window
+# rather than skipping the pause — an unclassified rate-limit 403 still means
+# "stop calling".
+#
+# Probes ONLY on the transition into a pause. /rate_limit is exempt from PRIMARY
+# accounting, but that exemption does not extend to the secondary limits — which
+# are about request rate and concurrency, and are the case this classifies most
+# often. Without the short-circuit the in-flight tick keeps going after the first
+# 403, so every subsequent failing call would fire its own probe: N failures
+# become 2N requests, ×6 containers, during the exact window GitHub is telling
+# the fleet to back off. Re-stamping would also push the window forward on every
+# late straggler.
+gh_note_rate_limit() {
+    # Cheap exit: an already-paused fleet needs neither the probe nor the lock.
+    # (gh_retry refuses before reaching here too, so this covers direct callers.)
+    gh_pause_active && return 0
+
+    local now core_rem core_reset gql_rem gql_reset kind until
+    now=$(date +%s)
+    # PROBE OUTSIDE THE LOCK. It is the only slow thing here — a network call,
+    # made during a 403 cascade, when GitHub is most likely degraded and it can
+    # stall. Holding a lock across it would block every sibling behind whoever
+    # got there first, freezing workers that hold PR locks: a fleet-wide stall
+    # caused by the code meant to back off gracefully. Probing unlocked costs
+    # nothing extra — siblings already probe independently — and leaves the
+    # critical section below as pure filesystem work.
+    #
+    # `timeout … gh`, not `command gh`: timeout EXECS the binary, so the seam
+    # function is bypassed the same way, and it can't outlive its bound.
+    read -r core_rem core_reset gql_rem gql_reset <<<"$(timeout "${GH_RATE_LIMIT_PROBE_SECS:-15}" gh api rate_limit \
+        --jq '[.resources.core.remaining, .resources.core.reset,
+               .resources.graphql.remaining, .resources.graphql.reset] | @tsv' \
+        2>/dev/null | tr '\t' ' ')"
+    if [ "${core_rem:-1}" = 0 ]; then
+        kind="primary/core"; until="$core_reset"
+    elif [ "${gql_rem:-1}" = 0 ]; then
+        kind="primary/graphql"; until="$gql_reset"
+    else
+        kind="secondary"; until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
+    fi
+    # A stale/absent reset epoch would resume instantly and re-trip; floor it.
+    [ "${until:-0}" -gt "$now" ] 2>/dev/null || until=$(( now + ${GH_SECONDARY_PAUSE_SECS:-60} ))
+
+    # Now serialize only the read-compare-publish, which is milliseconds of
+    # filesystem work — so no timeout and no proceed-anyway branch is needed, and
+    # the merge is genuinely atomic rather than check-then-act.
+    #
+    # The merge keeps the LATER window. Serializing alone would make the FIRST
+    # writer win, which is wrong: if A classified a PRIMARY limit (pause to the
+    # bucket's real reset, up to an hour) and B's probe failed and fell back to
+    # 60s, B arriving first would resume the whole fleet ~59 minutes early into an
+    # exhausted bucket. For a back-off the more conservative answer is always
+    # safe, and keeping the later one makes the outcome independent of who won.
+    # `|| rc=$?`, not a bare `( … )`. A subshell in command position inherits the
+    # CALLER's errexit, and on the first writer `head` on the not-yet-existing
+    # pause file exits 1 — so under a `set -e` caller the section would abort
+    # there, before the log and before the write: no pause, no diagnostic. Putting
+    # it in a `||` list makes bash ignore -e for the whole extent, so publishing
+    # is a property of this function rather than of whoever called it.
+    local lockfile="$(gh_pause_file).lock" tmp existing rc=0
+    mkdir -p "$(dirname "$lockfile")"
+    (
+        exec {fd}>"$lockfile" || exit 1
+        flock "$fd"
+        existing=$(head -n1 "$(gh_pause_file)" 2>/dev/null)
+        if [ "${existing:-0}" -gt "$until" ] 2>/dev/null; then
+            log "gh rate limit ($kind) — a sibling already published a longer pause (until epoch $existing); keeping it"
+            exit 0
+        fi
+        log "gh rate limit ($kind) — core=${core_rem:-?}/5000 graphql=${gql_rem:-?}/5000 remaining; pausing the FLEET $(( until - now ))s (until epoch $until)"
+        # tmp + atomic rename so a reader never sees a half-written file. The temp
+        # must be unique per writer (mktemp, not $$ — the writers are separate
+        # containers, so PIDs collide).
+        tmp=$(mktemp "$(gh_pause_file).XXXXXX") || exit 1
+        printf '%s\n' "$until" > "$tmp" && mv -f "$tmp" "$(gh_pause_file)"
+    ) || rc=$?
+    return "$rc"
+}
+
+
 # One status clause per account registered under $STATE_DIR/pool/, for the
 # operator/author-facing paused messages. Reads only the stop-state files each
 # account already maintains — no extra bookkeeping, no cross-container probing.

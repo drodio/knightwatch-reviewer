@@ -83,7 +83,19 @@ Approved on @${USER}'s /${BOT_CMD_PREFIX}-approve request."
         # loud failure logging. Mark seen regardless of outcome — approved,
         # self-approval-skip, or failure — so we don't retry forever; the human
         # can re-post /<prefix>-approve for another attempt.
-        submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" || true
+        # "Regardless of outcome" above holds for real outcomes — approved,
+        # self-approval-skip, permission failure. A rate limit is not an outcome:
+        # the request was never delivered, so marking it seen would silently drop
+        # a trusted human's approve and make them re-post because WE were
+        # throttled. Branch on THIS call's result, not on global pause state: the
+        # pause file is shared by every host timer, so a sibling stamping one in
+        # the window after a SUCCESSFUL approve would leave the key unseen and
+        # the next tick would post a second approve plus a duplicate comment.
+        if ! submit_approval "$REPO" "$PR_NUM" "$BOT_USER" "$PR_AUTHOR" "$APPROVE_BODY" \
+           && gh_pause_active; then
+            log "$APPROVE_KEY: github rate-limited — leaving unseen to retry after the pause"
+            continue
+        fi
         seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY" \
             || log "$APPROVE_KEY: WARNING — seen_set failed after approval attempt; next tick may reprocess"
     done < <(echo "$COMMENTS" | jq -c '.[]')
@@ -119,6 +131,10 @@ rerequest_check() {
     RR_BODY="/${BOT_CMD_PREFIX}-review
 
 <sub>↳ auto-posted by the review bot because a reviewer was re-requested — not a manual request.</sub>${BOT_AUTO_TRIGGER_MARKER}"
+    # Via the wrapper so a throttled post stamps the pause. On failure this skips
+    # seen_set_value, so the event stays unseen and re-POSTs every 2-minute tick
+    # forever — as a bare `gh` that storm never armed the pause. No
+    # GH_API_RETRY_MAX=1 needed: the create-verb guard refuses the retry on argv.
     if gh pr comment "$PR_NUM" --repo "$REPO" --body "$RR_BODY" >/dev/null 2>&1; then
         seen_set_value "$RR_SEEN_FILE" "$PR_KEY" "$LATEST"
     else
@@ -126,9 +142,27 @@ rerequest_check() {
     fi
 }
 
+# Honor the GitHub rate-limit pause, like review-loop.sh. This poller is a
+# PRODUCER of that pause (its timeline fetch, comment fetch and trust check all
+# route through the gh seam), so without this gate it would stamp a pause and
+# then keep calling the same throttled PAT itself every two minutes. The pause
+# it writes is shared with the other HOST timers (same $HOME/.pr-reviewer state
+# dir), not with the containers — see lib/state-io.sh for that boundary.
+if gh_pause_active; then
+    log "github rate-limited — skipping poll tick"
+    exit 0
+fi
+
 ALL_PRS=$(enumerate_open_prs) || { log "enumerate_open_prs failed — skipping this tick"; exit 0; }
 
 while IFS= read -r PR_JSON; do
+    # A wrapped call inside this tick may have just stamped the pause. The outer
+    # gate only guards the NEXT tick, so without this the loop walks every
+    # remaining PR (~3 calls each) straight into the throttle it just detected.
+    if gh_pause_active; then
+        log "github rate-limited mid-tick — stopping the poll loop here"
+        break
+    fi
     REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
     PR_NUM=$(echo "$PR_JSON" | jq -r '.number')
     PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')

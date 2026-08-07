@@ -389,6 +389,7 @@ $BOT_DECLINE_MARKER
                     # an abuse-limit 403 would otherwise fail every tick behind
                     # an opaque message with no diagnosable cause.
                     DECLINE_ERR=$(mktemp)
+                    # Creates a comment — gh_retry's create guard refuses the retry.
                     if ! gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                         -f body="${DECLINE_HEADER}⏭ nothing to re-review — \`${PR_SHA:0:7}\` is already the reviewed head, so an incremental diff would be empty.
 
@@ -514,6 +515,14 @@ consume_queue() {
                 log "codex quota hit — stopping further claims this tick (paused until the reset window)"
                 break
             fi
+        fi
+        # Same seam, GitHub side — and NOT container-gated: a worker just drained
+        # may have stamped the shared rate-limit pause, and the host path spends
+        # the same PAT. Without this the dispatcher keeps claiming queued PRs whose
+        # workers each re-hit the throttle before the next top-of-tick gate.
+        if gh_pause_active; then
+            log "github rate-limited — stopping further claims this tick"
+            break
         fi
 
         # PROBE the per-PR flock: skip PRs already in-flight on another
