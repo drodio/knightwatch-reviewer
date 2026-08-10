@@ -128,6 +128,8 @@ refresh_queue() {
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
+    local _cand_user _cand_rc
+    local NOTICE_ELIGIBLE NOTICE_ERR
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
@@ -137,20 +139,6 @@ refresh_queue() {
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
         PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
-        # Author trust is derived HERE, before the comment-fetch gate below,
-        # because that gate now depends on it.
-        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
-        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE
-        # (403 rate-limit / 5xx / network — we could not verify). An
-        # indeterminate result must never collapse to "untrusted": that would
-        # silently drop a genuinely-trusted author's PR on a throttled lookup.
-        # Defer the whole PR to a later tick instead. This case used to be the
-        # worker's to own; it moved here with the check itself.
-        if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
-            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-            continue
-        fi
-        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
         PR_ID="${REPO}#${PR_NUM}"
 
         # In-flight guard: skip a PR whose review is already running. Eligibility
@@ -208,27 +196,56 @@ refresh_queue() {
         LAST_SEEN_UPDATED_AT=""
         [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
         # `updatedAt` unchanged means nothing this tick can act on: no new head,
-        # no new comment. Two ways to be idle:
-        #   - reviewed already, head unchanged (the original case), or
-        #   - not reviewABLE, because no trusted requester has asked.
-        # The KNOWN_SHA clause alone could never suppress the second: an
-        # unreviewable PR never gets a KNOWN_SHA, so it was re-enumerated and
-        # trust-checked every ~30s forever. That loop produced 46
-        # secondary-rate-limit events and ~96% of a million run dirs (#189).
-        # A vouch arrives as a comment, which moves updatedAt — so the override
-        # re-opens evaluation without anything polling for it.
+        # no new comment. The watermark is written ONLY on paths that decided
+        # "nothing to dispatch" — the already-reviewed skip below and the
+        # unreviewable drop — so a watermark equal to the current updatedAt is
+        # itself the statement "this exact PR state was fully evaluated and
+        # needed nothing." That makes the SHA comparison this gate used to carry
+        # redundant: any state we DID dispatch on leaves no watermark and is
+        # re-evaluated regardless.
         #
-        # AUTHOR_TRUSTED, not REQUESTER_TRUSTED: requester trust is only known
-        # AFTER the comment fetch below (a vouch is a comment), so using it here
-        # would be circular. Author trust is known from the enumeration payload.
-        # The substitution is sound because an unchanged updatedAt means no new
-        # comment exists — so there is no vouch this tick that the previous tick
-        # did not already see.
-        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ] \
-            && { { [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; } \
-                 || [ "$AUTHOR_TRUSTED" != true ]; }; then
+        # Dropping it is what closes the loop this branch is about. The old
+        # `KNOWN_SHA && PR_SHA = KNOWN_SHA` form could never suppress an
+        # UNREVIEWABLE PR, because such a PR never gets a KNOWN_SHA (the worker
+        # exits above allocate_run_dir, deliberately — #189). So it was
+        # re-enumerated and trust-checked every ~30s forever: 46
+        # secondary-rate-limit events and ~96% of a million run dirs.
+        #
+        # This gate must therefore sit ABOVE the author-trust lookup, not below
+        # it. A gate that needs trust to decide cannot save the trust call, and
+        # that call — one uncached core-API request per PR per tick per
+        # container — is the larger half of the loop's cost.
+        #
+        # Trade-off, deliberate: a PR watermarked while unreviewable stays
+        # suppressed until its next PR event, so granting its author push access
+        # does not retroactively re-open it. Any activity on the PR (a push, any
+        # comment, and specifically the /<prefix>-review vouch the notice below
+        # tells maintainers to post) moves updatedAt and re-opens it — and a PR
+        # with no activity has nothing to review anyway.
+        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
             continue
         fi
+
+        # Author trust, derived once per surviving PR and passed to the worker
+        # rather than re-derived there (two derivations of one fact drift).
+        # Below the idle-skip on purpose — see above.
+        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE
+        # (403 rate-limit / 5xx / network — we could not verify). An
+        # indeterminate result must never collapse to "untrusted": that would
+        # silently drop a genuinely-trusted author's PR on a throttled lookup.
+        #
+        # CONTAINER MODE ONLY, matching the gate it feeds. On the host path an
+        # untrusted author is reviewed anyway (just without the .env mirror and
+        # `just test`), so an unverifiable lookup there costs nothing and must
+        # not drop the PR — deferring in all modes would turn a sustained 403
+        # into a total host-path review stall instead of degraded-but-working
+        # reviews.
+        if [ "$AUTHOR_TRUST_RC" -eq 2 ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+            continue
+        fi
+        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
 
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
@@ -304,6 +321,7 @@ refresh_queue() {
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
+                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
                     # Trust gate: the slash-command trigger itself is
                     # honored regardless of who posted it (poll-pr-actions's
                     # re-request trigger and external requesters need to keep working), but the
@@ -312,7 +330,6 @@ refresh_queue() {
                     # has push access. Otherwise drive-by commenters could
                     # shape intent inference + aggregator on the
                     # auto-approve path.
-                    is_trusted_repo_author "$REPO" "$TRIGGER_USER"; TRIGGER_TRUST_RC=$?
                     if [ "$TRIGGER_TRUST_RC" -eq 2 ]; then
                         # Indeterminate → defer this PR: don't run without the
                         # trusted trigger prose and advance the cutoff past it
@@ -351,8 +368,41 @@ refresh_queue() {
         # Computed here, once, and carried in the spec — the worker used to
         # re-derive author trust independently, and two derivations of one fact
         # is how they drift.
+        # Asked separately from the trigger check above, and over ALL comments
+        # rather than post-cutoff ones, because it is a different question.
+        # A TRIGGER is a one-shot "re-review now" and is consumed by the review
+        # it causes. A VOUCH is a standing statement — "a human with push access
+        # judged this diff safe to read" — and nothing about finishing a review
+        # makes it untrue. Keying it off the trigger cutoff would expire it the
+        # moment it was honored: the maintainer vouches, one review runs,
+        # REVIEWED_AT_ISO advances past their comment, and the contributor's next
+        # push is silently unreviewable again with no signal to either party.
+        #
+        # Scanning the whole thread also makes it an OR over everyone who ever
+        # asked, never "latest requester wins" — otherwise an untrusted reply
+        # after a vouch (the notice below hands the author that exact command)
+        # would nullify it, permanently: no review runs, so the cutoff never
+        # advances, so every later tick re-reads the same last comment.
+        #
+        # Only asked when it can change the answer — a trusted author is already
+        # a trusted requester, so this costs nothing on the common path.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
-        [ "${TRIGGER_TRUST_RC:-1}" -eq 0 ] && REQUESTER_TRUSTED=true
+        if [ "$REQUESTER_TRUSTED" != true ]; then
+            # Distinct logins, newest first, stopping at the first with push
+            # access. Distinct so one user repeating the command costs one call;
+            # bot posts excluded so the notice below can never vouch for itself.
+            while IFS= read -r _cand_user; do
+                [ -n "$_cand_user" ] || continue
+                is_trusted_repo_author "$REPO" "$_cand_user"; _cand_rc=$?
+                if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; break; fi
+            # jq's `unique` SORTS, which would discard the newest-first order.
+            done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
+                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    '[.[] | select((.body | contains($mark) | not)
+                                   and (.body | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
+                     | sort_by(.created_at) | reverse | [.[].user.login]
+                     | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
+        fi
 
         # No trusted requester → this PR is not reviewable. Watermark it and drop
         # it here rather than queueing a worker that would only skip: the worker
@@ -369,13 +419,33 @@ refresh_queue() {
             # BOT_AUTO_POST_MARKER rides every bot post, so it cannot tell this
             # notice apart from a review. Both markers are present — the
             # auto-post one so the notice can never self-trigger a review.
-            if ! printf '%s' "${COMMENTS_JSON:-[]}" | grep -qF "$UNTRUSTED_NOTICE_MARKER"; then
+            #
+            # Not for bots or ghost accounts. dependabot[bot], renovate[bot] and
+            # Copilot all resolve to "no push access", so without this every
+            # dependency-bump PR across every tracked repo gets a comment
+            # addressed to a bot that cannot act on it — and the first tick after
+            # deploy would post one per already-open PR, straight into the same
+            # content-creation abuse limit this branch exists to stop hitting.
+            # Same case idiom as poll-pr-actions.sh / learn-from-replies.sh.
+            # An empty login would render "@ does not have push access".
+            NOTICE_ELIGIBLE=true
+            case "$PR_AUTHOR" in ""|*"[bot]"|"Copilot"|"copilot") NOTICE_ELIGIBLE=false ;; esac
+            if [ "$NOTICE_ELIGIBLE" = true ] &&
+               ! printf '%s' "${COMMENTS_JSON:-[]}" | grep -qF "$UNTRUSTED_NOTICE_MARKER"; then
+                NOTICE_ERR=$(mktemp)
+                # Capture stderr like the decline POST below: this path has the
+                # same permanent-failure modes (archived/locked PR, token lost
+                # write scope, org comment restrictions, abuse-limit 403) and the
+                # same no-retry semantics — the watermark is written whether or
+                # not this succeeded — so an undeliverable notice must not fail
+                # behind an opaque message with no diagnosable cause.
                 gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                     -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
-A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\`. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>&1 \
-                    || log "$PR_ID: could not post the no-push-access notice (see journal)"
+A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\`. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
+                    || log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
+                rm -f "$NOTICE_ERR"
             fi
             if [ -n "$PR_UPDATED_AT" ]; then
                 mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"

@@ -45,6 +45,7 @@ export STATE_DIR="$TMPDIR/state"
 export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
+export PERMISSION_CALL_LOG="$STATE_DIR/permission-call.log"
 export COMMENT_POST_LOG="$STATE_DIR/comment-post.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
@@ -180,10 +181,21 @@ elif [ "$1" = "api" ]; then
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
     elif [[ "$url" == */collaborators/*/permission ]]; then
-        # Opt-in: simulate a 403 rate-limit on the permission check → an
-        # INDETERMINATE trust result (rc=2). Default unset → normal path below.
+        # Count permission lookups. This is the OTHER half of the per-tick cost
+        # of an unreviewable PR (one uncached core-API call per PR per tick per
+        # container); asserting only on comment-fetches leaves it invisible.
+        [ -n "${PERMISSION_CALL_LOG:-}" ] && echo "PERM $url" >> "$PERMISSION_CALL_LOG"
+        # Opt-in: simulate a failed permission check → an INDETERMINATE trust
+        # result (rc=2). Default unset → normal path below.
+        #
+        # The error TEXT is configurable because it decides a second, separable
+        # effect: a rate-limit message routes through gh_note_rate_limit and
+        # stamps the FLEET-WIDE pause, which then blocks every later gh call in
+        # the same tick (including the comment fetch). A scenario testing the
+        # trust tri-state alone must therefore use a non-rate-limit failure, or
+        # it silently tests the pause instead.
         if [ -n "${MOCK_PERMISSION_RC:-}" ]; then
-            echo "gh: HTTP 403: API rate limit exceeded (simulated)" >&2
+            echo "${MOCK_PERMISSION_ERR:-gh: HTTP 403: API rate limit exceeded (simulated)}" >&2
             exit "$MOCK_PERMISSION_RC"
         fi
         # Extract the username segment between "collaborators/" and "/permission".
@@ -319,6 +331,7 @@ export MOCK_TRUSTED_USERS="$BOT_USER someuser"
 run_orchestrator() {
     : > "$LOG_FILE"   # reset
     : > "$COMMENT_FETCH_LOG"
+    : > "$PERMISSION_CALL_LOG"
     : > "$COMMENT_POST_LOG"
     # Each scenario models an independent tick, so stop-state must not leak
     # between them: a scenario whose stub 403s with rate-limit wording correctly
@@ -566,7 +579,10 @@ fi
 echo "  scenario 6b: same SHA + /srosro-review under indeterminate trust (403) → defer, no dispatch, no watermark..."
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # clear any residue so the assertion is decisive
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-MOCK_PERMISSION_RC=1 run_orchestrator
+# HTTP 500, not the default 403: a 403 stamps the fleet pause, which blocks the
+# comment fetch and skips the PR before the trigger is ever read — the scenario
+# would pass on the wrong branch.
+MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 500: server error (simulated)" run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 6b: expected 0 dispatches under indeterminate trust (defer), got $n"
@@ -1273,8 +1289,17 @@ printf '[{"id":7002,"created_at":"%s","user":{"login":"stranger"},"body":"/srosr
 rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
 MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
 spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ -z "$spec" ] || [ "$(jq -r '.requester_trusted' <<<"$spec")" = "false" ] \
+# An untrusted requester is now DROPPED at the dispatcher, so "no spec" is the
+# expected outcome — but on its own it passed vacuously: any unrelated
+# enumeration break yields an empty queue too and silently green-lit this
+# security fence. Pair it with a positive marker that only the deliberate
+# unreviewable-drop path leaves behind (the watermark), so the scenario proves
+# we reached that path and chose to drop, rather than never arriving.
+[ -z "$spec" ] \
     || { echo "FAIL RT3: an untrusted author self-vouched into a review — FORCE_REVIEW must never be a trust signal; spec=$spec"; exit 1; }
+wm3=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
+[ "$wm3" -ge 1 ] \
+    || { echo "FAIL RT3: no spec AND no watermark — enumeration never reached the trust decision, so the self-vouch fence is unproven"; exit 1; }
 
 # --- RT4: the execution gates must NEVER move to requester trust.
 # A vouch says "this diff is not hostile", not "run this author's code". If a
@@ -1317,6 +1342,14 @@ q=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q=${q:-
 f=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f=${f:-0}
 [ "$f" -eq 0 ] \
     || { echo "FAIL RT5: unreviewable PR was comment-fetched again on an unchanged tick ($f fetches) — the idle-skip gate is not covering it"; cat "$COMMENT_FETCH_LOG"; exit 1; }
+# The other half, and the one that stayed invisible while this scenario asserted
+# only on fetches: the collaborators/permission lookup. It is uncached, so a
+# gate that sits BELOW it still pays one core-API call per PR per tick per
+# container — the exact request stream that produced the rate-limit events.
+# Zero here is what makes "one evaluation, not one per tick" literally true.
+p=$( { grep -c 'PERM' "$PERMISSION_CALL_LOG" 2>/dev/null || true; } | head -1); p=${p:-0}
+[ "$p" -eq 0 ] \
+    || { echo "FAIL RT5: unreviewable PR cost $p permission lookup(s) on an unchanged tick — the trust check is above the idle-skip gate, so half the loop is still live"; cat "$PERMISSION_CALL_LOG"; exit 1; }
 
 # --- RT6: suppression must not become a black hole. A vouch arrives as a
 # comment, which moves updatedAt — that is exactly what re-opens evaluation.
@@ -1352,5 +1385,71 @@ MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR
 n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n=${n:-0}
 [ "$n" -eq 0 ] \
     || { echo "FAIL RT7: notice re-posted on a later tick (got $n) — not idempotent, and this tick fires every ~30s"; cat "$COMMENT_POST_LOG"; exit 1; }
+# …and the notice must not have vouched for the PR. This fixture is the exact
+# configuration where a regression bites: the notice is authored by $BOT_USER
+# (which IS in MOCK_TRUSTED_USERS) and its body contains a literal
+# /srosro-review. If the auto-post marker filter on the trigger query ever
+# breaks, the bot's own notice becomes a TRUSTED vouch, every unreviewable PR
+# dispatches, and it self-perpetuates — the notice lives in the thread forever.
+q7=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q7=${q7:-0}
+[ "$q7" -eq 0 ] \
+    || { echo "FAIL RT7: the bot's own notice self-triggered a review ($q7 spec(s)) — the auto-post marker fence is broken"; exit 1; }
 
-echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
+# --- RT8: requester trust is an OR over everyone who asked, never
+# "latest requester wins". A maintainer vouches; the untrusted author then
+# replies with the same command (the notice hands them the exact string). If
+# trust were read off the newest trigger, the author would nullify the vouch
+# just by answering it — silently and permanently, since no review runs to
+# advance the cutoff, so every later tick re-picks that same last comment.
+echo "  scenario RT8: an untrusted reply cannot nullify a maintainer's vouch..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":7300,"created_at":"2026-08-10T03:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},{"id":7301,"created_at":"2026-08-10T03:05:00Z","user":{"login":"stranger"},"body":"/srosro-review please?"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T03:05:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec8=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec8" ] \
+    || { echo "FAIL RT8: maintainer's vouch was nullified by the author's later reply — PR dropped, and it can never recover on its own"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec8")" = "true" ] \
+    || { echo "FAIL RT8: requester_trusted is not true despite a trusted vouch in the set; spec=$spec8"; exit 1; }
+[ "$(jq -r '.author_trusted' <<<"$spec8")" = "false" ] \
+    || { echo "FAIL RT8: author_trusted must stay false — a vouch unlocks reading, never running; spec=$spec8"; exit 1; }
+
+# --- RT9: a vouch does not expire when the review it authorized completes.
+# The trigger cutoff (started_at of the last review) is the right lifetime for a
+# one-shot "re-review now", and the wrong one for "a maintainer judged this diff
+# safe to read". Seed a review whose started_at is AFTER the vouch comment — the
+# state right after a vouched review finishes — and push a new head. If requester
+# trust were read off post-cutoff comments, the vouch would now be invisible and
+# the contributor's next push would go silently unreviewed forever.
+echo "  scenario RT9: a vouch survives the review it authorized (next push still reviewed)..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T040000000Z" "oldsha1" "COMMENT" "2026-08-10T04:00:00Z" >/dev/null
+printf '[{"id":7400,"created_at":"2026-08-10T03:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T05:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec9=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec9" ] \
+    || { echo "FAIL RT9: the vouch expired with the review it authorized — the contributor's next push is silently unreviewable, with no signal to either party"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec9")" = "true" ] \
+    || { echo "FAIL RT9: requester_trusted false despite a standing vouch on the thread; spec=$spec9"; exit 1; }
+clear_seeded_runs
+
+# --- RT10: never address the notice to a bot. dependabot[bot], renovate[bot]
+# and Copilot all resolve to "no push access", so without the filter every
+# dependency-bump PR across every tracked repo gets a public comment telling a
+# bot to go ask a maintainer — and the first tick after deploy posts one per
+# already-open PR, into the same content-creation abuse limit this branch exists
+# to stop tripping. The PR must still be skipped; only the comment is withheld.
+echo "  scenario RT10: no explanatory comment is addressed to a bot author..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T06:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="dependabot[bot]" run_orchestrator
+n10=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n10=${n10:-0}
+[ "$n10" -eq 0 ] \
+    || { echo "FAIL RT10: posted a no-push-access notice to a bot author — this fires on every dependency-bump PR in every tracked repo"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+q10=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q10=${q10:-0}
+[ "$q10" -eq 0 ] \
+    || { echo "FAIL RT10: bot-authored PR was queued for review — suppressing the notice must not also suppress the skip"; exit 1; }
+
+echo "  PASS (32 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors)"
