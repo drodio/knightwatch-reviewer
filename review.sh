@@ -124,6 +124,7 @@ refresh_queue() {
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
@@ -132,6 +133,7 @@ refresh_queue() {
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
+        PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
         PR_ID="${REPO}#${PR_NUM}"
 
         # In-flight guard: skip a PR whose review is already running. Eligibility
@@ -196,6 +198,7 @@ refresh_queue() {
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_USER=""
+        TRIGGER_TRUST_RC=1   # untrusted unless THIS PR has a trusted trigger
         TRIGGER_BODY=""
 
         if [ -n "$KNOWN_SHA" ]; then
@@ -292,6 +295,24 @@ refresh_queue() {
                 fi
             fi
         fi
+
+        # Requester trust — ONE value decides whether this PR is reviewed at all.
+        # Opening the PR is the author's implicit review request; a
+        # /<prefix>-review from a push-access user is an additional one. OR over
+        # that set, never "latest requester wins": an untrusted drive-by comment
+        # on a TRUSTED author's PR must not suppress a review that should happen.
+        #
+        # FORCE_REVIEW is deliberately NOT consulted. It is set from comment-text
+        # matching with no permission check, so gating on it would let an
+        # untrusted author self-vouch into a review of their own PR.
+        #
+        # Computed here, once, and carried in the spec — the worker used to
+        # re-derive author trust independently, and two derivations of one fact
+        # is how they drift.
+        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
+        REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
+        [ "${TRIGGER_TRUST_RC:-1}" -eq 0 ] && REQUESTER_TRUSTED=true
 
         # Re-fetch the live head before judging a trigger "nothing to diff".
         # PR_SHA comes from the batched GraphQL snapshot taken at the top of
@@ -455,10 +476,12 @@ This request stays open and fires automatically on your next push. To force a wh
             --arg repo "$REPO" --argjson pr_num "$PR_NUM" --arg sha "$PR_SHA" \
             --arg branch "$PR_BRANCH" --arg title "$PR_TITLE" \
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
+            --argjson atrust "$AUTHOR_TRUSTED" --argjson rtrust "$REQUESTER_TRUSTED" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
             --arg tick "$TICK_FETCHED_AT_ISO" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
-              force_whole_pr:$force, trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
+              force_whole_pr:$force, author_trusted:$atrust, requester_trusted:$rtrust,
+              trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
 
@@ -496,6 +519,11 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
+        # `// false` so a queue.json written by the PREVIOUS version stays safe
+        # across a rolling deploy: a missing field reads as untrusted, never as
+        # vouched. Fail closed on the security-relevant value.
+        AUTHOR_TRUSTED=$(jq -r '.author_trusted // false' <<<"$spec")
+        REQUESTER_TRUSTED=$(jq -r '.requester_trusted // false' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
@@ -548,7 +576,8 @@ consume_queue() {
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
+            "$AUTHOR_TRUSTED" "$REQUESTER_TRUSTED" &
         active=$((active + 1)); dispatched=$((dispatched + 1))
     done < <(jq -c '.[]' <<<"$specs")
 

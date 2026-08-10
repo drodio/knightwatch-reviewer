@@ -106,7 +106,10 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         # are thus unaffected by the gate. The idle-skip scenarios override
         # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
         upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
-        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\"}]"
+        # author defaults to a TRUSTED login so every pre-existing scenario keeps
+        # its old behavior; the requester-trust scenarios override it.
+        auth="${MOCK_PR_AUTHOR:-someuser}"
+        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\",\"author\":{\"login\":\"$auth\"}}]"
     else
         echo '[]'
     fi
@@ -1228,5 +1231,19 @@ if [ "$n" -ne 1 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+
+# --- requester trust (RT1): an untrusted author with NO trusted request is
+# skipped, and the SPEC records both trust facts so the worker need not
+# re-derive them. Two derivations of one fact is how they drift.
+echo "  scenario RT1: untrusted author, no trigger → spec marks requester untrusted..."
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec" ] || { echo "FAIL RT1: no spec written"; cat "$STATE_DIR/queue.json" 2>/dev/null; exit 1; }
+[ "$(jq -r '.author_trusted' <<<"$spec")" = "false" ] \
+    || { echo "FAIL RT1: author_trusted should be false for @stranger; spec=$spec"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec")" = "false" ] \
+    || { echo "FAIL RT1: requester_trusted should be false with no trusted request; spec=$spec"; exit 1; }
 
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
