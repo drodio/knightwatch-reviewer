@@ -25,6 +25,14 @@ PR_BRANCH="$4"
 # (preserves visible structure) and avoids the empty-field hazard.
 PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
+# Trust, computed once by the dispatcher (review.sh) and passed in rather than
+# re-derived here. Two questions, deliberately separate:
+#   AUTHOR_TRUSTED_ARG — may this author's CODE RUN? (.env mirror, just test)
+#   REQUESTER_TRUSTED  — should this PR be REVIEWED at all?
+# A maintainer vouching for a read-only contributor answers the second yes and
+# leaves the first no: the vouch unlocks reading, never running.
+AUTHOR_TRUSTED_ARG="${7:-}"
+REQUESTER_TRUSTED="${8:-}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
@@ -200,17 +208,33 @@ fi
 # throttled lookup of a genuinely-trusted author (e.g. repo owner) would
 # silently drop their PR. Defer instead (exit 1, like the gh pr view guard
 # above) so the next tick re-checks once the throttle clears.
-is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
-case "$TRUST_RC" in
-    0) IS_TRUSTED_AUTHOR=true ;;
-    *) IS_TRUSTED_AUTHOR=false ;;
-esac
+# Prefer the dispatcher's values. Fall back to deriving them when absent so a
+# direct invocation (lib/replay.sh, a manual run) still works.
+if [ -n "$AUTHOR_TRUSTED_ARG" ]; then
+    IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
+    TRUST_RC=$([ "$AUTHOR_TRUSTED_ARG" = true ] && echo 0 || echo 1)
+else
+    is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
+    case "$TRUST_RC" in
+        0) IS_TRUSTED_AUTHOR=true ;;
+        *) IS_TRUSTED_AUTHOR=false ;;
+    esac
+fi
+# No requester value (direct invocation) → fall back to author trust, which is
+# the pre-vouch behavior.
+[ -n "$REQUESTER_TRUSTED" ] || REQUESTER_TRUSTED="$IS_TRUSTED_AUTHOR"
 # The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
 # must never run (codex↔privileged-dind). On the host path an untrusted author
 # is reviewed anyway (just without the .env-mirror / just-test, gated on
 # IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
 # scoping it here keeps host behavior unchanged.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
+# Gates on the REQUESTER, not the author: the question is "did someone with push
+# access ask for this review?", and opening the PR is the author's own implicit
+# request. A maintainer's /<prefix>-review vouches for a read-only contributor's
+# PR. Execution stays gated on IS_TRUSTED_AUTHOR further below — a vouch is a
+# human saying the diff is not hostile, not proof that prompt injection is
+# impossible, so the PR's code still never runs.
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
     if [ "$TRUST_RC" -eq 2 ]; then
         # Indeterminate → defer (exit 1, like the gh pr view guard above)
         # so the next tick re-checks once the throttle clears.

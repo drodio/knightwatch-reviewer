@@ -134,6 +134,20 @@ refresh_queue() {
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
         PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
+        # Author trust is derived HERE, before the comment-fetch gate below,
+        # because that gate now depends on it.
+        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE
+        # (403 rate-limit / 5xx / network — we could not verify). An
+        # indeterminate result must never collapse to "untrusted": that would
+        # silently drop a genuinely-trusted author's PR on a throttled lookup.
+        # Defer the whole PR to a later tick instead. This case used to be the
+        # worker's to own; it moved here with the check itself.
+        if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
+            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+            continue
+        fi
+        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
         PR_ID="${REPO}#${PR_NUM}"
 
         # In-flight guard: skip a PR whose review is already running. Eligibility
@@ -201,7 +215,14 @@ refresh_queue() {
         TRIGGER_TRUST_RC=1   # untrusted unless THIS PR has a trusted trigger
         TRIGGER_BODY=""
 
-        if [ -n "$KNOWN_SHA" ]; then
+        # `|| untrusted author`: comments were previously fetched only for
+        # ALREADY-REVIEWED PRs, since triggers existed only to force a
+        # re-review. A vouch is a trigger on a NEVER-reviewed PR, so without
+        # this the maintainer override could never be seen — the comment
+        # carrying it would never be read. The idle-skip gate keeps this cheap:
+        # an untrusted PR is only re-read when its updatedAt moves, and a vouch
+        # comment is exactly what moves it.
+        if [ -n "$KNOWN_SHA" ] || [ "$AUTHOR_TRUSTED" != true ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
             # PR #38. started_at is stamped at run init (line ~165 of
@@ -309,8 +330,6 @@ refresh_queue() {
         # Computed here, once, and carried in the spec — the worker used to
         # re-derive author trust independently, and two derivations of one fact
         # is how they drift.
-        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
-        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
         [ "${TRIGGER_TRUST_RC:-1}" -eq 0 ] && REQUESTER_TRUSTED=true
 

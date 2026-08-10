@@ -1246,4 +1246,45 @@ spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
 [ "$(jq -r '.requester_trusted' <<<"$spec")" = "false" ] \
     || { echo "FAIL RT1: requester_trusted should be false with no trusted request; spec=$spec"; exit 1; }
 
+# --- RT2: a push-access maintainer vouches for a read-only author's PR.
+# This is the whole point of requester trust: the PR becomes reviewable without
+# granting the author write access (which would let their code RUN against the
+# privileged dind sidecar — exactly what the trust gate exists to prevent).
+echo "  scenario RT2: trusted maintainer vouches → untrusted author's PR is dispatched..."
+printf '[{"id":7001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
+    || { echo "FAIL RT2: a trusted /srosro-review did not mark the requester trusted; spec=$spec"; exit 1; }
+[ "$(jq -r '.author_trusted' <<<"$spec")" = "false" ] \
+    || { echo "FAIL RT2: author must remain untrusted — a vouch unlocks review, never execution; spec=$spec"; exit 1; }
+
+# --- RT3: the security fence. An untrusted author triggering their OWN PR must
+# not unlock review. FORCE_REVIEW is set from comment text with no permission
+# check, so this is the exact self-vouch hole gating on it would open.
+echo "  scenario RT3: untrusted author self-vouch → still NOT reviewable..."
+printf '[{"id":7002,"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-review"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -z "$spec" ] || [ "$(jq -r '.requester_trusted' <<<"$spec")" = "false" ] \
+    || { echo "FAIL RT3: an untrusted author self-vouched into a review — FORCE_REVIEW must never be a trust signal; spec=$spec"; exit 1; }
+
+# --- RT4: the execution gates must NEVER move to requester trust.
+# A vouch says "this diff is not hostile", not "run this author's code". If a
+# future simplification swaps every IS_TRUSTED_AUTHOR for REQUESTER_TRUSTED, a
+# maintainer's vouch would silently start executing an untrusted PR's test
+# recipes against the privileged dind sidecar. Structural, because the
+# behavioral path needs the full worker harness — but falsifiable: swapping
+# either line fails this.
+echo "  scenario RT4: .env mirror and just test still gate on AUTHOR trust..."
+w="$PROJECT_ROOT/lib/review-one-pr.sh"
+grep -qE '^if \[ "\$IS_TRUSTED_AUTHOR" = true \]; then' "$w" \
+    || { echo "FAIL RT4: the .env-mirror gate no longer keys on IS_TRUSTED_AUTHOR — a vouch would unlock secret mirroring"; exit 1; }
+grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
+    || { echo "FAIL RT4: just_test_skip_reason no longer keys on IS_TRUSTED_AUTHOR — a vouch would execute the PR's code"; exit 1; }
+
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
