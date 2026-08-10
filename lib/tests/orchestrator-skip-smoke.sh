@@ -106,9 +106,11 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         # are thus unaffected by the gate. The idle-skip scenarios override
         # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
         upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
-        # author defaults to a TRUSTED login so every pre-existing scenario keeps
-        # its old behavior; the requester-trust scenarios override it.
-        auth="${MOCK_PR_AUTHOR:-someuser}"
+        # Defaults to $BOT_USER, which every scenario lists in
+        # MOCK_TRUSTED_USERS — so a pre-existing scenario that never thought
+        # about author trust keeps its original intent now that the dispatcher
+        # consults it. The requester-trust scenarios override this.
+        auth="${MOCK_PR_AUTHOR:-${BOT_USER:-someuser}}"
         echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\",\"author\":{\"login\":\"$auth\"}}]"
     else
         echo '[]'
@@ -1232,19 +1234,20 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
-# --- requester trust (RT1): an untrusted author with NO trusted request is
-# skipped, and the SPEC records both trust facts so the worker need not
-# re-derive them. Two derivations of one fact is how they drift.
-echo "  scenario RT1: untrusted author, no trigger → spec marks requester untrusted..."
+# --- RT1: the spec carries both trust facts, so the worker never re-derives
+# them. (An UNREVIEWABLE PR never reaches the spec at all — it is dropped at the
+# dispatcher; RT5 covers that.) This guards the propagation contract the worker
+# argv depends on.
+echo "  scenario RT1: queued spec carries author_trusted + requester_trusted..."
 printf '[]\n' > "$MOCK_COMMENTS_FILE"
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
-MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_TRUSTED_USERS="$BOT_USER" run_orchestrator
 spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ -n "$spec" ] || { echo "FAIL RT1: no spec written"; cat "$STATE_DIR/queue.json" 2>/dev/null; exit 1; }
-[ "$(jq -r '.author_trusted' <<<"$spec")" = "false" ] \
-    || { echo "FAIL RT1: author_trusted should be false for @stranger; spec=$spec"; exit 1; }
-[ "$(jq -r '.requester_trusted' <<<"$spec")" = "false" ] \
-    || { echo "FAIL RT1: requester_trusted should be false with no trusted request; spec=$spec"; exit 1; }
+[ -n "$spec" ] || { echo "FAIL RT1: no spec written for a trusted-author PR"; cat "$STATE_DIR/queue.json" 2>/dev/null; exit 1; }
+[ "$(jq -r '.author_trusted' <<<"$spec")" = "true" ] \
+    || { echo "FAIL RT1: author_trusted missing/false for a trusted author; spec=$spec"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
+    || { echo "FAIL RT1: requester_trusted missing/false for a trusted author; spec=$spec"; exit 1; }
 
 # --- RT2: a push-access maintainer vouches for a read-only author's PR.
 # This is the whole point of requester trust: the PR becomes reviewable without
@@ -1286,5 +1289,44 @@ grep -qE '^if \[ "\$IS_TRUSTED_AUTHOR" = true \]; then' "$w" \
     || { echo "FAIL RT4: the .env-mirror gate no longer keys on IS_TRUSTED_AUTHOR — a vouch would unlock secret mirroring"; exit 1; }
 grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
     || { echo "FAIL RT4: just_test_skip_reason no longer keys on IS_TRUSTED_AUTHOR — a vouch would execute the PR's code"; exit 1; }
+
+# --- RT5: a permanently-unreviewable PR must cost ONE evaluation, not one per
+# tick. The idle-skip gate could never suppress it: that gate required a
+# completed review (KNOWN_SHA), and an unreviewable PR never has one. In
+# production this loop re-enumerated and trust-checked the same PRs every ~30s
+# indefinitely — it produced 46 secondary-rate-limit events and ~96% of a
+# million run dirs (#189).
+echo "  scenario RT5: unreviewable PR is watermarked, then not re-queued..."
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+FIXED_UPD="2026-08-10T00:00:00Z"
+MOCK_PR_UPDATED_AT="$FIXED_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+wm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
+[ "$wm" -ge 1 ] \
+    || { echo "FAIL RT5: no watermark written for an unreviewable PR — it will be re-evaluated every tick forever"; exit 1; }
+# Second tick, nothing changed: the PR must not be queued again.
+rm -f "$STATE_DIR/queue.json"
+MOCK_PR_UPDATED_AT="$FIXED_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+q=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q=${q:-0}
+[ "$q" -eq 0 ] \
+    || { echo "FAIL RT5: unreviewable PR re-queued on an unchanged tick (got $q) — the loop is still live"; exit 1; }
+# …and it cost NOTHING. Not-queued is not the same as not-evaluated: without the
+# widened idle-skip gate the PR is still comment-fetched every tick, which is the
+# expensive half and the half that tripped the rate limit. run_orchestrator
+# truncates this log per tick, so it reflects only the second tick.
+f=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f=${f:-0}
+[ "$f" -eq 0 ] \
+    || { echo "FAIL RT5: unreviewable PR was comment-fetched again on an unchanged tick ($f fetches) — the idle-skip gate is not covering it"; cat "$COMMENT_FETCH_LOG"; exit 1; }
+
+# --- RT6: suppression must not become a black hole. A vouch arrives as a
+# comment, which moves updatedAt — that is exactly what re-opens evaluation.
+echo "  scenario RT6: a later vouch still re-opens the skipped PR..."
+printf '[{"id":7003,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"
+MOCK_PR_UPDATED_AT="2026-08-10T00:00:99Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec" ] && [ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
+    || { echo "FAIL RT6: a vouch after a watermarked skip did not re-open the PR — suppression became a black hole; spec=$spec"; exit 1; }
 
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

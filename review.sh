@@ -204,8 +204,26 @@ refresh_queue() {
         SEEN_UPDATED_FILE="$STATE_DIR/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
         LAST_SEEN_UPDATED_AT=""
         [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
-        if [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ] \
-            && [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
+        # `updatedAt` unchanged means nothing this tick can act on: no new head,
+        # no new comment. Two ways to be idle:
+        #   - reviewed already, head unchanged (the original case), or
+        #   - not reviewABLE, because no trusted requester has asked.
+        # The KNOWN_SHA clause alone could never suppress the second: an
+        # unreviewable PR never gets a KNOWN_SHA, so it was re-enumerated and
+        # trust-checked every ~30s forever. That loop produced 46
+        # secondary-rate-limit events and ~96% of a million run dirs (#189).
+        # A vouch arrives as a comment, which moves updatedAt — so the override
+        # re-opens evaluation without anything polling for it.
+        #
+        # AUTHOR_TRUSTED, not REQUESTER_TRUSTED: requester trust is only known
+        # AFTER the comment fetch below (a vouch is a comment), so using it here
+        # would be circular. Author trust is known from the enumeration payload.
+        # The substitution is sound because an unchanged updatedAt means no new
+        # comment exists — so there is no vouch this tick that the previous tick
+        # did not already see.
+        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ] \
+            && { { [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ]; } \
+                 || [ "$AUTHOR_TRUSTED" != true ]; }; then
             continue
         fi
 
@@ -332,6 +350,21 @@ refresh_queue() {
         # is how they drift.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
         [ "${TRIGGER_TRUST_RC:-1}" -eq 0 ] && REQUESTER_TRUSTED=true
+
+        # No trusted requester → this PR is not reviewable. Watermark it and drop
+        # it here rather than queueing a worker that would only skip: the worker
+        # would allocate a run dir and re-derive the same answer every tick. The
+        # watermark is what makes a PERMANENT skip cost one evaluation instead of
+        # one per tick — the loop that produced 46 rate-limit events in
+        # production. It re-opens the moment updatedAt moves, which is exactly
+        # when a vouch comment would arrive.
+        if [ "$REQUESTER_TRUSTED" != true ]; then
+            if [ -n "$PR_UPDATED_AT" ]; then
+                mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
+                printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"
+            fi
+            continue
+        fi
 
         # Re-fetch the live head before judging a trigger "nothing to diff".
         # PR_SHA comes from the batched GraphQL snapshot taken at the top of
