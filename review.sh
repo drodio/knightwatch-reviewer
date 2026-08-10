@@ -65,6 +65,9 @@ if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKER
 # eligible-PR queue under the election flock; every container consumes it.
 . "$REVIEWER_LIB_DIR/queue.sh"
 ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
+# Idempotency key for the "author has no push access" notice. Distinct from
+# BOT_AUTO_POST_MARKER, which every bot post carries and so cannot identify it.
+UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice -->"
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -359,6 +362,21 @@ refresh_queue() {
         # production. It re-opens the moment updatedAt moves, which is exactly
         # when a vouch comment would arrive.
         if [ "$REQUESTER_TRUSTED" != true ]; then
+            # Tell the author once. The skip is permanent and otherwise silent,
+            # so a contributor without push access would see no review and no
+            # reason, indefinitely — and never learn that a maintainer can
+            # unblock it. Its OWN marker is the idempotency key:
+            # BOT_AUTO_POST_MARKER rides every bot post, so it cannot tell this
+            # notice apart from a review. Both markers are present — the
+            # auto-post one so the notice can never self-trigger a review.
+            if ! printf '%s' "${COMMENTS_JSON:-[]}" | grep -qF "$UNTRUSTED_NOTICE_MARKER"; then
+                gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                    -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
+Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
+
+A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\`. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>&1 \
+                    || log "$PR_ID: could not post the no-push-access notice (see journal)"
+            fi
             if [ -n "$PR_UPDATED_AT" ]; then
                 mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
                 printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"

@@ -1329,4 +1329,28 @@ spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
 [ -n "$spec" ] && [ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
     || { echo "FAIL RT6: a vouch after a watermarked skip did not re-open the PR — suppression became a black hole; spec=$spec"; exit 1; }
 
+# --- RT7: tell the read-only author once, and only once. The skip is permanent
+# and silent, so without this a contributor without push access sees no review
+# and no reason, forever. Idempotence matters more than usual here: the tick
+# fires every ~30s.
+echo "  scenario RT7: unreviewable PR gets exactly one explanatory comment..."
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_PR_UPDATED_AT="2026-08-10T01:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n=${n:-0}
+[ "$n" -eq 1 ] \
+    || { echo "FAIL RT7: expected exactly 1 explanatory comment, got $n"; echo "--- posts ---"; cut -c1-90 "$COMMENT_POST_LOG" 2>/dev/null; exit 1; }
+
+# Feed the notice back as an existing comment; a later tick must not repost it.
+# updatedAt moves (a comment landed), so the idle-skip gate does NOT suppress
+# this tick — the idempotency marker is the only thing preventing a repost.
+# Markers written as literals — the harness shell never sources bootstrap.sh, so
+# BOT_AUTO_POST_MARKER is not in scope here. These strings are the contract.
+printf '[{"id":7200,"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> not reviewed: no push access"}]\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n=${n:-0}
+[ "$n" -eq 0 ] \
+    || { echo "FAIL RT7: notice re-posted on a later tick (got $n) — not idempotent, and this tick fires every ~30s"; cat "$COMMENT_POST_LOG"; exit 1; }
+
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"
