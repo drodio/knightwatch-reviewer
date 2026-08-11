@@ -1589,10 +1589,19 @@ grep -qF 'This finding is wrong because X' "$tfile" \
 # commenter wrote. Any prose we inject to explain the split is itself text they
 # did not write, and every consumer's gate asks "is there text beyond the bare
 # command?" without being able to tell whose it is.
-grep -qF -- '--- quoted by @someuser, not written by them ---' "$tfile" \
-    || { echo "FAIL RT17: staged payload does not separate quoted material into its own region — the gates cannot tell the commenter's words from what they quoted"; cat "$tfile"; exit 1; }
-awk '/^--- quoted by /{exit} {print}' "$tfile" | grep -qF '**Severity**: Medium' \
-    && { echo "FAIL RT17: quoted text leaked into the framing region — that is the laundering this separation exists to stop"; cat "$tfile"; exit 1; }
+# Verbatim: nothing added, and ORDER PRESERVED. The dominant shape here is
+# interleaved per-finding reply ("> finding" / "answer" / "> finding" /
+# "answer"); any transform that groups quoted lines together severs each reply
+# from what it answers, which loses the meaning the referent exists to carry.
+grep -qF -- '> **Severity**: Medium' "$tfile" \
+    || { echo "FAIL RT17: the quoted referent is missing from the staged payload"; cat "$tfile"; exit 1; }
+# The quoted finding must still come BEFORE the reply that answers it.
+q_line=$(grep -n -- '> \*\*Severity\*\*: Medium' "$tfile" | head -1 | cut -d: -f1)
+a_line=$(grep -n 'This finding is wrong because X' "$tfile" | head -1 | cut -d: -f1)
+[ -n "$q_line" ] && [ -n "$a_line" ] && [ "$q_line" -lt "$a_line" ] \
+    || { echo "FAIL RT17: source order was not preserved (quote at line ${q_line:-?}, reply at line ${a_line:-?}) — grouping quoted lines severs every reply from the finding it answers"; cat "$tfile"; exit 1; }
+grep -qF 'QUOTED, not' "$tfile" \
+    && { echo "FAIL RT17: explanatory prose was injected into the payload — every consumer gate asks 'is there text beyond the bare command?' and cannot tell it is not the commenter's"; cat "$tfile"; exit 1; }
 grep -qF '**Severity**: Medium' "$tfile" \
     || { echo "FAIL RT17: quoted lines were stripped from the staged payload — a maintainer's '> <finding>' + 'this is wrong because X' now reaches the specialists with its referent deleted"; cat "$tfile"; exit 1; }
 clear_seeded_runs
@@ -1633,8 +1642,7 @@ MOCK_PR_UPDATED_AT="2026-08-10T20:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser
 tf21=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
 [ -n "$tf21" ] && [ -f "$tf21" ] \
     || { echo "FAIL RT21: no trigger-comment file staged for a bare command"; cat "$LOG_FILE"; exit 1; }
-grep -qF -- '--- quoted by ' "$tf21" \
-    && { echo "FAIL RT21: a bare command staged a quoted-material region it does not have — the prompts' bare-command branch must stay reachable"; cat "$tf21"; exit 1; }
+
 [ "$(grep -cv '^[[:space:]]*$' "$tf21")" -eq 2 ] \
     || { echo "FAIL RT21: a bare command staged more than the header + the command — any extra line is prose the commenter did not write, which is what the gates would count"; cat "$tf21"; exit 1; }
 clear_seeded_runs

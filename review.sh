@@ -150,7 +150,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
-    local TRIGGER_OWN TRIGGER_OWN_LINES TRIGGER_QUOTED_LINES
+    local TRIGGER_OWN
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
@@ -836,26 +836,24 @@ consume_queue() {
             # requester's own prose — making our last review the next review's
             # stated intent — and would launder a drive-by's words into this
             # trusted-only channel whenever a maintainer quotes them to disagree.
-            # Structural separation, not injected prose. Four rounds of this
-            # review found the same class: the framing region kept acquiring
-            # text the commenter did not write — first their quoted material,
-            # then the annotation added to explain it. Any prose we insert is
-            # more of the same bug, because every consumer's gate asks "is there
-            # text here beyond the bare command?" and cannot tell whose it is.
+            # Staged VERBATIM: no injected prose, no reordering.
             #
-            # So the file answers structurally: everything above the delimiter is
-            # what this commenter wrote, everything below is what they quoted.
-            # The gates read the region, not a sentence about it, and the quoted
-            # referent still reaches the specialists ("> <finding>" then "this is
-            # wrong because X" stays legible).
-            TRIGGER_OWN_LINES=$(printf '%s' "$TRIGGER_BODY" | grep -v '^>' || true)
-            TRIGGER_QUOTED_LINES=$(printf '%s' "$TRIGGER_BODY" | grep '^>' || true)
-            if [ -n "$TRIGGER_QUOTED_LINES" ]; then
-                printf 'Comment by @%s:\n\n%s\n\n--- quoted by @%s, not written by them ---\n%s\n' \
-                    "$TRIGGER_USER" "$TRIGGER_OWN_LINES" "$TRIGGER_USER" "$TRIGGER_QUOTED_LINES" > "$TRIGGER_FILE"
-            else
-                printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
-            fi
+            # Four rounds of review converged here. Injecting an explanatory note
+            # was the bug it tried to fix (every consumer gate asks "is there
+            # text beyond the bare command?" and cannot tell whose it is, so our
+            # note counted as the commenter's framing). Splitting quoted and
+            # unquoted lines into separate regions removed the injected prose but
+            # destroyed source order — and the dominant shape here is interleaved
+            # per-finding reply ("> finding A" / "fixed in abc123" / "> finding
+            # B" / "this one is wrong"), where severing that pairing loses the
+            # meaning entirely.
+            #
+            # Verbatim satisfies all of it: order intact, referents attached,
+            # nothing added. The `>` convention is already in the text, and the
+            # consumers are told to read it (common-header, intent, critic,
+            # aggregator — the last three bypass the common header by design, so
+            # all four carry it).
+            printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
         fi
 
         worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")
