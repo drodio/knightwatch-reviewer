@@ -155,7 +155,7 @@ refresh_queue() {
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
     local _cand_user _cand_rc
-    local NOTICE_ELIGIBLE NOTICE_ERR NOTICE_UNDELIVERED
+    local NOTICE_ELIGIBLE NOTICE_ERR NOTICE_UNDELIVERED NOTICE_TRANSIENT
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
@@ -520,7 +520,7 @@ refresh_queue() {
             # comment its author cannot act on — one per open PR on the first
             # tick after deploy, into the very abuse limit this branch exists to
             # stop hitting. Same case idiom as poll-pr-actions.sh.
-            NOTICE_UNDELIVERED=false
+            NOTICE_UNDELIVERED=false; NOTICE_TRANSIENT=false
             NOTICE_ELIGIBLE=true
             case "$PR_AUTHOR" in ""|*"[bot]"|"Copilot"|"copilot") NOTICE_ELIGIBLE=false ;; esac
             if [ "$NOTICE_ELIGIBLE" = true ] &&
@@ -538,7 +538,14 @@ Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so 
 
 A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\`. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
                     || { log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
-                         NOTICE_UNDELIVERED=true; }
+                         NOTICE_UNDELIVERED=true
+                         # Classify BEFORE the file is removed. gh_retry stamps
+                         # the fleet pause only on rate-limit wording, and its
+                         # create-protection branch gives a POST exactly one
+                         # attempt — so a 502 / TLS timeout / reset stamps
+                         # nothing and would look permanent. GH_API_TRANSIENT_RE
+                         # already classifies exactly this class.
+                         grep -qE "$GH_API_TRANSIENT_RE" "$NOTICE_ERR" 2>/dev/null && NOTICE_TRANSIENT=true; }
                 rm -f "$NOTICE_ERR"
             fi
             # A failed notice must not be watermarked as delivered. The watermark
@@ -555,7 +562,7 @@ A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-
             # lookups with it — feeding the very rate limit this branch exists
             # to stop. That is the policy scenario 7d pinned for the sibling
             # decline POST; the two must not disagree.
-            if [ "${NOTICE_UNDELIVERED:-false}" = true ] && gh_pause_active; then
+            if [ "${NOTICE_UNDELIVERED:-false}" = true ] && { gh_pause_active || [ "${NOTICE_TRANSIENT:-false}" = true ]; }; then
                 log "$PR_ID: notice undelivered under the rate-limit pause — not watermarking, will retry next tick"
                 continue
             fi

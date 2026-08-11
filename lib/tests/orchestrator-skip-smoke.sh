@@ -1668,6 +1668,18 @@ fi
 grep -q "notice undelivered" "$LOG_FILE" \
     || { echo "FAIL RT19a: no undelivered-notice log line — the failure is invisible to the operator"; cat "$LOG_FILE"; exit 1; }
 
+# Transient but NOT rate-limited: gh_retry stamps the pause only on rate-limit
+# wording, and its create-protection gives a POST one attempt — so a 502 would
+# look permanent and restore the silence for a class that clears next tick.
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_POST_RC=1 MOCK_POST_ERR="gh: HTTP 502: Bad Gateway" \
+    MOCK_PR_UPDATED_AT="2026-08-10T17:15:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_PR_AUTHOR="stranger" run_orchestrator
+if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL RT19c: a TRANSIENT (502) notice failure was watermarked — it would have cleared on the next tick, and the contributor now waits for updatedAt to move"
+    exit 1
+fi
+
 rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
 MOCK_POST_RC=1 MOCK_POST_ERR="gh: HTTP 403: Repository has been archived" \
     MOCK_PR_UPDATED_AT="2026-08-10T17:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
