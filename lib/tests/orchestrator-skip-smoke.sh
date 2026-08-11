@@ -1563,6 +1563,33 @@ n16=$(count_dispatches)
     || { echo "FAIL RT16: a quote-replied /srosro-review did not trigger a re-review (got $n16 dispatches) — the quoted bot marker made it look like a bot post"; cat "$LOG_FILE"; exit 1; }
 clear_seeded_runs
 
+# --- RT17: the trigger DECISION ignores quoted text; the staged PAYLOAD keeps it.
+# Two different questions that must not share one value. Every other fixture in
+# this file seeds an UNQUOTED auto-trigger marker, which `own` preserves — so all
+# of them pass identically whether this line strips quotes or not, and the case
+# that matters has no coverage on either side. Nothing asserts the staged file's
+# CONTENTS either (the dispatch log records only trigger_file=<path>), so a fix
+# that blanked or truncated the requester's framing would be invisible.
+echo "  scenario RT17: quoted trigmark does not blank the payload, and quotes survive in it..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T140000000Z" "abc123" "COMMENT" "2026-08-10T14:00:00Z" >/dev/null
+# A maintainer quote-replies the poller's auto-trigger (so the trigmark is
+# QUOTED), points at a finding with a blockquote, and adds their own command.
+printf '[{"id":8000,"created_at":"2026-08-10T15:00:00Z","user":{"login":"someuser"},"body":"> /srosro-review\\n>\\n> <sub>auto-posted by the review bot.</sub><!-- knightwatch-reviewer:auto-trigger -->\\n\\n> **Severity**: Medium — the vouch scan\\n\\nThis finding is wrong because X. /srosro-review"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T15:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="someuser" run_orchestrator
+tfile=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
+[ -n "$tfile" ] && [ -f "$tfile" ] \
+    || { echo "FAIL RT17: no trigger-comment file staged — a QUOTED auto-trigger marker blanked the requester's framing (the decision must read the author's own lines)"; cat "$LOG_FILE"; exit 1; }
+grep -qF 'This finding is wrong because X' "$tfile" \
+    || { echo "FAIL RT17: the requester's own prose is missing from the staged payload"; cat "$tfile"; exit 1; }
+grep -qF '**Severity**: Medium' "$tfile" \
+    || { echo "FAIL RT17: quoted lines were stripped from the staged payload — a maintainer's '> <finding>' + 'this is wrong because X' now reaches the specialists with its referent deleted"; cat "$tfile"; exit 1; }
+clear_seeded_runs
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
 unset REVIEWER_CONTAINER_MODE
 
 # --- RT12: the host path has no unreviewable PR. It reviews an untrusted author
@@ -1580,4 +1607,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (35 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, host-path-not-dropped)"
+echo "  PASS (36 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, trigger-decision-vs-payload, host-path-not-dropped)"

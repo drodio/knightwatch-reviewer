@@ -143,6 +143,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
+    local TRIGGER_OWN
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
@@ -361,20 +362,28 @@ refresh_queue() {
                         # never allocates a tempfile only the worker would
                         # have cleaned up. STATE_DIR/tmp is durable now
                         # (no PrivateTmp tear-down to mask the leak).
-                        # Through `own` like every other body test above — this
-                        # is the fifth site, and it was left raw when the other
-                        # four were shared. A maintainer who quote-replies the
-                        # poller's auto-trigger and adds their own command plus
-                        # guidance passes the trigger queries (correct: the
-                        # quoted trigmark is stripped) and then had that quoted
-                        # trigmark blank their prose here — the trigger fires,
-                        # trigger-comment.md is never staged, nothing is logged,
-                        # and their framing is discarded as if the bot wrote it.
-                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r "$JQ_OWN"'own // ""')
+                        # DECISION on `own`, PAYLOAD raw — they are different
+                        # questions and must not share one value.
+                        #
+                        # The decision ("did the bot post this?") has to ignore
+                        # quoted text, or a maintainer who quote-replies the
+                        # poller's auto-trigger has their own framing blanked by
+                        # a marker they merely quoted.
+                        #
+                        # The payload must NOT be stripped: it is written
+                        # verbatim into .codex-scratch/trigger-comment.md as the
+                        # requester's framing, and quoted lines are precisely how
+                        # a maintainer points at what they want re-examined
+                        # ("> **Severity**: Medium — …" followed by "this finding
+                        # is wrong because X"). Stripping them stages the reply
+                        # with its referent deleted, and drops blockquote
+                        # emphasis ("> NOTE: focus on the auth path") too.
+                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                        TRIGGER_OWN=$(printf '%s' "$TRIGGER_JSON" | jq -r "$JQ_OWN"'own // ""')
                         # The re-request poller's auto-trigger carries a human-facing
                         # attribution note; its marker means "treat as bare command",
                         # so drop the body — the note must not become requester framing.
-                        case "$TRIGGER_BODY" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
+                        case "$TRIGGER_OWN" in *"$BOT_AUTO_TRIGGER_MARKER"*) TRIGGER_BODY="" ;; esac
                     else
                         log "$PR_ID: trigger from @$TRIGGER_USER — not staging trigger-comment.md (no push access)"
                     fi
