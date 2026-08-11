@@ -192,6 +192,17 @@ elif [ "$1" = "api" ]; then
             echo "${MOCK_PERMISSION_ERR:-gh: HTTP 403: API rate limit exceeded (simulated)}" >&2
             exit "$MOCK_PERMISSION_RC"
         fi
+        user="${url##*/collaborators/}"
+        user="${user%/permission}"
+        # Per-user indeterminate. MOCK_PERMISSION_RC is all-or-nothing, which
+        # cannot isolate the vouch scan: a global failure makes the AUTHOR lookup
+        # indeterminate too and defers before any voucher is consulted.
+        for indet in ${MOCK_INDETERMINATE_USERS:-}; do
+            if [ "$user" = "$indet" ]; then
+                echo "gh: HTTP 500: server error (simulated)" >&2
+                exit 1
+            fi
+        done
         # Extract the username segment between "collaborators/" and "/permission".
         user="${url##*/collaborators/}"
         user="${user%/permission}"
@@ -1353,6 +1364,38 @@ printf '[]\n' > "$MOCK_COMMENTS_FILE"
 MOCK_PR_UPDATED_AT="2026-08-10T02:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="dependabot[bot]" run_orchestrator
 nb=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); nb=${nb:-0}
 [ "$nb" -eq 0 ] || { echo "FAIL RT4: posted a no-push-access notice to a bot author — fires on every dependency-bump PR in every tracked repo"; exit 1; }
+
+# --- RT7: an unverifiable VOUCHER defers; it must never read as "not vouched".
+# Worse than a plain miss, because the drop also watermarks: one 5xx would
+# suppress a genuinely-vouched PR until its next updatedAt event, silently, with
+# the notice already on the thread. Author is definitively untrusted; only the
+# voucher's lookup fails.
+echo "  scenario RT7: an unverifiable voucher defers instead of dropping+watermarking..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+# The vouch must PREDATE the review cutoff, or it is also a live trigger and the
+# trigger block's own defer fires first — masking the path under test.
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T070000000Z" "oldsha1" "COMMENT" "2026-08-10T07:00:00Z" >/dev/null
+printf '[{"id":7500,"created_at":"2026-08-10T06:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T08:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_INDETERMINATE_USERS="someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+    && { echo "FAIL RT7: watermarked on an unverifiable vouch — a real vouch is now suppressed until the next PR event, silently"; exit 1; }
+grep -q "vouch check deferred" "$LOG_FILE" \
+    || { echo "FAIL RT7: no deferral logged — an indeterminate vouch collapsed to 'not vouched'"; cat "$LOG_FILE"; exit 1; }
+n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n7=${n7:-0}
+[ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
+clear_seeded_runs
+
+# --- RT8: only OUR notice mutes the notice. The marker is an HTML comment and
+# renders invisible, so a bare substring test would let any drive-by paste it and
+# permanently silence the author's only notification.
+echo "  scenario RT8: a stranger echoing the marker cannot mute the notice..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":7600,"created_at":"2026-08-10T07:30:00Z","user":{"login":"stranger"},"body":"hmm <!-- knightwatch-reviewer:untrusted-requester-notice -->"}]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T07:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+n8=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n8=${n8:-0}
+[ "$n8" -eq 1 ] || { echo "FAIL RT8: a non-bot comment carrying the marker suppressed the notice (posted $n8) — any commenter can mute it"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

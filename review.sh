@@ -132,6 +132,7 @@ refresh_queue() {
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
+    local VOUCH_INDETERMINATE NOTICED_ALREADY
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -510,10 +511,18 @@ This request stays open and fires automatically on your next push. To force a wh
         # a trusted requester, and on the host path nothing consults the result.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
         if [ "$REQUESTER_TRUSTED" != true ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+            VOUCH_INDETERMINATE=false
             while IFS= read -r _cand; do
                 [ -n "$_cand" ] || continue
                 is_trusted_repo_author "$REPO" "$_cand"; _cand_rc=$?
                 if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; break; fi
+                # rc=2 is "could not verify", never "not a voucher" — the same
+                # rule the author and trigger-prose checks state explicitly.
+                # Collapsing it here is worse than a plain miss: the drop below
+                # also WATERMARKS, so one 403 would suppress a genuinely-vouched
+                # PR until its next updatedAt event, silently, with the notice
+                # already posted.
+                [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
             # Distinct logins so one user repeating the command costs one call;
             # bot posts excluded so our own notice can never vouch for itself.
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
@@ -522,6 +531,10 @@ This request stays open and fires automatically on your next push. To force a wh
                                    and (asks($cmd_prefix + "-review")
                                         or asks($cmd_prefix + "-update-review")))]
                      | [.[].user.login] | unique | .[]' 2>/dev/null)
+            if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
+                log "$PR_ID: vouch check deferred — API error; retrying next tick"
+                continue
+            fi
         fi
 
         # No trusted requester → not reviewable. Watermark and drop here rather
@@ -537,7 +550,14 @@ This request stays open and fires automatically on your next push. To force a wh
             case "$PR_AUTHOR" in
                 ""|*"[bot]"|"Copilot"|"copilot") : ;;
                 *)
-                    if ! printf '%s' "${COMMENTS_JSON:-[]}" | grep -qF "$UNTRUSTED_NOTICE_MARKER"; then
+                    # Keyed on OUR post, not a bare substring: the marker is an
+                    # HTML comment and renders invisible, so a substring test
+                    # would let any drive-by paste it and permanently mute the
+                    # author's only notification. Same shape as DECLINED_ALREADY.
+                    NOTICED_ALREADY=$(printf '%s' "${COMMENTS_JSON:-[]}" |
+                        jq --arg bot "$BOT_USER" --arg mark "$UNTRUSTED_NOTICE_MARKER" \
+                            '[.[] | select(.user.login == $bot and (.body | contains($mark)))] | length' 2>/dev/null)
+                    if [ "${NOTICED_ALREADY:-0}" -eq 0 ]; then
                         gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                             -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
