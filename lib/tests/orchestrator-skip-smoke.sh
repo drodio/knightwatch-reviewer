@@ -1333,6 +1333,18 @@ for row in "${VOUCH_MATRIX[@]}"; do
         [ "$vwm" -ge 1 ] \
             || { echo "FAIL RT2 [$vlabel]: no spec AND no watermark — enumeration never reached the trust decision, so this fence is unproven"; exit 1; }
         ;;
+      *)
+        # Fail loud on an unrecognized verdict. Rows are `|`-delimited and field
+        # 2 is raw JSON, so a `|` appearing in any label or body shifts every
+        # field and lands here. Without this arm the row would run its tick and
+        # assert NOTHING — silently green. Two of these rows are this branch's
+        # security fences, so a mis-delimited row would turn "an untrusted author
+        # cannot self-vouch" into a no-op with no visible difference. Same
+        # vacuous-pass hazard the assertions above guard against, one level up in
+        # the dispatch that chooses them.
+        echo "FAIL RT2 [$vlabel]: unrecognized verdict '$vexpect' — the row is mis-delimited (a '|' in the label or JSON), so nothing was asserted"
+        exit 1
+        ;;
     esac
 done
 
