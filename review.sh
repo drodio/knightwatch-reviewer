@@ -226,9 +226,9 @@ refresh_queue() {
             continue
         fi
 
-        # Author trust, derived once per surviving PR and passed to the worker
-        # rather than re-derived there (two derivations of one fact drift).
-        # Below the idle-skip on purpose — see above.
+        # Derived once per surviving PR and passed to the worker rather than
+        # re-derived there (two derivations of one fact drift). Below the
+        # idle-skip on purpose — see above.
         is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
         # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE
         # (403 rate-limit / 5xx / network — we could not verify). An
@@ -384,15 +384,11 @@ refresh_queue() {
         # would nullify it, permanently: no review runs, so the cutoff never
         # advances, so every later tick re-reads the same last comment.
         #
-        # SCOPE, stated plainly because it is broader than it may read: the vouch
-        # covers THIS PR, including heads pushed after it. It is not bound to the
-        # SHA that was present when it was given, so a vouched contributor can
-        # force-push and the new diff is still read. That is deliberate — binding
-        # to a SHA recreates the per-push expiry above — and it is bounded by
-        # what a vouch grants: READING. Execution stays keyed to author trust
-        # (RT4), so no vouched-but-untrusted code ever runs. The residual is
-        # prompt-injection surface via diff content, which is the same surface
-        # every reviewed PR carries; the vouch decides whose diff enters it.
+        # SCOPE, broader than it may read: the vouch covers THIS PR including
+        # later heads, so a vouched contributor can force-push and still be read.
+        # Deliberate — binding it to a SHA recreates the per-push expiry above —
+        # and bounded by what a vouch grants: READING. Execution stays keyed to
+        # author trust (RT4).
         #
         # Only asked when it can change the answer: a trusted author is already a
         # trusted requester, and on the host path nothing consults the result
@@ -460,13 +456,9 @@ refresh_queue() {
             fi
         fi
 
-        # No trusted requester → this PR is not reviewable. Watermark it and drop
-        # it here rather than queueing a worker that would only skip: the worker
-        # would allocate a run dir and re-derive the same answer every tick. The
-        # watermark is what makes a PERMANENT skip cost one evaluation instead of
-        # one per tick — the loop that produced 46 rate-limit events in
-        # production. It re-opens the moment updatedAt moves, which is exactly
-        # when a vouch comment would arrive.
+        # No trusted requester → not reviewable. Dropped and watermarked here
+        # rather than queued to a worker that would only skip; see the idle-skip
+        # gate above for why the watermark is what bounds the cost.
         #
         # CONTAINER MODE ONLY — it must match the worker gate it front-runs
         # (lib/review-one-pr.sh). Only the container path refuses to review an
@@ -486,22 +478,17 @@ refresh_queue() {
             # (a re-request click, a vouch we failed to recognize): that is
             # exactly when silence is most misleading.
             log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
-            # Tell the author once. The skip is permanent and otherwise silent,
-            # so a contributor without push access would see no review and no
-            # reason, indefinitely — and never learn that a maintainer can
-            # unblock it. Its OWN marker is the idempotency key:
-            # BOT_AUTO_POST_MARKER rides every bot post, so it cannot tell this
-            # notice apart from a review. Both markers are present — the
-            # auto-post one so the notice can never self-trigger a review.
+            # Tell the author once: the skip is permanent and otherwise silent,
+            # so they would see no review, no reason, and no way to unblock it.
+            # Its OWN marker is the idempotency key (BOT_AUTO_POST_MARKER rides
+            # every bot post, so it cannot identify this notice); the auto-post
+            # marker is also present so the notice can never self-trigger.
             #
-            # Not for bots or ghost accounts. dependabot[bot], renovate[bot] and
-            # Copilot all resolve to "no push access", so without this every
-            # dependency-bump PR across every tracked repo gets a comment
-            # addressed to a bot that cannot act on it — and the first tick after
-            # deploy would post one per already-open PR, straight into the same
-            # content-creation abuse limit this branch exists to stop hitting.
-            # Same case idiom as poll-pr-actions.sh / learn-from-replies.sh.
-            # An empty login would render "@ does not have push access".
+            # Not for bots or ghost accounts: they all resolve to "no push
+            # access", so without this every dependency-bump PR fleet-wide gets a
+            # comment its author cannot act on — one per open PR on the first
+            # tick after deploy, into the very abuse limit this branch exists to
+            # stop hitting. Same case idiom as poll-pr-actions.sh.
             NOTICE_ELIGIBLE=true
             case "$PR_AUTHOR" in ""|*"[bot]"|"Copilot"|"copilot") NOTICE_ELIGIBLE=false ;; esac
             if [ "$NOTICE_ELIGIBLE" = true ] &&

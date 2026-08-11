@@ -1284,41 +1284,57 @@ spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
 [ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
     || { echo "FAIL RT1: requester_trusted missing/false for a trusted author; spec=$spec"; exit 1; }
 
-# --- RT2: a push-access maintainer vouches for a read-only author's PR.
-# This is the whole point of requester trust: the PR becomes reviewable without
-# granting the author write access (which would let their code RUN against the
-# privileged dind sidecar — exactly what the trust gate exists to prevent).
-echo "  scenario RT2: trusted maintainer vouches → untrusted author's PR is dispatched..."
-printf '[{"id":7001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MOCK_COMMENTS_FILE"
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
-spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ "$(jq -r '.requester_trusted' <<<"$spec")" = "true" ] \
-    || { echo "FAIL RT2: a trusted /srosro-review did not mark the requester trusted; spec=$spec"; exit 1; }
-[ "$(jq -r '.author_trusted' <<<"$spec")" = "false" ] \
-    || { echo "FAIL RT2: author must remain untrusted — a vouch unlocks review, never execution; spec=$spec"; exit 1; }
+# --- Vouch matrix: who counts as a trusted requester, and who does not.
+# All rows share one arrange/act — seed a thread, run a tick against an
+# UNTRUSTED author (`stranger`), read the spec — and differ only in the thread
+# and the expected verdict, so they belong in one table rather than five
+# near-identical scenarios.
+#
+# `trusted` rows also assert author_trusted stays false: every one of them is a
+# case where reading is unlocked, and none of them may unlock running.
+# `none` rows also assert a watermark exists — "no spec" alone passes vacuously
+# whenever enumeration breaks for an unrelated reason, so each needs a positive
+# marker that only the deliberate unreviewable-drop path leaves behind.
+#
+# Fields: label | comments JSON | MOCK_TRUSTED_USERS | expect (trusted|none)
+NOTICE_MARKERS='<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->'
+VOUCH_MATRIX=(
+  "a maintainer's /srosro-review vouches for a read-only contributor|[{\"id\":7001,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\"}]|$BOT_USER someuser|trusted"
 
-# --- RT3: the security fence. An untrusted author triggering their OWN PR must
-# not unlock review. FORCE_REVIEW is set from comment text with no permission
-# check, so this is the exact self-vouch hole gating on it would open.
-echo "  scenario RT3: untrusted author self-vouch → still NOT reviewable..."
-printf '[{"id":7002,"created_at":"%s","user":{"login":"stranger"},"body":"/srosro-review"}]\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$MOCK_COMMENTS_FILE"
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-spec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-# An untrusted requester is now DROPPED at the dispatcher, so "no spec" is the
-# expected outcome — but on its own it passed vacuously: any unrelated
-# enumeration break yields an empty queue too and silently green-lit this
-# security fence. Pair it with a positive marker that only the deliberate
-# unreviewable-drop path leaves behind (the watermark), so the scenario proves
-# we reached that path and chose to drop, rather than never arriving.
-[ -z "$spec" ] \
-    || { echo "FAIL RT3: an untrusted author self-vouched into a review — FORCE_REVIEW must never be a trust signal; spec=$spec"; exit 1; }
-wm3=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
-[ "$wm3" -ge 1 ] \
-    || { echo "FAIL RT3: no spec AND no watermark — enumeration never reached the trust decision, so the self-vouch fence is unproven"; exit 1; }
+  "an untrusted author cannot self-vouch — FORCE_REVIEW is never a trust signal|[{\"id\":7002,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"stranger\"},\"body\":\"/srosro-review\"}]|$BOT_USER|none"
+
+  "an untrusted reply after a vouch cannot nullify it (OR over requesters, not latest-wins)|[{\"id\":7300,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\"},{\"id\":7301,\"created_at\":\"2026-08-10T03:05:00Z\",\"user\":{\"login\":\"stranger\"},\"body\":\"/srosro-review please?\"}]|$BOT_USER someuser|trusted"
+
+  "the bot's re-request auto-trigger is not a vouch — else a read-only author self-unblocks in one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
+
+  "a QUOTE-REPLIED vouch still counts — quoted bot markers are not the author's own|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"> $NOTICE_MARKERS\\n> Not reviewed — no push access. Comment /srosro-review to unblock.\\n\\nOn it — /srosro-review\"}]|$BOT_USER someuser|trusted"
+)
+echo "  scenario RT2: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."
+for row in "${VOUCH_MATRIX[@]}"; do
+    IFS='|' read -r vlabel vjson vtrusted vexpect <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+    printf '%s\n' "$vjson" > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T03:05:00Z" MOCK_TRUSTED_USERS="$vtrusted" \
+        MOCK_PR_AUTHOR="stranger" run_orchestrator
+    vspec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+    case "$vexpect" in
+      trusted)
+        [ -n "$vspec" ] \
+            || { echo "FAIL RT2 [$vlabel]: PR was dropped — expected it to be reviewable"; cat "$LOG_FILE"; exit 1; }
+        [ "$(jq -r '.requester_trusted' <<<"$vspec")" = "true" ] \
+            || { echo "FAIL RT2 [$vlabel]: requester_trusted != true; spec=$vspec"; exit 1; }
+        [ "$(jq -r '.author_trusted' <<<"$vspec")" = "false" ] \
+            || { echo "FAIL RT2 [$vlabel]: author_trusted must stay false — a vouch unlocks reading, never running; spec=$vspec"; exit 1; }
+        ;;
+      none)
+        [ -z "$vspec" ] \
+            || { echo "FAIL RT2 [$vlabel]: PR was made reviewable by a requester that must not count; spec=$vspec"; exit 1; }
+        vwm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
+        [ "$vwm" -ge 1 ] \
+            || { echo "FAIL RT2 [$vlabel]: no spec AND no watermark — enumeration never reached the trust decision, so this fence is unproven"; exit 1; }
+        ;;
+    esac
+done
 
 # --- RT4: the execution gates must NEVER move to requester trust.
 # A vouch says "this diff is not hostile", not "run this author's code". If a
@@ -1419,24 +1435,13 @@ q7=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q7=${q
 [ "$q7" -eq 0 ] \
     || { echo "FAIL RT7: the bot's own notice self-triggered a review ($q7 spec(s)) — the auto-post marker fence is broken"; exit 1; }
 
-# --- RT8: requester trust is an OR over everyone who asked, never
-# "latest requester wins". A maintainer vouches; the untrusted author then
-# replies with the same command (the notice hands them the exact string). If
-# trust were read off the newest trigger, the author would nullify the vouch
-# just by answering it — silently and permanently, since no review runs to
-# advance the cutoff, so every later tick re-picks that same last comment.
-echo "  scenario RT8: an untrusted reply cannot nullify a maintainer's vouch..."
+# --- RT8b: cost, not correctness. The matrix above proves the vouch survives an
+# untrusted reply; this asks what that answer COST. Same two-participant thread.
+echo "  scenario RT8b: one permission lookup per distinct login, not per question..."
 rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
 printf '[{"id":7300,"created_at":"2026-08-10T03:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"},{"id":7301,"created_at":"2026-08-10T03:05:00Z","user":{"login":"stranger"},"body":"/srosro-review please?"}]\n' \
     > "$MOCK_COMMENTS_FILE"
 MOCK_PR_UPDATED_AT="2026-08-10T03:05:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
-spec8=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ -n "$spec8" ] \
-    || { echo "FAIL RT8: maintainer's vouch was nullified by the author's later reply — PR dropped, and it can never recover on its own"; exit 1; }
-[ "$(jq -r '.requester_trusted' <<<"$spec8")" = "true" ] \
-    || { echo "FAIL RT8: requester_trusted is not true despite a trusted vouch in the set; spec=$spec8"; exit 1; }
-[ "$(jq -r '.author_trusted' <<<"$spec8")" = "false" ] \
-    || { echo "FAIL RT8: author_trusted must stay false — a vouch unlocks reading, never running; spec=$spec8"; exit 1; }
 # One lookup per DISTINCT login, not per question asked. This tick asks about
 # `stranger` three times over (PR author, newest trigger commenter, voucher
 # candidate) and `someuser` twice; uncached that is 5 core-API calls on a PR
@@ -1512,41 +1517,6 @@ n11=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
     || { echo "FAIL RT11: posted a no-push-access notice while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
-# --- RT13: the re-request poller's auto-trigger must not read as a vouch.
-# It is the one bot post deliberately NOT stamped with the auto-post marker (it
-# has to trigger reviews — that is its job), its body is the literal
-# /srosro-review, and it lands under $BOT_USER, which has push access. A PR
-# author can re-request review on their own PR WITHOUT push access and
-# rerequest_check applies no author filter, so filtering on the auto-post marker
-# alone lets a read-only contributor self-unblock with one click — and be
-# credited a standing whole-PR vouch from the bot's own account. RT7 cannot
-# catch this: it seeds only the notice, never this second, unmarked bot post.
-echo "  scenario RT13: the bot's re-request auto-trigger is not a vouch..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[{"id":7600,"created_at":"2026-08-10T09:00:00Z","user":{"login":"%s"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' \
-    "$BOT_USER" > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T09:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-q13=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q13=${q13:-0}
-[ "$q13" -eq 0 ] \
-    || { echo "FAIL RT13: the bot's own re-request trigger vouched for an untrusted author ($q13 spec(s)) — a read-only contributor self-unblocks by clicking re-request"; jq -c '.specs[0]' "$STATE_DIR/queue.json"; exit 1; }
-
-# --- RT14: a maintainer's vouch still counts when they QUOTE-REPLY the notice.
-# GitHub's "Quote reply" copies the quoted body verbatim, HTML comments included,
-# so the vouch lands in a comment that CONTAINS a bot marker. A raw substring
-# fence filters it out — killing the one interaction the notice explicitly
-# invites, with no comment and no log to show for it. Judge the author's own
-# lines (quoted ones start with ">"), not the whole body.
-echo "  scenario RT14: a quote-replied vouch is still a vouch..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[{"id":7700,"created_at":"2026-08-10T10:00:00Z","user":{"login":"someuser"},"body":"> <!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\n> Not reviewed — no push access. A maintainer can unblock it by commenting /srosro-review\\n\\nOn it — /srosro-review"}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T10:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
-spec14=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ -n "$spec14" ] \
-    || { echo "FAIL RT14: a maintainer's quote-replied vouch was discarded because the quoted text carried a bot marker — silently, on the only unblock path the notice advertises"; exit 1; }
-[ "$(jq -r '.requester_trusted' <<<"$spec14")" = "true" ] \
-    || { echo "FAIL RT14: requester_trusted not true on a quote-replied vouch; spec=$spec14"; exit 1; }
-
 # --- RT15: an unreviewable drop is never silent. The notice is one-shot, so
 # every tick after the first posts nothing; without a log line an operator
 # asking "why is this PR unreviewed?" finds no answer on any surface.
@@ -1578,4 +1548,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (37 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, rerequest-autotrigger-is-not-a-vouch, quote-replied-vouch-counts, drop-is-never-silent, host-path-not-dropped)"
+echo "  PASS (34 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, host-path-not-dropped)"
