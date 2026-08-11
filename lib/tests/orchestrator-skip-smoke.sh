@@ -1585,6 +1585,8 @@ tfile=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
     || { echo "FAIL RT17: no trigger-comment file staged — a QUOTED auto-trigger marker blanked the requester's framing (the decision must read the author's own lines)"; cat "$LOG_FILE"; exit 1; }
 grep -qF 'This finding is wrong because X' "$tfile" \
     || { echo "FAIL RT17: the requester's own prose is missing from the staged payload"; cat "$tfile"; exit 1; }
+grep -qF 'are text this commenter QUOTED' "$tfile" \
+    || { echo "FAIL RT17: staged payload does not mark quoted lines as quoted — the prompts branch on "substantive prose vs bare command", so the bot's own quoted review would read as the requester's framing"; cat "$tfile"; exit 1; }
 grep -qF '**Severity**: Medium' "$tfile" \
     || { echo "FAIL RT17: quoted lines were stripped from the staged payload — a maintainer's '> <finding>' + 'this is wrong because X' now reaches the specialists with its referent deleted"; cat "$tfile"; exit 1; }
 clear_seeded_runs
