@@ -1512,6 +1512,24 @@ n11=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
     || { echo "FAIL RT11: posted a no-push-access notice while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
+# --- RT13: the re-request poller's auto-trigger must not read as a vouch.
+# It is the one bot post deliberately NOT stamped with the auto-post marker (it
+# has to trigger reviews — that is its job), its body is the literal
+# /srosro-review, and it lands under $BOT_USER, which has push access. A PR
+# author can re-request review on their own PR WITHOUT push access and
+# rerequest_check applies no author filter, so filtering on the auto-post marker
+# alone lets a read-only contributor self-unblock with one click — and be
+# credited a standing whole-PR vouch from the bot's own account. RT7 cannot
+# catch this: it seeds only the notice, never this second, unmarked bot post.
+echo "  scenario RT13: the bot's re-request auto-trigger is not a vouch..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":7600,"created_at":"2026-08-10T09:00:00Z","user":{"login":"%s"},"body":"/srosro-review\\n\\n<sub>auto-posted by the review bot because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->"}]\n' \
+    "$BOT_USER" > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T09:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+q13=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q13=${q13:-0}
+[ "$q13" -eq 0 ] \
+    || { echo "FAIL RT13: the bot's own re-request trigger vouched for an untrusted author ($q13 spec(s)) — a read-only contributor self-unblocks by clicking re-request"; jq -c '.specs[0]' "$STATE_DIR/queue.json"; exit 1; }
+
 unset REVIEWER_CONTAINER_MODE
 
 # --- RT12: the host path has no unreviewable PR. It reviews an untrusted author
@@ -1529,4 +1547,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (34 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, host-path-not-dropped)"
+echo "  PASS (35 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, rerequest-autotrigger-is-not-a-vouch, host-path-not-dropped)"

@@ -401,8 +401,25 @@ refresh_queue() {
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
         if [ "$REQUESTER_TRUSTED" != true ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
             # Distinct logins, newest first, stopping at the first with push
-            # access. Distinct so one user repeating the command costs one call;
-            # bot posts excluded so the notice below can never vouch for itself.
+            # access. Distinct so one user repeating the command costs one call.
+            #
+            # BOTH bot markers are excluded, and that is load-bearing. Filtering
+            # only BOT_AUTO_POST_MARKER leaves the re-request poller's trigger
+            # (poll-pr-actions.sh) eligible: it is deliberately NOT auto-post
+            # marked (it must still trigger reviews — that is its job), its body
+            # is the literal /<prefix>-review, and it is authored by $BOT_USER,
+            # which has push access. A PR author can re-request review on their
+            # own PR WITHOUT push access, and rerequest_check applies no
+            # author-class filter — so a read-only contributor who just received
+            # the "ask a maintainer" notice below could self-unblock with one
+            # click, and be credited a standing whole-PR vouch from the bot's
+            # own account. That is exactly the self-vouch this gate exists to
+            # refuse.
+            #
+            # Excluded by MARKER, never by author: in a single-account deploy
+            # $BOT_USER is the operator's own identity, so filtering the account
+            # would discard a maintainer's hand-typed vouch. A human's comment
+            # carries neither marker.
             VOUCH_INDETERMINATE=false
             while IFS= read -r _cand_user; do
                 [ -n "$_cand_user" ] || continue
@@ -418,8 +435,10 @@ refresh_queue() {
                 [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
             # jq's `unique` SORTS, which would discard the newest-first order.
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
-                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
+                      --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     '[.[] | select((.body | contains($mark) | not)
+                                   and (.body | contains($trigmark) | not)
                                    and (.body | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
                      | sort_by(.created_at) | reverse | [.[].user.login]
                      | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
