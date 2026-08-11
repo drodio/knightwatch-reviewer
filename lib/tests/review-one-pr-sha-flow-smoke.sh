@@ -50,7 +50,7 @@ seed_state_dir() {
 # must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
 # regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
 # PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
-# repeated contract across the container-mode untrusted-skip, indeterminate-defer,
+# repeated contract across the container-mode untrusted-skip,
 # and metadata-guard scenarios (was four hand-maintained copies).
 assert_no_probe_pr1_run_dir() {
     # Capture once and test the string — NOT `find … | grep -q .`. Under this
@@ -99,14 +99,11 @@ write_gh_stub() {
     local stub_path="$1" base_ref="$2" head_oid="$3"
     cat > "$stub_path" <<STUB
 #!/bin/bash
-# Trust-permission endpoint: opt-in non-zero exit (simulates a 403 rate-limit on
-# the collaborators/permission check → an INDETERMINATE trust result). Default
-# unset → falls through to the no-output/exit-0 path below (a clean 200 with no
-# push role = definitively-untrusted), preserving every existing scenario.
-# NOTE: the gh stub's permission-endpoint blocks were removed. The worker no
-# longer looks up trust — review.sh passes it — so nothing reached them, and a
-# stub arm no consumer can trigger silently mis-documents how these scenarios
-# are arranged.
+# No trust-permission endpoint. The worker never looks up trust — review.sh is
+# its only caller and passes both values as argv — so a stub arm for
+# collaborators/*/permission would have no consumer, and a stub arm nothing can
+# trigger silently mis-documents how these scenarios are arranged. Each call
+# site states its own trust in its args.
 
 # Issue-comments endpoint: opt-in JSON fixture (scenario 12's operator thread).
 if [ -n "\${GH_STUB_ISSUE_COMMENTS_FILE:-}" ]; then
@@ -747,7 +744,7 @@ fi
 echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
-write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
+write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; trust comes from the args below
 # The skip fires BEFORE allocate_run_dir (issue #189): a permanently-untrusted
 # PR re-enumerated every ~30s must NOT leak a runs/<id>/ dir per poll. The
 # behavioral contract is clean exit 0, no run dir, AND silence (no per-tick log
@@ -763,7 +760,7 @@ for _tick in 1 2; do
     # Leak check FIRST: a gate that failed to fire proceeds to clone/allocate
     # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
     # run-dir/#189 diagnostic is the informative one — the exit-code check would
-    # otherwise mask it. Matches the indeterminate-defer / metadata-guard sites.
+    # otherwise mask it. Matches the metadata-guard site.
     assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — untrusted skip"
     if [ "$_ec" -ne 0 ]; then
         echo "FAIL: scenario 5 — untrusted tick $_tick exited $_ec (expected 0 from a clean container-mode skip)"
@@ -787,9 +784,6 @@ if [ -s "$STATE5/orchestrator.log" ]; then
     exit 1
 fi
 
-# ===== Scenario 6: container-mode gate DEFERS on an indeterminate trust check =====
-# A 403/5xx/network failure of the collaborators/permission lookup (e.g. the
-# shared account is rate-limited) must NOT read as "untrusted" — that would
 # NOTE: the container-mode indeterminate-trust DEFER scenario was deleted here.
 # The worker no longer derives trust — review.sh is its only caller and passes
 # both values, so an indeterminate lookup is resolved (and deferred) at the
@@ -824,7 +818,7 @@ if ! grep -q "gh pr view returned no baseRefName / author" "$LOG_MD"; then
     exit 1
 fi
 
-echo "  gate/leak scenarios ok (untrusted skip + dedupe + indeterminate defer + metadata-guard pre-allocation abort)"
+echo "  gate/leak scenarios ok (untrusted skip + dedupe + metadata-guard pre-allocation abort)"
 
 # ===== Scenario 6: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
