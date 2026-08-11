@@ -69,6 +69,24 @@ ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
 # BOT_AUTO_POST_MARKER, which every bot post carries and so cannot identify it.
 UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice -->"
 
+# jq prelude: `own` is a comment's body with quoted lines removed — what its
+# author actually wrote. Every marker and command test goes through it.
+#
+# GitHub's "Quote reply" copies the quoted comment's raw markdown, HTML comments
+# included. Testing the raw body means quote-replying ANY bot post (a review,
+# the decline, the no-push-access notice) and typing /<prefix>-review produces a
+# body containing BOT_AUTO_POST_MARKER — so the request is discarded as if the
+# bot had made it. That is the natural way to ask for a fresh pass, and on an
+# already-reviewed PR at an unchanged head it fails with no re-review, no
+# comment and no log. It equally discards a quoted command as if it were the
+# quoter's own request, which it is not.
+#
+# Defined once and shared by all four call sites: the vouch scan and the three
+# trigger queries. They disagreed for one commit — the vouch scan counted a
+# quote-reply while the trigger queries did not, so the same comment vouched for
+# a PR without requesting a review of it.
+JQ_OWN='def own: (.body | split("\n") | map(select(startswith(">") | not)) | join("\n"));'
+
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
 # `wc -c` is portable; `stat -c%s` is GNU-only (BSD stat uses -f%z).
@@ -294,10 +312,10 @@ refresh_queue() {
             # the longer command doesn't accidentally satisfy both paths.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-review"; "i")) and ((own | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -313,11 +331,11 @@ refresh_queue() {
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-review"; "i")) and ((own | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -433,21 +451,9 @@ refresh_queue() {
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
                 jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
                       --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select(
-                        # Judge each comment on what its author actually WROTE.
-                        # GitHub "Quote reply" copies the quoted body verbatim,
-                        # HTML comments included — so a maintainer who quote-
-                        # replies the notice and types the command posts a body
-                        # containing a bot marker. A raw substring test filters
-                        # that out, killing the exact interaction the notice
-                        # invites, silently and permanently. Quoted lines start
-                        # with ">"; a comment original content does not.
-                        (.body | split("\n") | map(select(startswith(">") | not)) | join("\n")) as $own
-                        | ($own | contains($mark) | not)
-                          and ($own | contains($trigmark) | not)
-                          # The command must be theirs too — quoting someone
-                          # else asking for a review is not asking for one.
-                          and ($own | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
+                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not)
+                                   and (own | contains($trigmark) | not)
+                                   and (own | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
                      | sort_by(.created_at) | reverse | [.[].user.login]
                      | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
             if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
