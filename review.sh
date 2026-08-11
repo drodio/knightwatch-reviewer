@@ -437,9 +437,21 @@ refresh_queue() {
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
                 jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
                       --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not)
-                                   and (.body | contains($trigmark) | not)
-                                   and (.body | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
+                    '[.[] | select(
+                        # Judge each comment on what its author actually WROTE.
+                        # GitHub "Quote reply" copies the quoted body verbatim,
+                        # HTML comments included — so a maintainer who quote-
+                        # replies the notice and types the command posts a body
+                        # containing a bot marker. A raw substring test filters
+                        # that out, killing the exact interaction the notice
+                        # invites, silently and permanently. Quoted lines start
+                        # with ">"; a comment original content does not.
+                        (.body | split("\n") | map(select(startswith(">") | not)) | join("\n")) as $own
+                        | ($own | contains($mark) | not)
+                          and ($own | contains($trigmark) | not)
+                          # The command must be theirs too — quoting someone
+                          # else asking for a review is not asking for one.
+                          and ($own | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
                      | sort_by(.created_at) | reverse | [.[].user.login]
                      | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
             if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
@@ -466,6 +478,14 @@ refresh_queue() {
         # access. Host has no loop to close either: it reviews the PR, so the PR
         # gets a KNOWN_SHA and the original idle-skip already covers it.
         if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
+            # Always log the drop, even though the notice is one-shot. After the
+            # first tick the notice marker is on the thread, so every later drop
+            # posts nothing — and without this line an operator asking "why is
+            # this PR not being reviewed?" has no answer anywhere. It matters
+            # most when someone with push access DID act and it did not land
+            # (a re-request click, a vouch we failed to recognize): that is
+            # exactly when silence is most misleading.
+            log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
             # Tell the author once. The skip is permanent and otherwise silent,
             # so a contributor without push access would see no review and no
             # reason, indefinitely — and never learn that a maintainer can

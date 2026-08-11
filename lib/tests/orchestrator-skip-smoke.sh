@@ -1530,6 +1530,37 @@ q13=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q13=$
 [ "$q13" -eq 0 ] \
     || { echo "FAIL RT13: the bot's own re-request trigger vouched for an untrusted author ($q13 spec(s)) — a read-only contributor self-unblocks by clicking re-request"; jq -c '.specs[0]' "$STATE_DIR/queue.json"; exit 1; }
 
+# --- RT14: a maintainer's vouch still counts when they QUOTE-REPLY the notice.
+# GitHub's "Quote reply" copies the quoted body verbatim, HTML comments included,
+# so the vouch lands in a comment that CONTAINS a bot marker. A raw substring
+# fence filters it out — killing the one interaction the notice explicitly
+# invites, with no comment and no log to show for it. Judge the author's own
+# lines (quoted ones start with ">"), not the whole body.
+echo "  scenario RT14: a quote-replied vouch is still a vouch..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":7700,"created_at":"2026-08-10T10:00:00Z","user":{"login":"someuser"},"body":"> <!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\n> Not reviewed — no push access. A maintainer can unblock it by commenting /srosro-review\\n\\nOn it — /srosro-review"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T10:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec14=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec14" ] \
+    || { echo "FAIL RT14: a maintainer's quote-replied vouch was discarded because the quoted text carried a bot marker — silently, on the only unblock path the notice advertises"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec14")" = "true" ] \
+    || { echo "FAIL RT14: requester_trusted not true on a quote-replied vouch; spec=$spec14"; exit 1; }
+
+# --- RT15: an unreviewable drop is never silent. The notice is one-shot, so
+# every tick after the first posts nothing; without a log line an operator
+# asking "why is this PR unreviewed?" finds no answer on any surface.
+echo "  scenario RT15: every unreviewable drop leaves an operator-facing reason..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":7800,"created_at":"2026-08-10T11:00:00Z","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> Not reviewed — no push access. Comment /srosro-review to unblock."}]\n' \
+    "$BOT_USER" > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+n15=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n15=${n15:-0}
+[ "$n15" -eq 0 ] \
+    || { echo "FAIL RT15: setup — the notice should already be on the thread, so this tick must post nothing"; exit 1; }
+grep -q "no trusted requester" "$LOG_FILE" \
+    || { echo "FAIL RT15: a drop with the notice already posted logged nothing — the PR is unreviewed with no reason on any surface"; cat "$LOG_FILE"; exit 1; }
+
 unset REVIEWER_CONTAINER_MODE
 
 # --- RT12: the host path has no unreviewable PR. It reviews an untrusted author
@@ -1547,4 +1578,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (35 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, rerequest-autotrigger-is-not-a-vouch, host-path-not-dropped)"
+echo "  PASS (37 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, rerequest-autotrigger-is-not-a-vouch, quote-replied-vouch-counts, drop-is-never-silent, host-path-not-dropped)"
