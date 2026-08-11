@@ -145,7 +145,7 @@ elif [ "$1" = "api" ]; then
             # since a failed POST is not retried this round (scenario 7d) — is
             # exercised rather than assumed.
             if [ -n "${MOCK_POST_RC:-}" ]; then
-                echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                echo "${MOCK_POST_ERR:-gh: HTTP 403: simulated-abuse-limit}" >&2
                 exit "$MOCK_POST_RC"
             fi
             echo '{"id":1}'
@@ -1592,6 +1592,46 @@ grep -qF '**Severity**: Medium' "$tfile" \
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 
+# --- RT20: CRLF bodies. GitHub's web UI normalizes textarea input to \r\n, so
+# every line of a hand-typed comment carries a trailing \r. `own` split on \n
+# only, so a command that is not the final line ended in \r and the anchored
+# terminator rejected it — silently killing the PRIMARY trigger path for the
+# most ordinary comment shape there is. No fixture in the suite used CRLF, which
+# is exactly why an anchor that looked like poll-pr-actions' sibling passed:
+# that one uses POSIX [[:space:]], which already includes \r.
+echo "  scenario RT20: a CRLF-typed command still triggers and vouches..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[{"id":8200,"created_at":"2026-08-10T18:00:00Z","user":{"login":"someuser"},"body":"/srosro-review\\r\\n\\r\\nplease look at the auth path"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T18:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+spec20=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+[ -n "$spec20" ] \
+    || { echo "FAIL RT20: a CRLF-typed /srosro-review neither triggered nor vouched — every comment typed in GitHub's web UI is CRLF, so this is the common case, and it fails silently"; cat "$LOG_FILE"; exit 1; }
+[ "$(jq -r '.requester_trusted' <<<"$spec20")" = "true" ] \
+    || { echo "FAIL RT20: CRLF command did not register as a vouch; spec=$spec20"; exit 1; }
+
+# --- RT21: a BARE command must stage without the annotation. Four prompts
+# branch on the body being ONLY the bare slash command (aggregator.md,
+# intent.md); prepending the quoted-lines note unconditionally puts two
+# sentences of prose above it and makes that branch unreachable — the same
+# "non-requester text reads as framing" bug the note exists to fix, with a new
+# author. RT17 covers the quoted case; this covers the common one.
+echo "  scenario RT21: a bare command stages without the quoted-lines note..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T190000000Z" "abc123" "COMMENT" "2026-08-10T19:00:00Z" >/dev/null
+printf '[{"id":8300,"created_at":"2026-08-10T20:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T20:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="someuser" run_orchestrator
+tf21=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
+[ -n "$tf21" ] && [ -f "$tf21" ] \
+    || { echo "FAIL RT21: no trigger-comment file staged for a bare command"; cat "$LOG_FILE"; exit 1; }
+grep -qF 'are text this commenter QUOTED' "$tf21" \
+    && { echo "FAIL RT21: the quoted-lines note was prepended to a BARE command — the prompts' bare-command branch is now unreachable"; cat "$tf21"; exit 1; }
+clear_seeded_runs
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
 # --- RT18: prose that merely NAMES the command must not authorize.
 # A substring test makes "don't use /srosro-review yet" a vouch for an untrusted
 # diff — which then reaches sandbox-bypassed Codex. poll-pr-actions.sh's
@@ -1606,22 +1646,34 @@ q18=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q18=$
 [ "$q18" -eq 0 ] \
     || { echo "FAIL RT18: prose merely NAMING the command authorized an untrusted diff ($q18 spec(s)) — the command must be anchored to line-start"; jq -c '.specs[0]' "$STATE_DIR/queue.json"; exit 1; }
 
-# --- RT19: an undelivered notice must not be watermarked as delivered.
-# The watermark suppresses every later tick until updatedAt moves, so a POST lost
-# to the rate-limit pause would leave the contributor permanently with neither
-# the explanation nor the unblock instructions — the exact silence the notice
-# exists to end.
-echo "  scenario RT19: a failed notice POST defers instead of watermarking..."
+# --- RT19: undelivered-notice policy, both halves. The two cases must differ,
+# and they must match the sibling decline POST's policy (scenario 7d), or the
+# two POST paths hold opposite rules with nothing distinguishing them.
+#   transient (rate-limit pause) → defer, no watermark: the retry converges once
+#     the window opens, and watermarking would lose the notice permanently.
+#   permanent (archived/locked PR, lost scope, org restrictions) → watermark:
+#     the marker never lands, so withholding it re-POSTs every tick forever and
+#     re-runs the comment fetch + permission lookups with it — feeding the exact
+#     rate limit this branch exists to stop.
+echo "  scenario RT19: undelivered notice — defer while paused, watermark when permanent..."
 rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
 printf '[]\n' > "$MOCK_COMMENTS_FILE"
-MOCK_POST_RC=1 MOCK_PR_UPDATED_AT="2026-08-10T17:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+MOCK_POST_RC=1 MOCK_POST_ERR="gh: HTTP 403: You have exceeded a secondary rate limit" \
+    MOCK_PR_UPDATED_AT="2026-08-10T17:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
     MOCK_PR_AUTHOR="stranger" run_orchestrator
 if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
-    echo "FAIL RT19: watermarked despite a failed notice POST — the contributor now gets neither the explanation nor the unblock path, permanently"
+    echo "FAIL RT19a: watermarked despite a rate-limited notice POST — the contributor loses the explanation and the unblock path permanently"
     exit 1
 fi
 grep -q "notice undelivered" "$LOG_FILE" \
-    || { echo "FAIL RT19: no undelivered-notice log line — the failure is invisible to the operator"; cat "$LOG_FILE"; exit 1; }
+    || { echo "FAIL RT19a: no undelivered-notice log line — the failure is invisible to the operator"; cat "$LOG_FILE"; exit 1; }
+
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+MOCK_POST_RC=1 MOCK_POST_ERR="gh: HTTP 403: Repository has been archived" \
+    MOCK_PR_UPDATED_AT="2026-08-10T17:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_PR_AUTHOR="stranger" run_orchestrator
+[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+    || { echo "FAIL RT19b: a PERMANENT notice failure was not watermarked — it re-POSTs every tick forever and drags the comment fetch + permission lookups with it (scenario 7d pinned the opposite policy for the sibling decline POST)"; exit 1; }
 
 unset REVIEWER_CONTAINER_MODE
 
@@ -1640,4 +1692,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (38 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, trigger-decision-vs-payload, command-must-be-line-anchored, undelivered-notice-defers, host-path-not-dropped)"
+echo "  PASS (40 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, trigger-decision-vs-payload, command-must-be-line-anchored, crlf-command-still-works, bare-command-unannotated, undelivered-notice-defers, host-path-not-dropped)"
