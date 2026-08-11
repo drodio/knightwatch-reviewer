@@ -32,9 +32,31 @@
 _AUTH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_AUTH_LIB_DIR/gh-retry.sh"  # defines gh() — the rate-limit seam
 
+# Per-process memo. The orchestrator is a fresh process per tick, so this is a
+# per-tick cache with no invalidation to get wrong. It matters because one tick
+# can ask about the same login several times over — the PR author, the trigger
+# commenter, and each distinct voucher on the thread are frequently the same
+# person, and each miss is an uncached core-API request. That request stream,
+# one per PR per tick per container, is what tripped the secondary rate limit.
+#
+# ONLY definitive answers are memoized. An indeterminate result (rc=2) is a
+# transient failure — caching it would pin a whole tick to "couldn't verify"
+# on one unlucky 5xx, turning a blip into a tick-wide outage.
+declare -A _TRUST_MEMO=()
+
+# Drop the memo. Production never needs this — the orchestrator exits between
+# ticks, which is the whole reason a cache with no invalidation is safe here.
+# It exists so a test process, which simulates many worlds in one process, can
+# make that lifetime explicit instead of inheriting a previous scenario's answer.
+reset_trust_memo() { _TRUST_MEMO=(); }
+
 is_trusted_repo_author() {
     local repo="$1" user="$2"
     [ -z "$user" ] && return 1
+    local memo_key="$repo/$user"
+    if [ -n "${_TRUST_MEMO[$memo_key]:-}" ]; then
+        return "${_TRUST_MEMO[$memo_key]}"
+    fi
     local perm err rc errfile
     # Capture stdout (role), stderr (gh's error text), and the real exit code
     # separately — no 2>/dev/null, so a 403/5xx is a non-zero rc we can read,
@@ -48,14 +70,15 @@ is_trusted_repo_author() {
         # "Not Found"/HTTP 404 message → DEFINITIVELY untrusted. Any other
         # failure (403 rate-limit, 5xx, network) → indeterminate, defer.
         case "$err" in
-            *"HTTP 404"*|*"Not Found"*) return 1 ;;
+            *"HTTP 404"*|*"Not Found"*) _TRUST_MEMO[$memo_key]=1; return 1 ;;
         esac
+        # Deliberately NOT memoized — see the note on _TRUST_MEMO.
         return 2
     fi
     # Clean 200. A push role is trusted; any other role is definitively not.
     case "$perm" in
-        admin|write|maintain) return 0 ;;
-        *) return 1 ;;
+        admin|write|maintain) _TRUST_MEMO[$memo_key]=0; return 0 ;;
+        *) _TRUST_MEMO[$memo_key]=1; return 1 ;;
     esac
 }
 

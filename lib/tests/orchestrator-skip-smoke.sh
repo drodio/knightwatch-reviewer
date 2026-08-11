@@ -201,6 +201,16 @@ elif [ "$1" = "api" ]; then
         # Extract the username segment between "collaborators/" and "/permission".
         user="${url##*/collaborators/}"
         user="${user%/permission}"
+        # Per-user indeterminate (rc=2). MOCK_PERMISSION_RC is all-or-nothing,
+        # which cannot isolate the vouch scan: a global failure makes the AUTHOR
+        # lookup indeterminate too, and that defers the PR before any voucher is
+        # ever consulted. Non-rate-limit wording, so no fleet pause is stamped.
+        for indet in ${MOCK_INDETERMINATE_USERS:-}; do
+            if [ "$user" = "$indet" ]; then
+                echo "gh: HTTP 500: server error (simulated)" >&2
+                exit 1
+            fi
+        done
         for trusted in ${MOCK_TRUSTED_USERS:-}; do
             if [ "$user" = "$trusted" ]; then
                 echo "write"; exit 0
@@ -1250,6 +1260,15 @@ if [ "$n" -ne 1 ]; then
     exit 1
 fi
 
+# --- Requester-trust scenarios (RT*) run in CONTAINER MODE, because that is the
+# only mode the feature exists in: the host path reviews an untrusted author
+# anyway (minus the .env mirror and `just test`), so it has no unreviewable PR
+# to drop, no loop to close, and nothing to notify about. Running these without
+# the flag would assert container behavior against host code paths.
+# Production containers also pin MAX_CONCURRENT=1/WAIT_FOR_WORKERS=1 off this
+# same flag, so the scenarios inherit the real concurrency shape too.
+export REVIEWER_CONTAINER_MODE=1
+
 # --- RT1: the spec carries both trust facts, so the worker never re-derives
 # them. (An UNREVIEWABLE PR never reaches the spec at all — it is dropped at the
 # dispatcher; RT5 covers that.) This guards the propagation contract the worker
@@ -1379,7 +1398,12 @@ n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || t
 # this tick — the idempotency marker is the only thing preventing a repost.
 # Markers written as literals — the harness shell never sources bootstrap.sh, so
 # BOT_AUTO_POST_MARKER is not in scope here. These strings are the contract.
-printf '[{"id":7200,"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> not reviewed: no push access"}]\n' \
+# The body must carry the real notice's literal /srosro-review, because that is
+# the whole hazard: the vouch scan matches on that command, and the comment is
+# authored by $BOT_USER (which IS trusted). A fixture without the command makes
+# the q7 assertion below vacuous — deleting the marker filter entirely would
+# still yield zero specs, so the fence would pass while proving nothing.
+printf '[{"id":7200,"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> Not reviewed — no push access. A maintainer can unblock it by commenting /srosro-review here."}]\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
 n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n=${n:-0}
@@ -1413,6 +1437,16 @@ spec8=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
     || { echo "FAIL RT8: requester_trusted is not true despite a trusted vouch in the set; spec=$spec8"; exit 1; }
 [ "$(jq -r '.author_trusted' <<<"$spec8")" = "false" ] \
     || { echo "FAIL RT8: author_trusted must stay false — a vouch unlocks reading, never running; spec=$spec8"; exit 1; }
+# One lookup per DISTINCT login, not per question asked. This tick asks about
+# `stranger` three times over (PR author, newest trigger commenter, voucher
+# candidate) and `someuser` twice; uncached that is 5 core-API calls on a PR
+# with two participants, and it scales with thread size. RT5 only measures the
+# suppressed path, so without this the active path's cost is invisible — and
+# re-introducing an unbounded per-tick call walk is the very cost this branch
+# claims to remove, just relocated.
+p8=$( { grep -c 'PERM' "$PERMISSION_CALL_LOG" 2>/dev/null || true; } | head -1); p8=${p8:-0}
+[ "$p8" -le 2 ] \
+    || { echo "FAIL RT8: $p8 permission lookups for 2 distinct logins — the per-tick memo is not deduplicating, so thread size now drives API cost"; sort "$PERMISSION_CALL_LOG" | uniq -c; exit 1; }
 
 # --- RT9: a vouch does not expire when the review it authorized completes.
 # The trigger cutoff (started_at of the last review) is the right lifetime for a
@@ -1452,4 +1486,47 @@ q10=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q10=$
 [ "$q10" -eq 0 ] \
     || { echo "FAIL RT10: bot-authored PR was queued for review — suppressing the notice must not also suppress the skip"; exit 1; }
 
-echo "  PASS (32 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors)"
+# --- RT11: an unverifiable VOUCHER must defer, never drop. Collapsing rc=2 to
+# "not vouched" is worse here than on the author lookup: the drop also
+# watermarks, so one 5xx would suppress a genuinely-vouched PR until its next
+# updatedAt event — silently, since the notice is already on the thread. Author
+# is definitively untrusted (rc=1); only the voucher's lookup fails.
+echo "  scenario RT11: an unverifiable voucher defers instead of dropping+watermarking..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+# The vouch must PREDATE the review cutoff, or it is also a live trigger and the
+# trigger block's own defer fires first — masking the path under test.
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T070000000Z" "oldsha2" "COMMENT" "2026-08-10T07:00:00Z" >/dev/null
+printf '[{"id":7500,"created_at":"2026-08-10T06:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T08:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_INDETERMINATE_USERS="someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+if [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
+    echo "FAIL RT11: watermarked on an unverifiable vouch — a real vouch is now suppressed until the next PR event, silently"
+    exit 1
+fi
+grep -q "vouch check deferred" "$LOG_FILE" \
+    || { echo "FAIL RT11: no deferral logged — an indeterminate vouch collapsed to 'not vouched'"; cat "$LOG_FILE"; exit 1; }
+n11=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n11=${n11:-0}
+[ "$n11" -eq 0 ] \
+    || { echo "FAIL RT11: posted a no-push-access notice while trust was merely unverifiable"; exit 1; }
+clear_seeded_runs
+
+unset REVIEWER_CONTAINER_MODE
+
+# --- RT12: the host path has no unreviewable PR. It reviews an untrusted author
+# anyway (minus the .env mirror and `just test`), so the dispatcher drop must not
+# fire there — doing so would delete reviews main performs today and would post a
+# public "no push access" comment on a PR the host was about to review.
+echo "  scenario RT12: host path still reviews an untrusted author (no drop, no notice)..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T08:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+q12=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q12=${q12:-0}
+[ "$q12" -eq 1 ] \
+    || { echo "FAIL RT12: host-path review of an untrusted author was dropped at the dispatcher (got $q12 spec(s)) — main reviews this PR"; exit 1; }
+n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n12=${n12:-0}
+[ "$n12" -eq 0 ] \
+    || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
+
+echo "  PASS (34 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT8: requester-trust spec fields, maintainer-vouch, self-vouch-fence, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-untrusted-reply, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, host-path-not-dropped)"

@@ -96,6 +96,11 @@ TRUST_MATRIX=(
 )
 for row in "${TRUST_MATRIX[@]}"; do
     IFS='|' read -r label mode role want <<<"$row"
+    # Each row is a different world for the SAME (repo, user), which the
+    # per-process memo would otherwise answer from the first row. Production
+    # gets that isolation for free (one process per tick); a matrix loop has to
+    # ask for it.
+    reset_trust_memo
     set +e
     GH_API_RETRY_MAX=1 MOCK_PERM_MODE="$mode" MOCK_PERM_ROLE="$role" \
         is_trusted_repo_author "cncorp/plow" "someuser"
@@ -103,6 +108,25 @@ for row in "${TRUST_MATRIX[@]}"; do
     set -e
     [ "$got" = "$want" ] || { echo "FAIL scenario 1 [$label]: expected rc=$want, got rc=$got"; exit 1; }
 done
+
+reset_gh_pause
+echo "  scenario 1b: an indeterminate result is never memoized..."
+# The memo makes one tick cheap; caching a FAILURE would make one tick blind.
+# A single 5xx would pin every later question about that login for the rest of
+# the tick — turning a blip into a tick-wide outage, and (since the dispatcher
+# drops + watermarks an unvouched PR) into suppression that outlives the tick.
+# Same login, no reset between: the second call must reach the API and answer 0.
+# 5xx, not 403: the 403 stub is worded as a rate limit, which correctly stamps
+# the fleet pause and would short-circuit the second call before it ever
+# consults the memo — the scenario would fail on correct code.
+reset_trust_memo
+set +e
+GH_API_RETRY_MAX=1 MOCK_PERM_MODE=5xx is_trusted_repo_author "cncorp/plow" "memouser"; first=$?
+GH_API_RETRY_MAX=1 MOCK_PERM_MODE=role MOCK_PERM_ROLE=write is_trusted_repo_author "cncorp/plow" "memouser"; second=$?
+set -e
+[ "$first" = 2 ] || { echo "FAIL scenario 1b: setup — expected the 5xx to yield rc=2, got $first"; exit 1; }
+[ "$second" = 0 ] || { echo "FAIL scenario 1b: a transient failure was cached (got rc=$second on a clean 200) — one blip now blinds the whole tick"; exit 1; }
+reset_trust_memo
 
 reset_gh_pause
 echo "  scenario 2: indeterminate (403) must NOT be trusted — security invariant..."
@@ -160,4 +184,4 @@ reason=$(just_test_skip_reason "" true)
 [ -n "$reason" ] || { echo "FAIL scenario 9: missing justfile should skip"; exit 1; }
 printf '%s' "$reason" | grep -qi "justfile" || { echo "FAIL scenario 9: skip reason should name the missing justfile, got: $reason"; exit 1; }
 
-echo "  PASS (9 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile)"
+echo "  PASS (10 scenarios: trust-tristate-matrix[9 rows: 3×trusted/2×untrusted/404/403/5xx/empty], indeterminate-not-memoized, indeterminate-defers-not-trusted, trust-empty, approval-self-skipped, approval-success, approval-failure-fail-loud, just-test run/untrusted-skip/no-justfile)"

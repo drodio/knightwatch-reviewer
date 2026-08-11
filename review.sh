@@ -372,7 +372,7 @@ refresh_queue() {
         # rather than post-cutoff ones, because it is a different question.
         # A TRIGGER is a one-shot "re-review now" and is consumed by the review
         # it causes. A VOUCH is a standing statement — "a human with push access
-        # judged this diff safe to read" — and nothing about finishing a review
+        # is willing to have this PR read" — and nothing about finishing a review
         # makes it untrue. Keying it off the trigger cutoff would expire it the
         # moment it was honored: the maintainer vouches, one review runs,
         # REVIEWED_AT_ISO advances past their comment, and the contributor's next
@@ -384,17 +384,38 @@ refresh_queue() {
         # would nullify it, permanently: no review runs, so the cutoff never
         # advances, so every later tick re-reads the same last comment.
         #
-        # Only asked when it can change the answer — a trusted author is already
-        # a trusted requester, so this costs nothing on the common path.
+        # SCOPE, stated plainly because it is broader than it may read: the vouch
+        # covers THIS PR, including heads pushed after it. It is not bound to the
+        # SHA that was present when it was given, so a vouched contributor can
+        # force-push and the new diff is still read. That is deliberate — binding
+        # to a SHA recreates the per-push expiry above — and it is bounded by
+        # what a vouch grants: READING. Execution stays keyed to author trust
+        # (RT4), so no vouched-but-untrusted code ever runs. The residual is
+        # prompt-injection surface via diff content, which is the same surface
+        # every reviewed PR carries; the vouch decides whose diff enters it.
+        #
+        # Only asked when it can change the answer: a trusted author is already a
+        # trusted requester, and on the host path nothing consults the result
+        # (the worker's gate is container-only). So this costs nothing on the
+        # common path and nothing at all on host.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
-        if [ "$REQUESTER_TRUSTED" != true ]; then
+        if [ "$REQUESTER_TRUSTED" != true ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
             # Distinct logins, newest first, stopping at the first with push
             # access. Distinct so one user repeating the command costs one call;
             # bot posts excluded so the notice below can never vouch for itself.
+            VOUCH_INDETERMINATE=false
             while IFS= read -r _cand_user; do
                 [ -n "$_cand_user" ] || continue
                 is_trusted_repo_author "$REPO" "$_cand_user"; _cand_rc=$?
                 if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; break; fi
+                # rc=2 is "could not verify", never "not a voucher". Collapsing
+                # it here would be worse than the same mistake on the author
+                # lookup: an unverified voucher means the PR is dropped AND
+                # watermarked, so one 403 suppresses a genuinely-vouched PR
+                # until its next updatedAt event — silently, since the notice is
+                # already posted. That is the exact permanent-silent-drop this
+                # branch exists to remove, re-created one block later.
+                [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
             # jq's `unique` SORTS, which would discard the newest-first order.
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
                 jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
@@ -402,6 +423,10 @@ refresh_queue() {
                                    and (.body | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
                      | sort_by(.created_at) | reverse | [.[].user.login]
                      | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
+            if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
+                log "$PR_ID: vouch check deferred — API error; retrying next tick"
+                continue
+            fi
         fi
 
         # No trusted requester → this PR is not reviewable. Watermark it and drop
@@ -411,7 +436,17 @@ refresh_queue() {
         # one per tick — the loop that produced 46 rate-limit events in
         # production. It re-opens the moment updatedAt moves, which is exactly
         # when a vouch comment would arrive.
-        if [ "$REQUESTER_TRUSTED" != true ]; then
+        #
+        # CONTAINER MODE ONLY — it must match the worker gate it front-runs
+        # (lib/review-one-pr.sh). Only the container path refuses to review an
+        # untrusted requester; the host path reviews them anyway, just without
+        # the .env mirror and `just test`. Dropping here unconditionally would
+        # therefore delete host-path reviews that main performs, and would post
+        # a public "no push access" comment on a PR the host was about to review
+        # — including, under an unverifiable lookup, to an author who does have
+        # access. Host has no loop to close either: it reviews the PR, so the PR
+        # gets a KNOWN_SHA and the original idle-skip already covers it.
+        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
             # Tell the author once. The skip is permanent and otherwise silent,
             # so a contributor without push access would see no review and no
             # reason, indefinitely — and never learn that a maintainer can
