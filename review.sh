@@ -132,7 +132,7 @@ refresh_queue() {
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
-    local VOUCH_INDETERMINATE NOTICED_ALREADY
+    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -550,6 +550,13 @@ This request stays open and fires automatically on your next push. To force a wh
             case "$PR_AUTHOR" in
                 ""|*"[bot]"|"Copilot"|"copilot") : ;;
                 *)
+                    # Bound note: this keys on BOT_USER matching the identity the
+                    # token posts as — a repo-wide invariant DECLINED_ALREADY,
+                    # is_approve_request's self-skip and learn-from-replies all
+                    # already rely on. Unlike those, a mismatch here cannot spin:
+                    # the drop below watermarks unconditionally, so the notice can
+                    # re-post at most once per updatedAt change, never per tick.
+                    #
                     # Keyed on OUR post, not a bare substring: the marker is an
                     # HTML comment and renders invisible, so a substring test
                     # would let any drive-by paste it and permanently mute the
@@ -558,12 +565,19 @@ This request stays open and fires automatically on your next push. To force a wh
                         jq --arg bot "$BOT_USER" --arg mark "$UNTRUSTED_NOTICE_MARKER" \
                             '[.[] | select(.user.login == $bot and (.body | contains($mark)))] | length' 2>/dev/null)
                     if [ "${NOTICED_ALREADY:-0}" -eq 0 ]; then
+                        # Capture stderr like the sibling decline POST: this path has
+                        # the same permanent-failure modes (archived/locked PR, lost
+                        # write scope, org comment restrictions, abuse-limit 403) and
+                        # the branch watermarks regardless, so a cause-free line would
+                        # leave an undeliverable notice undiagnosable.
+                        NOTICE_ERR=$(mktemp)
                         gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
                             -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
-A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>&1 \
-                            || log "$PR_ID: could not post the no-push-access notice"
+A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
+                            || log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
+                        rm -f "$NOTICE_ERR"
                     fi ;;
             esac
             # Watermarked whether or not the POST landed — same policy as the
