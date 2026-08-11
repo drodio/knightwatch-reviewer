@@ -85,7 +85,14 @@ UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice --
 # trigger queries. They disagreed for one commit — the vouch scan counted a
 # quote-reply while the trigger queries did not, so the same comment vouched for
 # a PR without requesting a review of it.
-JQ_OWN='def own: (.body | split("\n") | map(select(startswith(">") | not)) | join("\n"));'
+JQ_OWN='def own: (.body | split("\n") | map(select(startswith(">") | not)) | join("\n"));
+def asks(cmd): (own | test("(^|\n)[ \t]*/" + cmd + "([ \t\n]|$)"; "i"));'
+
+# `asks` anchors the command to the start of one of the author's own lines,
+# matching poll-pr-actions.sh's is_approve_request rather than inventing a
+# second convention. A substring test authorizes on prose that merely NAMES the
+# command — "don't use /<prefix>-review yet" would vouch for an untrusted diff,
+# which is the same reason the approve path anchored years ago.
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -148,7 +155,7 @@ refresh_queue() {
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
     local _cand_user _cand_rc
-    local NOTICE_ELIGIBLE NOTICE_ERR
+    local NOTICE_ELIGIBLE NOTICE_ERR NOTICE_UNDELIVERED
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
@@ -313,10 +320,10 @@ refresh_queue() {
             # the longer command doesn't accidentally satisfy both paths.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-review"; "i")) and ((own | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                    "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -332,11 +339,11 @@ refresh_queue() {
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-review"; "i")) and ((own | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and (own | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_OWN"'[.[] | select((own | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -471,7 +478,7 @@ refresh_queue() {
                       --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     "$JQ_OWN"'[.[] | select((own | contains($mark) | not)
                                    and (own | contains($trigmark) | not)
-                                   and (own | test("/" + $cmd_prefix + "-(update-)?review"; "i")))]
+                                   and (asks($cmd_prefix + "-review") or asks($cmd_prefix + "-update-review")))]
                      | sort_by(.created_at) | reverse | [.[].user.login]
                      | reduce .[] as $u ([]; if index($u) then . else . + [$u] end) | .[]' 2>/dev/null)
             if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
@@ -513,6 +520,7 @@ refresh_queue() {
             # comment its author cannot act on — one per open PR on the first
             # tick after deploy, into the very abuse limit this branch exists to
             # stop hitting. Same case idiom as poll-pr-actions.sh.
+            NOTICE_UNDELIVERED=false
             NOTICE_ELIGIBLE=true
             case "$PR_AUTHOR" in ""|*"[bot]"|"Copilot"|"copilot") NOTICE_ELIGIBLE=false ;; esac
             if [ "$NOTICE_ELIGIBLE" = true ] &&
@@ -529,8 +537,20 @@ refresh_queue() {
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
 A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\`. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
-                    || log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
+                    || { log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
+                         NOTICE_UNDELIVERED=true; }
                 rm -f "$NOTICE_ERR"
+            fi
+            # A failed notice must not be watermarked as delivered. The watermark
+            # suppresses every later tick until updatedAt moves, so a POST lost to
+            # the rate-limit pause would leave the contributor permanently with
+            # neither the explanation nor the unblock instructions — the exact
+            # silence this notice exists to end. Defer instead; the marker check
+            # above still makes the retry idempotent if the POST actually landed
+            # and only its response was lost.
+            if [ "${NOTICE_UNDELIVERED:-false}" = true ]; then
+                log "$PR_ID: notice undelivered — not watermarking, will retry next tick"
+                continue
             fi
             if [ -n "$PR_UPDATED_AT" ]; then
                 mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
