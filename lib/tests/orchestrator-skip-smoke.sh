@@ -1307,6 +1307,10 @@ VOUCH_MATRIX=(
 
   "the bot's re-request auto-trigger is not a vouch — else a read-only author self-unblocks in one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
 
+  "prose that merely NAMES the command does not vouch — else \"don't use /srosro-review yet\" authorizes an untrusted diff|[{\"id\":8100,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"Please do not use /srosro-review on this yet — the migration is unfinished.\"}]|$BOT_USER someuser|none"
+
+  "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n, so every non-final line carries a trailing \\r|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
+
   "a QUOTE-REPLIED vouch still counts — quoted bot markers are not the author's own|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"> $NOTICE_MARKERS\\n> Not reviewed — no push access. Comment /srosro-review to unblock.\\n\\nOn it.\\n/srosro-review\"}]|$BOT_USER someuser|trusted"
 )
 echo "  scenario RT2: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."
@@ -1607,24 +1611,6 @@ grep -qF '**Severity**: Medium' "$tfile" \
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 
-# --- RT20: CRLF bodies. GitHub's web UI normalizes textarea input to \r\n, so
-# every line of a hand-typed comment carries a trailing \r. `own` split on \n
-# only, so a command that is not the final line ended in \r and the anchored
-# terminator rejected it — silently killing the PRIMARY trigger path for the
-# most ordinary comment shape there is. No fixture in the suite used CRLF, which
-# is exactly why an anchor that looked like poll-pr-actions' sibling passed:
-# that one uses POSIX [[:space:]], which already includes \r.
-echo "  scenario RT20: a CRLF-typed command still triggers and vouches..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[{"id":8200,"created_at":"2026-08-10T18:00:00Z","user":{"login":"someuser"},"body":"/srosro-review\\r\\n\\r\\nplease look at the auth path"}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T18:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
-spec20=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
-[ -n "$spec20" ] \
-    || { echo "FAIL RT20: a CRLF-typed /srosro-review neither triggered nor vouched — every comment typed in GitHub's web UI is CRLF, so this is the common case, and it fails silently"; cat "$LOG_FILE"; exit 1; }
-[ "$(jq -r '.requester_trusted' <<<"$spec20")" = "true" ] \
-    || { echo "FAIL RT20: CRLF command did not register as a vouch; spec=$spec20"; exit 1; }
-
 # --- RT21: a BARE command must stage without the annotation. Four prompts
 # branch on the body being ONLY the bare slash command (aggregator.md,
 # intent.md); prepending the quoted-lines note unconditionally puts two
@@ -1647,20 +1633,6 @@ tf21=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
     || { echo "FAIL RT21: a bare command staged more than the header + the command — any extra line is prose the commenter did not write, which is what the gates would count"; cat "$tf21"; exit 1; }
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
-
-# --- RT18: prose that merely NAMES the command must not authorize.
-# A substring test makes "don't use /srosro-review yet" a vouch for an untrusted
-# diff — which then reaches sandbox-bypassed Codex. poll-pr-actions.sh's
-# is_approve_request anchored to line-start for exactly this reason; this reuses
-# that convention rather than inventing a second one.
-echo "  scenario RT18: a command named mid-prose does not vouch..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[{"id":8100,"created_at":"2026-08-10T16:00:00Z","user":{"login":"someuser"},"body":"Please do not use /srosro-review on this yet — the migration is unfinished."}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T16:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
-q18=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q18=${q18:-0}
-[ "$q18" -eq 0 ] \
-    || { echo "FAIL RT18: prose merely NAMING the command authorized an untrusted diff ($q18 spec(s)) — the command must be anchored to line-start"; jq -c '.specs[0]' "$STATE_DIR/queue.json"; exit 1; }
 
 # --- RT19: undelivered-notice policy, both halves. The two cases must differ,
 # and they must match the sibling decline POST's policy (scenario 7d), or the
@@ -1720,4 +1692,4 @@ n12=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null ||
 [ "$n12" -eq 0 ] \
     || { echo "FAIL RT12: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
 
-echo "  PASS (40 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[5 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, trigger-decision-vs-payload, command-must-be-line-anchored, crlf-command-still-works, bare-command-unannotated, undelivered-notice-defers, host-path-not-dropped)"
+echo "  PASS (38 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated, + RT1-RT15: requester-trust spec fields, vouch-matrix[7 rows: maintainer-vouch/self-vouch-fence/vouch-survives-untrusted-reply/rerequest-autotrigger-is-not-a-vouch/quote-replied-vouch-counts/mid-prose-is-not-a-vouch/crlf-still-vouches], memo-dedup, execution-gates-stay-author-keyed, loop-suppressed-at-zero-cost, vouch-reopens, notice-once-and-cannot-self-trigger, vouch-survives-its-own-review, no-notice-to-bot-authors, unverifiable-voucher-defers, drop-is-never-silent, quote-replied-request-triggers, trigger-decision-vs-payload, bare-command-unannotated, undelivered-notice-defers, host-path-not-dropped)"

@@ -208,21 +208,17 @@ fi
 # throttled lookup of a genuinely-trusted author (e.g. repo owner) would
 # silently drop their PR. Defer instead (exit 1, like the gh pr view guard
 # above) so the next tick re-checks once the throttle clears.
-# Prefer the dispatcher's values. Fall back to deriving them when absent so a
-# direct invocation (lib/replay.sh, a manual run) still works.
-if [ -n "$AUTHOR_TRUSTED_ARG" ]; then
-    IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
-    TRUST_RC=$([ "$AUTHOR_TRUSTED_ARG" = true ] && echo 0 || echo 1)
-else
-    is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
-    case "$TRUST_RC" in
-        0) IS_TRUSTED_AUTHOR=true ;;
-        *) IS_TRUSTED_AUTHOR=false ;;
-    esac
+# REQUIRED, not defaulted. review.sh is the only caller (lib/replay.sh mirrors
+# the review logic rather than invoking this), so a fallback derivation here had
+# no production path — it only created a SECOND owner of author trust beside the
+# dispatcher, which is how the two drift. Fail loud instead: a missing value is a
+# broken caller, not a mode.
+if [ -z "$AUTHOR_TRUSTED_ARG" ] || [ -z "$REQUESTER_TRUSTED" ]; then
+    log "$PR_ID: FATAL — trust args missing (author='$AUTHOR_TRUSTED_ARG' requester='$REQUESTER_TRUSTED'); review.sh must pass both"
+    exit 1
 fi
-# No requester value (direct invocation) → fall back to author trust, which is
-# the pre-vouch behavior.
-[ -n "$REQUESTER_TRUSTED" ] || REQUESTER_TRUSTED="$IS_TRUSTED_AUTHOR"
+IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
+TRUST_RC=$([ "$AUTHOR_TRUSTED_ARG" = true ] && echo 0 || echo 1)
 # The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
 # must never run (codex↔privileged-dind). On the host path an untrusted author
 # is reviewed anyway (just without the .env-mirror / just-test, gated on
@@ -235,12 +231,6 @@ fi
 # human saying the diff is not hostile, not proof that prompt injection is
 # impossible, so the PR's code still never runs.
 if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
-    if [ "$TRUST_RC" -eq 2 ]; then
-        # Indeterminate → defer (exit 1, like the gh pr view guard above)
-        # so the next tick re-checks once the throttle clears.
-        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-        exit 1
-    fi
     # Silent skip: no per-tick log line. This exit is now above the per-run
     # run.log, so the only place a line could land is the shared, 5 MB-rotated
     # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so

@@ -159,7 +159,7 @@ run_scenario() {
     set +e
     TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
         "test-org/probe-repo" 99 "$pr_sha" \
-        "feat/test" "Test PR" "false" \
+        "feat/test" "Test PR" "false" "true" "true" \
         > "$worker_log" 2>&1
     local worker_exit=$?
     set -e

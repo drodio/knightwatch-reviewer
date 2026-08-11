@@ -261,7 +261,7 @@ EXPECTED_TICK_AT="2026-04-30T16:14:23Z"
 # {{PR_TITLE}} header, injecting prompt content past the read-only fence.
 DIRTY_TITLE=$'Bad\nTitle\177X'
 DISPATCHER_TICK_AT="$EXPECTED_TICK_AT" run_worker_in_state "$STATE_DIR" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" || true
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "$DIRTY_TITLE" "false" "true" "true" || true
 
 # ---- assertions ----
 # Find the run dir produced by this invocation.
@@ -410,7 +410,7 @@ git clone -q "$GITHUB_BARE2" "$CANONICAL2"
 write_gh_stub "$HOME/.local/bin/gh" "release-1.0" "$PR_SHA2"
 
 run_worker_in_state "$STATE2" \
-    "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" || true
+    "test-org/probe-repo" "2" "$PR_SHA2" "feat/test" "Release-base PR" "false" "true" "true" || true
 
 RUN_DIR2=$(find "$STATE2/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR2" ]; then
@@ -573,7 +573,7 @@ git -C "$CANONICAL3" checkout -qb pr-leftover
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA3"
 
 run_worker_in_state "$STATE3" \
-    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" || true
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Shallow base PR" "false" "true" "true" || true
 
 RUN_DIR3=$(find "$STATE3/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR3" ]; then
@@ -646,7 +646,7 @@ CANONICAL3B="$STATE3B/repos/test-org_probe-repo"
 git clone -q "$GITHUB_BARE3" "$CANONICAL3B"
 
 PATH="$STUB_DIR3B:$PATH" run_worker_in_state "$STATE3B" \
-    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" || true
+    "test-org/probe-repo" "3" "$PR_SHA3" "feat/test" "Failing diff PR" "false" "true" "true" || true
 
 RUN_DIR3B=$(find "$STATE3B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR3B" ]; then
@@ -702,7 +702,7 @@ EOF
 # is exactly this invocation's output.
 : > "$STATE_DIR/orchestrator.log"
 run_worker_in_state "$STATE_DIR" \
-    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false"
+    "test-org/probe-repo" "1" "$OLD_PR_SHA" "feat/test" "Test PR" "false" "true" "true"
 GATE_EC=$?
 
 # The worker allocates a run-dir before this gate can fire (the gate needs the
@@ -769,7 +769,7 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; p
 # and dir-free every tick.
 for _tick in 1 2; do
     REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false"
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" "false" "false"
     _ec=$?
     # Leak check FIRST: a gate that failed to fire proceeds to clone/allocate
     # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
@@ -801,35 +801,12 @@ fi
 # ===== Scenario 6: container-mode gate DEFERS on an indeterminate trust check =====
 # A 403/5xx/network failure of the collaborators/permission lookup (e.g. the
 # shared account is rate-limited) must NOT read as "untrusted" — that would
-# silently drop a genuinely-trusted author's PR. The worker defers (exit 1, like
-# the gh pr view / gh repo view guards) so the next tick retries once the
-# throttle clears. Same stub as scenario 5 but with the permission call forced to
-# a 403 (GH_STUB_PERMISSION_RC), flipping the trust result untrusted→indeterminate.
-echo "  scenario: container-mode gate DEFERS (exit 1) on an indeterminate trust check, no placeholder..."
-STATE_IND="$TMPDIR/state-ind"   # distinct dir — must not collide with later scenarios' STATE6
-seed_state_dir "$STATE_IND"
-write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
-REVIEWER_CONTAINER_MODE=1 GH_STUB_PERMISSION_RC=1 run_worker_in_state "$STATE_IND" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Indeterminate PR" "false"
-GATE_IND_EC=$?
-# Like the untrusted skip, the indeterminate DEFER fires before allocate_run_dir
-# (issue #189) — and it retries every tick, so a leaked dir per retry would be
-# the worst offender. Assert NO run dir and the defer line on the orchestrator
-# fallback log.
-LOG_IND="$STATE_IND/orchestrator.log"
-assert_no_probe_pr1_run_dir "$STATE_IND" "indeterminate-defer"
-if [ "$GATE_IND_EC" -ne 1 ]; then
-    echo "FAIL: indeterminate-defer — worker exited $GATE_IND_EC (expected 1 = defer on indeterminate trust)"
-    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
-    exit 1
-fi
-if ! grep -q "trust check deferred" "$LOG_IND"; then
-    echo "FAIL: indeterminate-defer — orchestrator.log missing the 'trust check deferred' line"
-    [ -f "$LOG_IND" ] && { echo "--- orchestrator.log ---"; cat "$LOG_IND"; }
-    exit 1
-fi
-# (No separate placeholder assertion — see scenario 5's note; the no-run-dir
-# check above dominates it.)
+# NOTE: the container-mode indeterminate-trust DEFER scenario was deleted here.
+# The worker no longer derives trust — review.sh is its only caller and passes
+# both values, so an indeterminate lookup is resolved (and deferred) at the
+# dispatcher before any worker is spawned. The behavior is fenced by
+# orchestrator-skip-smoke's "indeterminate-trigger-defer" scenario. Deleting
+# rather than leaving it dormant: it can no longer reach the branch it named.
 
 # ===== Scenario 6b: metadata-lookup guard aborts BEFORE allocate_run_dir =====
 # The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
@@ -843,7 +820,7 @@ STATE_MD="$TMPDIR/state-md"
 seed_state_dir "$STATE_MD"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 GH_STUB_PRVIEW_EMPTY=1 run_worker_in_state "$STATE_MD" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false"
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false" "true" "true"
 GATE_MD_EC=$?
 LOG_MD="$STATE_MD/orchestrator.log"
 assert_no_probe_pr1_run_dir "$STATE_MD" "metadata-guard (gh-pr-view abort before allocation)"
@@ -965,7 +942,7 @@ git clone -q "$GITHUB_BARE" "$CANONICAL6"
 
 run_tick_6() {
     run_worker_in_state "$STATE6" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" "true" "true" || true
 }
 
 run_tick_6   # tick 1: posts placeholder, aborts, EXIT trap edits to paused
@@ -1017,7 +994,7 @@ run_codex_abort_scenario() {  # <state_dir> <store> <stderr_line> [sibling_accou
     mkdir -p "$state/pool/solo"   # review-loop's registration, done test-side
     local sib; for sib in "$@"; do mkdir -p "$state/pool/$sib"; done
     run_worker_in_state "$state" \
-        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+        "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" "true" "true" || true
     rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 }
 
@@ -1140,7 +1117,7 @@ touch -d '3 hours ago' "$STATE8/pool/9"
 mkdir -p "$STATE8/pool/solo"   # review-loop's registration, done test-side
 
 run_worker_in_state "$STATE8" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" "true" "true" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1260,7 +1237,7 @@ PATH="$CODEX_STUB_DIR:$PATH" \
 KWR_CONFIG_REPO="https://example.invalid/test-org/kwr-config.git" \
 KWR_CONFIG_DIR="$KWRCFG9" \
     run_worker_in_state "$STATE9" \
-    "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" || true
+    "test-org/probe-repo" "9" "$PR_SHA9" "feat/test" "SEED PR" "false" "true" "true" || true
 
 RUN_DIR9=$(find "$STATE9/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 if [ -z "$RUN_DIR9" ]; then
@@ -1357,7 +1334,7 @@ echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10/test-org_probe-repo
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
 
 REPO_ENV_DIR="$REPO_ENV10" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10" \
-    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "true" "true" || true
 
 RUN_DIR10=$(find "$STATE10/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 [ -n "$RUN_DIR10" ] || { echo "FAIL: scenario 10 — worker produced no run dir"; exit 1; }
@@ -1396,7 +1373,7 @@ mkdir -p "$REPO_ENV10B/test-org_probe-repo/api"
 echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10B/test-org_probe-repo/api/.env.test-live"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
 REPO_ENV_DIR="$REPO_ENV10B" GH_STUB_PERMISSION_ROLE=write run_worker_in_state "$STATE10B" \
-    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" || true
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "true" "true" || true
 RUN_DIR10B=$(find "$STATE10B/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 [ -n "$RUN_DIR10B" ] || { echo "FAIL: scenario 10b — worker produced no run dir"; exit 1; }
 LOG10B="$RUN_DIR10B/run.log"
@@ -1448,7 +1425,7 @@ STUB
 chmod +x "$HOME/.local/bin/codex"
 
 run_worker_in_state "$STATE11" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" || true
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Test PR" "false" "true" "true" || true
 
 rm -f "$HOME/.local/bin/codex"   # don't leak the fake codex past this scenario
 
@@ -1513,7 +1490,7 @@ printf '[{"user":{"login":"test-user"},"body":"Declining seed-marker-unbounded-r
 
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"
 GH_STUB_ISSUE_COMMENTS_FILE="$COMMENTS12" run_worker_in_state "$STATE12" \
-    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Whole-PR memory" "true" || true
+    "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Whole-PR memory" "true" "true" "true" || true
 
 RUN12=$(find "$STATE12/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' ! -name "$SEED12_ID" | head -1)
 [ -n "$RUN12" ] || { echo "FAIL: scenario 12 — worker produced no run dir"; exit 1; }
@@ -1540,4 +1517,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + container-mode indeterminate-trust defer + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (15 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
