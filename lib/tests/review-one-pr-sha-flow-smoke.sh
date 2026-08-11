@@ -791,11 +791,11 @@ fi
 # orchestrator-skip-smoke's "indeterminate-trigger-defer" scenario. Deleting
 # rather than leaving it dormant: it can no longer reach the branch it named.
 
-# ===== Scenario 6b: metadata-lookup guard aborts BEFORE allocate_run_dir =====
+# ===== Scenario 6: metadata-lookup guard aborts BEFORE allocate_run_dir =====
 # The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
 # moved above allocate_run_dir with the trust gate, so a metadata-lookup failure
 # must also abort without leaking a run dir. Fences that half of the relocation
-# (the trust-gate half is scenarios 5/6): a future re-shuffle that pushed the
+# (the trust-gate half is scenario 5): a future re-shuffle that pushed the
 # guards back below allocation would otherwise go undetected. gh pr view returns
 # {} → empty BASE_REF/PR_AUTHOR → guard exit 1, no run dir, line on orchestrator.log.
 echo "  scenario: metadata-lookup guard aborts before run-dir allocation (no leak)..."
@@ -820,7 +820,7 @@ fi
 
 echo "  gate/leak scenarios ok (untrusted skip + dedupe + metadata-guard pre-allocation abort)"
 
-# ===== Scenario 6: repeated transient aborts reuse one placeholder =====
+# ===== Scenario 6c: repeated transient aborts reuse one placeholder =====
 # Fences the anti-spam reuse path in lib/review-one-pr.sh. During a transient
 # outage (codex quota exhausted, specialist timeout) every 2-min orchestrator
 # tick runs the worker, which posts a "👀 reviewing" placeholder, aborts at
