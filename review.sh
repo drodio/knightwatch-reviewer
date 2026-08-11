@@ -361,7 +361,16 @@ refresh_queue() {
                         # never allocates a tempfile only the worker would
                         # have cleaned up. STATE_DIR/tmp is durable now
                         # (no PrivateTmp tear-down to mask the leak).
-                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r '.body // ""')
+                        # Through `own` like every other body test above — this
+                        # is the fifth site, and it was left raw when the other
+                        # four were shared. A maintainer who quote-replies the
+                        # poller's auto-trigger and adds their own command plus
+                        # guidance passes the trigger queries (correct: the
+                        # quoted trigmark is stripped) and then had that quoted
+                        # trigmark blank their prose here — the trigger fires,
+                        # trigger-comment.md is never staged, nothing is logged,
+                        # and their framing is discarded as if the bot wrote it.
+                        TRIGGER_BODY=$(printf '%s' "$TRIGGER_JSON" | jq -r "$JQ_OWN"'own // ""')
                         # The re-request poller's auto-trigger carries a human-facing
                         # attribution note; its marker means "treat as bare command",
                         # so drop the body — the note must not become requester framing.
