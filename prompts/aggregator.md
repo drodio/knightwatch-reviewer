@@ -87,7 +87,7 @@ You are the aggregator in a multi-specialist PR review. The specialists produced
 
 5. **Whole-PR re-review handling — the "step back and ask" pattern.** This mode applies only when ALL of the following hold:
    - `trigger-comment.md` is present and invokes the whole-PR review command (the review slash command, e.g. `/srosro-review` with the default prefix — NOT `-update-review`), AND
-   - the trigger comment body contains **substantive prose beyond the slash command** — i.e. text other than just the bot's bare review or update-review slash command (e.g. `/srosro-review` with the default prefix). Mirror `intent.md`'s rule: if the body is only the bare slash command (with or without surrounding whitespace), do NOT enter this mode.
+   - the trigger comment body contains **substantive prose beyond the slash command, in the commenter's OWN unquoted lines** — i.e. text other than just the bot's bare review or update-review slash command (e.g. `/srosro-review` with the default prefix). `>`-prefixed lines do NOT count: they are text the commenter quoted, often a prior review of this very PR, and counting them would let our own last review become the framing this round owes them. Mirror `intent.md`'s rule: if the commenter's own lines are only the bare slash command (with or without surrounding whitespace), do NOT enter this mode — however much quoted material sits above it.
 
    A bare review-trigger command (e.g. `/srosro-review` with the default prefix) triggers a whole-PR re-review but is NOT a substantive question — it's just a routine "review the whole PR" request. Entering the step-back mode there would gratuitously surface open probes when none were asked. **Treat this as a normal review.**
 
