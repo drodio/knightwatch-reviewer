@@ -150,7 +150,7 @@ refresh_queue() {
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
-    local TRIGGER_OWN
+    local TRIGGER_OWN TRIGGER_OWN_LINES TRIGGER_QUOTED_LINES
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED
@@ -836,18 +836,26 @@ consume_queue() {
             # requester's own prose — making our last review the next review's
             # stated intent — and would launder a drive-by's words into this
             # trusted-only channel whenever a maintainer quotes them to disagree.
-            # Only when quoted text is actually PRESENT. Prepending it
-            # unconditionally puts two sentences of prose above a bare
-            # /<prefix>-review, and aggregator.md / intent.md branch on the body
-            # being ONLY the bare command — the note would make that branch
-            # unreachable, which is this same bug with a new author.
-            case "$TRIGGER_BODY" in
-                ">"*|*$'\n'">"*)
-                    printf 'Comment by @%s:\n\n(Lines beginning with ">" are text this commenter QUOTED, not\nwrote. Treat only their own lines as the request and its framing.)\n\n%s\n' \
-                        "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE" ;;
-                *)
-                    printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE" ;;
-            esac
+            # Structural separation, not injected prose. Four rounds of this
+            # review found the same class: the framing region kept acquiring
+            # text the commenter did not write — first their quoted material,
+            # then the annotation added to explain it. Any prose we insert is
+            # more of the same bug, because every consumer's gate asks "is there
+            # text here beyond the bare command?" and cannot tell whose it is.
+            #
+            # So the file answers structurally: everything above the delimiter is
+            # what this commenter wrote, everything below is what they quoted.
+            # The gates read the region, not a sentence about it, and the quoted
+            # referent still reaches the specialists ("> <finding>" then "this is
+            # wrong because X" stays legible).
+            TRIGGER_OWN_LINES=$(printf '%s' "$TRIGGER_BODY" | grep -v '^>' || true)
+            TRIGGER_QUOTED_LINES=$(printf '%s' "$TRIGGER_BODY" | grep '^>' || true)
+            if [ -n "$TRIGGER_QUOTED_LINES" ]; then
+                printf 'Comment by @%s:\n\n%s\n\n--- quoted by @%s, not written by them ---\n%s\n' \
+                    "$TRIGGER_USER" "$TRIGGER_OWN_LINES" "$TRIGGER_USER" "$TRIGGER_QUOTED_LINES" > "$TRIGGER_FILE"
+            else
+                printf 'Comment by @%s:\n\n%s\n' "$TRIGGER_USER" "$TRIGGER_BODY" > "$TRIGGER_FILE"
+            fi
         fi
 
         worker_secs=$(timeout_duration_seconds "$WORKER_TIMEOUT")

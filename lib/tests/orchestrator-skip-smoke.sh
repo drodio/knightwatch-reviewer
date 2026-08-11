@@ -1585,8 +1585,14 @@ tfile=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
     || { echo "FAIL RT17: no trigger-comment file staged — a QUOTED auto-trigger marker blanked the requester's framing (the decision must read the author's own lines)"; cat "$LOG_FILE"; exit 1; }
 grep -qF 'This finding is wrong because X' "$tfile" \
     || { echo "FAIL RT17: the requester's own prose is missing from the staged payload"; cat "$tfile"; exit 1; }
-grep -qF 'are text this commenter QUOTED' "$tfile" \
-    || { echo "FAIL RT17: staged payload does not mark quoted lines as quoted — the prompts branch on "substantive prose vs bare command", so the bot's own quoted review would read as the requester's framing"; cat "$tfile"; exit 1; }
+# Structural, not a sentence: the framing region must contain ONLY what this
+# commenter wrote. Any prose we inject to explain the split is itself text they
+# did not write, and every consumer's gate asks "is there text beyond the bare
+# command?" without being able to tell whose it is.
+grep -qF -- '--- quoted by @someuser, not written by them ---' "$tfile" \
+    || { echo "FAIL RT17: staged payload does not separate quoted material into its own region — the gates cannot tell the commenter's words from what they quoted"; cat "$tfile"; exit 1; }
+awk '/^--- quoted by /{exit} {print}' "$tfile" | grep -qF '**Severity**: Medium' \
+    && { echo "FAIL RT17: quoted text leaked into the framing region — that is the laundering this separation exists to stop"; cat "$tfile"; exit 1; }
 grep -qF '**Severity**: Medium' "$tfile" \
     || { echo "FAIL RT17: quoted lines were stripped from the staged payload — a maintainer's '> <finding>' + 'this is wrong because X' now reaches the specialists with its referent deleted"; cat "$tfile"; exit 1; }
 clear_seeded_runs
@@ -1627,8 +1633,10 @@ MOCK_PR_UPDATED_AT="2026-08-10T20:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser
 tf21=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
 [ -n "$tf21" ] && [ -f "$tf21" ] \
     || { echo "FAIL RT21: no trigger-comment file staged for a bare command"; cat "$LOG_FILE"; exit 1; }
-grep -qF 'are text this commenter QUOTED' "$tf21" \
-    && { echo "FAIL RT21: the quoted-lines note was prepended to a BARE command — the prompts' bare-command branch is now unreachable"; cat "$tf21"; exit 1; }
+grep -qF -- '--- quoted by ' "$tf21" \
+    && { echo "FAIL RT21: a bare command staged a quoted-material region it does not have — the prompts' bare-command branch must stay reachable"; cat "$tf21"; exit 1; }
+[ "$(grep -cv '^[[:space:]]*$' "$tf21")" -eq 2 ] \
+    || { echo "FAIL RT21: a bare command staged more than the header + the command — any extra line is prose the commenter did not write, which is what the gates would count"; cat "$tf21"; exit 1; }
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 
