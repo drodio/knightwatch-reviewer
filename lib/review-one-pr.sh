@@ -25,6 +25,15 @@ PR_BRANCH="$4"
 # (preserves visible structure) and avoids the empty-field hazard.
 PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
+# Trust, computed once by the dispatcher and passed in. Two questions, kept
+# separate: AUTHOR_TRUSTED_ARG decides whether this author's CODE MAY RUN (.env
+# mirror, just test); REQUESTER_TRUSTED decides whether the PR is REVIEWED at
+# all. A maintainer vouching for a read-only contributor answers the second yes
+# and leaves the first no. REQUIRED, not defaulted: review.sh is the only caller
+# (lib/replay.sh mirrors the review logic rather than invoking this), so a
+# fallback derivation here would only be a second owner of one fact.
+AUTHOR_TRUSTED_ARG="${7:-}"
+REQUESTER_TRUSTED="${8:-}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
@@ -200,23 +209,21 @@ fi
 # throttled lookup of a genuinely-trusted author (e.g. repo owner) would
 # silently drop their PR. Defer instead (exit 1, like the gh pr view guard
 # above) so the next tick re-checks once the throttle clears.
-is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
-case "$TRUST_RC" in
-    0) IS_TRUSTED_AUTHOR=true ;;
-    *) IS_TRUSTED_AUTHOR=false ;;
-esac
+if [ -z "$AUTHOR_TRUSTED_ARG" ] || [ -z "$REQUESTER_TRUSTED" ]; then
+    log "$PR_ID: FATAL — trust args missing (author='$AUTHOR_TRUSTED_ARG' requester='$REQUESTER_TRUSTED'); review.sh must pass both"
+    exit 1
+fi
+IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
 # The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
 # must never run (codex↔privileged-dind). On the host path an untrusted author
 # is reviewed anyway (just without the .env-mirror / just-test, gated on
 # IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
 # scoping it here keeps host behavior unchanged.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    if [ "$TRUST_RC" -eq 2 ]; then
-        # Indeterminate → defer (exit 1, like the gh pr view guard above)
-        # so the next tick re-checks once the throttle clears.
-        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-        exit 1
-    fi
+# Gates on the REQUESTER, not the author: "did someone with push access ask for
+# this review?" — opening the PR is the author's own implicit request, and a
+# maintainer's /<prefix>-review vouches for a read-only contributor's. Execution
+# stays gated on IS_TRUSTED_AUTHOR further below.
+if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
     # Silent skip: no per-tick log line. This exit is now above the per-run
     # run.log, so the only place a line could land is the shared, 5 MB-rotated
     # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so

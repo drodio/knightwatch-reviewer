@@ -65,6 +65,18 @@ if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKER
 # eligible-PR queue under the election flock; every container consumes it.
 . "$REVIEWER_LIB_DIR/queue.sh"
 ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
+# Idempotency key for the "author has no push access" notice. Distinct from
+# BOT_AUTO_POST_MARKER, which rides every bot post and so cannot identify it.
+UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice -->"
+# `asks` — does this comment REQUEST a review? Anchored to the start of a line,
+# matching poll-pr-actions.sh's is_approve_request: a substring test would let
+# prose that merely names the command ("don't use /<prefix>-review yet")
+# authorize a review. CRLF-normalized first because GitHub's web UI returns
+# \r\n, which would otherwise leave a \r before the terminator on every line
+# but the last. (is_approve_request has no such bug — POSIX [[:space:]] already
+# covers \r — so mirroring it means normalizing, not copying its character class.)
+JQ_ASKS='def asks(cmd): (.body | gsub("\r\n"; "\n")
+                               | test("(^|\n)[ \t]*/" + cmd + "([ \t\n]|$)"; "i"));' 
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -119,6 +131,7 @@ refresh_queue() {
     # (jq '.[]' on [] emits nothing), and the single tail write handles the
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
+    local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -132,6 +145,7 @@ refresh_queue() {
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
+        PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
         PR_ID="${REPO}#${PR_NUM}"
 
         # In-flight guard: skip a PR whose review is already running. Eligibility
@@ -188,17 +202,44 @@ refresh_queue() {
         SEEN_UPDATED_FILE="$STATE_DIR/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
         LAST_SEEN_UPDATED_AT=""
         [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
-        if [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ] \
-            && [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
+        # The watermark is written ONLY on paths that decided "nothing to
+        # dispatch", so a watermark equal to the current updatedAt already means
+        # "this exact state was fully evaluated and needed nothing" — which makes
+        # the SHA comparison this gate used to carry redundant. Dropping it is
+        # what lets the gate cover an UNREVIEWABLE PR too: such a PR never gets a
+        # KNOWN_SHA (the worker exits above allocate_run_dir, deliberately —
+        # #189), so it was re-enumerated and trust-checked every ~30s forever.
+        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
             continue
         fi
+
+        # Author trust, derived once per surviving PR and passed to the worker
+        # rather than re-derived there. Below the idle-skip on purpose: a gate
+        # that needed trust to decide could not save the trust call, and that
+        # call is one uncached core-API request per PR per tick per container.
+        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
+        # indeterminate result must never collapse to "untrusted" — that would
+        # drop a genuinely-trusted author's PR on a throttled lookup. Deferring
+        # is CONTAINER-MODE ONLY, matching the gate it feeds: the host path
+        # reviews an untrusted author anyway, so an unverifiable lookup there
+        # costs nothing and must not drop the PR.
+        if [ "$AUTHOR_TRUST_RC" -eq 2 ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+            continue
+        fi
+        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
 
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_USER=""
         TRIGGER_BODY=""
 
-        if [ -n "$KNOWN_SHA" ]; then
+        # `|| untrusted`: a vouch is a trigger on a never-reviewed PR, so without
+        # this the override could never be seen — the comment carrying it would
+        # never be read. The idle-skip above keeps it cheap: an unreviewable PR is
+        # only re-read when its updatedAt moves, which is when a vouch arrives.
+        if [ -n "$KNOWN_SHA" ] || [ "$AUTHOR_TRUSTED" != true ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
             # PR #38. started_at is stamped at run init (line ~165 of
@@ -447,6 +488,75 @@ This request stays open and fires automatically on your next push. To force a wh
             fi
         fi
 
+        # Requester trust — ONE value decides whether this PR is reviewed at all.
+        # Opening the PR is the author's implicit request; a /<prefix>-review from
+        # a push-access user is an additional one. OR over that set, never
+        # "latest requester wins": an untrusted drive-by must not suppress a
+        # review of a trusted author's PR, and an untrusted reply must not
+        # nullify a maintainer's vouch.
+        #
+        # Scanned over the WHOLE thread, not post-cutoff comments: a trigger is a
+        # one-shot "re-review now" consumed by the review it causes, but a vouch
+        # is a standing statement about the AUTHOR — the operator's ruling on
+        # #222 — and finishing a review does not make it untrue. It therefore
+        # covers later heads too; execution stays keyed to author trust, so a
+        # vouch unlocks reading, never running.
+        #
+        # FORCE_REVIEW is deliberately NOT consulted: it is set from comment-text
+        # matching with no permission check, so gating on it would let an
+        # untrusted author self-vouch.
+        #
+        # Only asked when it can change the answer — a trusted author is already
+        # a trusted requester, and on the host path nothing consults the result.
+        REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
+        if [ "$REQUESTER_TRUSTED" != true ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+            while IFS= read -r _cand; do
+                [ -n "$_cand" ] || continue
+                is_trusted_repo_author "$REPO" "$_cand"; _cand_rc=$?
+                if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; break; fi
+            # Distinct logins so one user repeating the command costs one call;
+            # bot posts excluded so our own notice can never vouch for itself.
+            done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
+                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not)
+                                   and (asks($cmd_prefix + "-review")
+                                        or asks($cmd_prefix + "-update-review")))]
+                     | [.[].user.login] | unique | .[]' 2>/dev/null)
+        fi
+
+        # No trusted requester → not reviewable. Watermark and drop here rather
+        # than queueing a worker that would only skip: that is what makes a
+        # PERMANENT skip cost one evaluation instead of one per tick. Container
+        # mode only, matching the worker gate — the host path reviews the PR.
+        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
+            log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
+            # Tell the author once. The skip is permanent and otherwise silent.
+            # Not for bots or ghost accounts: dependabot/renovate/Copilot all
+            # read as "no push access", so without this every dependency-bump PR
+            # fleet-wide gets a comment its author cannot act on.
+            case "$PR_AUTHOR" in
+                ""|*"[bot]"|"Copilot"|"copilot") : ;;
+                *)
+                    if ! printf '%s' "${COMMENTS_JSON:-[]}" | grep -qF "$UNTRUSTED_NOTICE_MARKER"; then
+                        gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                            -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
+Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
+
+A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>&1 \
+                            || log "$PR_ID: could not post the no-push-access notice"
+                    fi ;;
+            esac
+            # Watermarked whether or not the POST landed — same policy as the
+            # sibling decline POST (scenario 7d): a permanent failure would
+            # otherwise re-POST every tick forever, feeding the rate limit this
+            # branch exists to stop.
+            if [ -n "$PR_UPDATED_AT" ]; then
+                mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
+                printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"
+            fi
+            continue
+        fi
+
         # Capture the trigger comment BODY into the spec (not a tmp file) so
         # any consuming container can materialize .codex-scratch/trigger-comment.md
         # locally at dispatch. The trust gate already cleared TRIGGER_BODY to ""
@@ -457,8 +567,11 @@ This request stays open and fires automatically on your next push. To force a wh
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
             --arg tick "$TICK_FETCHED_AT_ISO" \
+            --argjson atrust "$([ "$AUTHOR_TRUSTED" = true ] && echo true || echo false)" \
+            --argjson rtrust "$([ "$REQUESTER_TRUSTED" = true ] && echo true || echo false)" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
-              force_whole_pr:$force, trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
+              force_whole_pr:$force, author_trusted:$atrust, requester_trusted:$rtrust,
+              trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
 
@@ -496,6 +609,7 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
+        AUTHOR_TRUSTED=$(jq -r '.author_trusted' <<<"$spec"); REQUESTER_TRUSTED=$(jq -r '.requester_trusted' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
@@ -548,7 +662,8 @@ consume_queue() {
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
+            "$AUTHOR_TRUSTED" "$REQUESTER_TRUSTED" &
         active=$((active + 1)); dispatched=$((dispatched + 1))
     done < <(jq -c '.[]' <<<"$specs")
 
