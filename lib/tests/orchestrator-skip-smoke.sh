@@ -1465,13 +1465,36 @@ printf '[{"id":8402,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuse
     > "$MOCK_COMMENTS_FILE"
 MOCK_PR_UPDATED_AT="2026-08-10T11:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
     MOCK_PR_AUTHOR="someuser" run_orchestrator
-tf6=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
+tf6=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
 [ -n "$tf6" ] && [ -f "$tf6" ] \
     || { echo "FAIL RT6: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
 grep -qF 'Ready for another pass' "$tf6" \
     || { echo "FAIL RT6: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the anchored request"; cat "$tf6"; exit 1; }
 grep -qF 'do not use' "$tf6" \
     && { echo "FAIL RT6: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$tf6"; exit 1; }
+clear_seeded_runs
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
+# The INCREMENTAL extractor (the /<prefix>-update-review branch) is only reached
+# when FORCE_REVIEW is set AND the head is unreviewed — on an unchanged head the
+# nothing-to-diff path declines before staging. Seed an OLDER reviewed sha so the
+# current head needs review, then discriminate the same way: an older real
+# incremental request plus a NEWER comment that merely names it.
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T120000000Z" "oldsha6" "COMMENT" "2026-08-10T12:00:00Z" >/dev/null
+printf '[{"id":8404,"created_at":"2026-08-10T12:30:00Z","user":{"login":"someuser"},"body":"Pushed a fix.\\n/srosro-update-review"},{"id":8405,"created_at":"2026-08-10T12:45:00Z","user":{"login":"someuser"},"body":"Note: /srosro-update-review is the wrong command for the other PR."}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T12:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+    MOCK_PR_AUTHOR="someuser" run_orchestrator
+tfi=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
+[ -n "$tfi" ] && [ -f "$tfi" ] \
+    || { echo "FAIL RT6: no trigger file staged for the anchored incremental request"; cat "$LOG_FILE"; exit 1; }
+grep -qF 'Pushed a fix' "$tfi" \
+    || { echo "FAIL RT6: the INCREMENTAL extractor staged the wrong comment — it selected the newer mid-prose mention"; cat "$tfi"; exit 1; }
+grep -qF 'wrong command for the other PR' "$tfi" \
+    && { echo "FAIL RT6: the INCREMENTAL extractor staged prose that merely NAMES the command — it is not anchored"; cat "$tfi"; exit 1; }
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
 
