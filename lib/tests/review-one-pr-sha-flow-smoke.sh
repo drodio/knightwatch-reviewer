@@ -62,7 +62,16 @@ assert_no_probe_run_dir() {
     # find (pipeline status 141 → the `if` is false), silently PASSING the leak
     # assertion at the exact moment a leak exists — a false-pass in the one fence
     # whose job is catching #189. Capturing also drops the duplicate find.
-    [ -n "${3:-}" ] || { echo "FAIL: assert_no_probe_run_dir called without a PR number (label: ${2:-?}) — a defaulted PR is how this fence went vacuous before"; exit 1; }
+    # Validated as a NUMBER, not merely non-empty: a caller who swaps the label
+    # and PR positions passes an is-set check and then globs for
+    # test-org_probe-repo__<label>__*, which matches nothing and passes green —
+    # the same vacuity as the hardcoded glob and the default before it, one
+    # argument over.
+    case "${3:-}" in
+        ''|*[!0-9]*)
+            echo "FAIL: assert_no_probe_run_dir needs a numeric PR as arg 3, got '${3:-}' (label: ${2:-?}) — a non-numeric PR globs for nothing and passes vacuously"
+            exit 1 ;;
+    esac
     local leaked
     leaked=$(find "$1/runs" -maxdepth 1 -type d -name "test-org_probe-repo__$3__*")
     if [ -n "$leaked" ]; then
