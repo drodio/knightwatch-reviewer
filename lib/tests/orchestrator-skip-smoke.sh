@@ -1461,14 +1461,14 @@ done
 # The incremental branch is only reachable with FORCE_REVIEW set AND an
 # unreviewed head — on an unchanged head the nothing-to-diff path declines before
 # staging — so its row seeds an older reviewed sha.
-# Fields: label | reviewed sha | request body | mention body | staged marker
+# Fields: label | reviewed sha | request body | mention body | staged marker | mention marker
 EXTRACTOR_MATRIX=(
-  "whole-PR|abc123|Ready for another pass.\\n/srosro-review|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass"
-  "incremental|oldsha6|Pushed a fix.\\n/srosro-update-review|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix"
+  "whole-PR|abc123|Ready for another pass.\\n/srosro-review|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass|sibling PR"
+  "incremental|oldsha6|Pushed a fix.\\n/srosro-update-review|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix|the other PR"
 )
 echo "  scenario RT6b: extractor anchoring (${#EXTRACTOR_MATRIX[@]} rows: whole-PR + incremental)..."
 for row in "${EXTRACTOR_MATRIX[@]}"; do
-    IFS='|' read -r elabel esha ereq ementon emark <<<"$row"
+    IFS='|' read -r elabel esha ereq ementon emark ementmark <<<"$row"
     rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
     rm -f "$STATE_DIR/tmp/pr-review-trigger".*
     clear_seeded_runs
@@ -1488,11 +1488,32 @@ for row in "${EXTRACTOR_MATRIX[@]}"; do
         || { echo "FAIL RT6b [$elabel]: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
     grep -qF "$emark" "$etf" \
         || { echo "FAIL RT6b [$elabel]: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the real request"; cat "$etf"; exit 1; }
-    grep -qF 'the other PR' "$etf" \
+    grep -qF "$ementmark" "$etf" \
         && { echo "FAIL RT6b [$elabel]: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$etf"; exit 1; }
 done
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
+# INCREMENTAL_TRIGGER's COUNTER is a separate selector from the extractor above,
+# and needs its own discriminator: on an unchanged head an incremental trigger
+# produces 0 dispatches whether or not it matched, because the nothing-to-diff
+# path declines it either way. What it DOES produce is a decline POST — so prose
+# merely naming the command must produce none.
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+printf '[{"id":8401,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Reminder: /srosro-update-review is not needed here."}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+    MOCK_PR_AUTHOR="someuser" run_orchestrator
+d6=$( { grep -c 'already-reviewed' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); d6=${d6:-0}
+[ "$d6" -eq 0 ] \
+    || { echo "FAIL RT6c: prose merely NAMING the incremental command fired the trigger (got $d6 decline post(s)) — INCREMENTAL_TRIGGER is not anchored"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+# A zero alone passes vacuously if the tick never reached the trigger scan.
+f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f6=${f6:-0}
+[ "$f6" -ge 1 ] \
+    || { echo "FAIL RT6c: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
+clear_seeded_runs
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
