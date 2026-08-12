@@ -1441,6 +1441,14 @@ for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
     tn=$(count_dispatches)
     [ "$tn" -eq "$texpect" ] \
         || { echo "FAIL RT6 [$tlabel]: expected $texpect dispatch(es), got $tn"; cat "$LOG_FILE"; exit 1; }
+    # On the positive row, assert the EXTRACTOR's output, not just that it ran:
+    # the dispatch must carry a staged trigger file. Reaching an extractor is not
+    # asserting on it — both extractors re-run the selector over the same
+    # fixture, so without this a regression in either is invisible.
+    if [ "$texpect" -gt 0 ]; then
+        grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE" \
+            || { echo "FAIL RT6 [$tlabel]: dispatched without a staged trigger file — the TRIGGER_JSON extractor did not select the anchored command"; cat "$LOG_FILE"; exit 1; }
+    fi
 done
 
 # The INCREMENTAL selector needs a different discriminator: on an unchanged head
@@ -1457,6 +1465,12 @@ MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser
 d6=$( { grep -c 'already-reviewed' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); d6=${d6:-0}
 [ "$d6" -eq 0 ] \
     || { echo "FAIL RT6: prose merely NAMING the incremental command fired the trigger (got $d6 decline post(s)) — INCREMENTAL_TRIGGER is not anchored"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+# A zero alone passes vacuously if the tick never reached the trigger scan at
+# all. Pair it with proof that it did: the comment fetch is the step immediately
+# before, and an enumeration that died earlier would show none.
+f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f6=${f6:-0}
+[ "$f6" -ge 1 ] \
+    || { echo "FAIL RT6: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
 clear_seeded_runs
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
@@ -1471,7 +1485,9 @@ grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
     || { echo "FAIL RT5: just_test_skip_reason no longer keys on IS_TRUSTED_AUTHOR — a vouch would execute the PR's code"; exit 1; }
 
 
-# NOTE: RT6 (host path still reviews an untrusted author) was deleted here.
+# NOTE: the HOST-PATH scenario that once occupied this slot was deleted here.
+# (It is unrelated to the RT6 above, which fences trigger-selector anchoring;
+# this tombstone predates that renumbering.)
 # REVIEW.md records the single-account systemd-timer reviewer as RETIRED with
 # its units deleted — the containerized loop is the only review path — so the
 # requester-trust flow is now unconditional and there is no host path left for
