@@ -75,9 +75,12 @@ STUB
 # independently, each time discovered by a different confusing failure.
 #
 #   GH_STUB_INDETERMINATE_USERS  space-separated logins → rc=2 (could not
-#                                verify). Non-rate-limit wording on purpose: a
-#                                403 would also stamp the fleet pause and change
-#                                what the rest of the tick does.
+#                                verify). The wording dodges TWO patterns on
+#                                purpose: a 403 would stamp the fleet pause and
+#                                change what the rest of the tick does, and a 5xx
+#                                matches GH_API_TRANSIENT_RE so gh_retry would
+#                                retry it — burning the budget and slowing every
+#                                scenario that arranges an indeterminate.
 #   GH_STUB_TRUSTED_USERS        space-separated logins → push access.
 #   GH_STUB_PERMISSION_ROLE      blanket role for scenarios that do not care
 #                                which person is being asked about.
@@ -89,7 +92,7 @@ for _a in "$@"; do
         */collaborators/*/permission)
             _who="${_a##*/collaborators/}"; _who="${_who%/permission}"
             for _i in ${GH_STUB_INDETERMINATE_USERS:-}; do
-                [ "$_who" = "$_i" ] && { echo "gh: HTTP 500: server error (simulated)" >&2; exit 1; }
+                [ "$_who" = "$_i" ] && { echo "gh: HTTP 418: unverifiable (simulated)" >&2; exit 1; }
             done
             for _t in ${GH_STUB_TRUSTED_USERS:-}; do
                 [ "$_who" = "$_t" ] && { printf 'write\n'; exit 0; }

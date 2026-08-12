@@ -1391,10 +1391,7 @@ GH_STUB_INDETERMINATE_USERS="someuser" run_worker_in_state "$STATE10D" \
 DEFER_EC=$?
 [ "$DEFER_EC" -eq 1 ] \
     || { echo "FAIL: scenario 10b2 — worker exited $DEFER_EC (expected 1 = defer on an unverifiable requester); a skip here would silently drop a requested review"; exit 1; }
-if find "$STATE10D/runs" -type d -name 'test-org_probe-repo__10__*' 2>/dev/null | grep -q .; then
-    echo "FAIL: scenario 10b2 — a run dir was allocated before the deferral (leaks one per retry, #189)"
-    exit 1
-fi
+assert_no_probe_pr1_run_dir "$STATE10D" "scenario 10b2 — deferral must not allocate a run dir (leaks one per retry, #189)"
 grep -q "requester re-check deferred" "$STATE10D/orchestrator.log" 2>/dev/null \
     || { echo "FAIL: scenario 10b2 — no deferral line; an unverifiable requester collapsed to 'not requested'"; [ -f "$STATE10D/orchestrator.log" ] && cat "$STATE10D/orchestrator.log"; exit 1; }
 
