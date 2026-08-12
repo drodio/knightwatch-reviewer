@@ -1416,23 +1416,47 @@ n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || 
 [ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
-# --- RT6: the TRIGGER selectors are anchored too, not just the vouch scan.
-# Prose that merely names the command must not start a whole-PR review. RT1's
-# mid-prose row exercises the requester scan; this exercises the four trigger
-# selectors, which bypassed the shared predicate until they were migrated to it.
-# Already-reviewed PR at an unchanged head by a TRUSTED author, so nothing but a
-# trigger can produce a dispatch — and the author is trusted, so the vouch scan
-# is not even consulted.
-echo "  scenario RT6: prose naming the command does not start a review..."
+# --- RT6: ALL FOUR trigger selectors are anchored, not just the whole-PR one.
+# RT1's mid-prose row exercises the requester scan; these exercise the dispatch
+# side. Both commands, both directions: prose that merely names a command must
+# not start a review, and an anchored command must still work — the positive row
+# is what reaches the TRIGGER_JSON extractors, which are unreachable unless
+# FORCE_REVIEW is set. Already-reviewed PR at an unchanged head by a TRUSTED
+# author, so only a trigger can dispatch and the vouch scan is not consulted.
+# Fields: label | comment body | expected dispatches
+TRIGGER_ANCHOR_MATRIX=(
+  "prose naming the whole-PR command does not start a review|Please do not use /srosro-review on this yet — the migration is unfinished.|0"
+  "an anchored command still triggers — this is what reaches the extractors|Looks ready.\\n/srosro-review|1"
+)
+echo "  scenario RT6: trigger-selector anchoring (${#TRIGGER_ANCHOR_MATRIX[@]} rows: both commands, both directions)..."
+for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
+    IFS='|' read -r tlabel tbody texpect <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+    clear_seeded_runs
+    seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+    printf '[{"id":8400,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"%s"}]\n' "$tbody" \
+        > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+        MOCK_PR_AUTHOR="someuser" run_orchestrator
+    tn=$(count_dispatches)
+    [ "$tn" -eq "$texpect" ] \
+        || { echo "FAIL RT6 [$tlabel]: expected $texpect dispatch(es), got $tn"; cat "$LOG_FILE"; exit 1; }
+done
+
+# The INCREMENTAL selector needs a different discriminator: on an unchanged head
+# an incremental trigger produces 0 dispatches whether or not it matched, because
+# the "nothing to diff" path declines it. What it DOES produce is a decline POST
+# — so prose merely naming the command must produce none.
 rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
 clear_seeded_runs
 seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
-printf '[{"id":8400,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Please do not use /srosro-review on this yet — the migration is unfinished."}]\n' \
+printf '[{"id":8401,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Reminder: /srosro-update-review is not needed here."}]\n' \
     > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="someuser" run_orchestrator
-n6=$(count_dispatches)
-[ "$n6" -eq 0 ] \
-    || { echo "FAIL RT6: prose merely NAMING the command started a whole-PR review ($n6 dispatch(es)) — the trigger selectors are not anchored"; cat "$LOG_FILE"; exit 1; }
+MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+    MOCK_PR_AUTHOR="someuser" run_orchestrator
+d6=$( { grep -c 'already-reviewed' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); d6=${d6:-0}
+[ "$d6" -eq 0 ] \
+    || { echo "FAIL RT6: prose merely NAMING the incremental command fired the trigger (got $d6 decline post(s)) — INCREMENTAL_TRIGGER is not anchored"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
 clear_seeded_runs
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
