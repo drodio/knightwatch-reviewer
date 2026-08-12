@@ -483,17 +483,16 @@ fi
 # carries the auto-post marker → no dispatch. The bot's own posted review
 # comments prepend `<!-- knightwatch-reviewer:auto-post -->` to the body
 # AND the usage footer always names the slash commands literally; the
-# orchestrator excludes any comment containing that marker so a successful
-# review doesn't re-trigger itself on the next tick.
+# marker sits on the body's FIRST line, so first-line anchoring makes `asks`
+# false and a successful review cannot re-trigger itself on the next tick.
 #
-# The command leads and the marker trails — deliberately NOT the real post's
-# layout (marker first). Under first-non-blank-line anchoring a marker-first
-# body makes `asks` false on its own, so the scenario would pass with the
-# marker filter deleted and would fence nothing. Putting the command first
-# makes `asks` true, leaving the marker filter as the only thing that can
-# reject: delete it from the selector and this goes red.
-echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
-printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
+# There is no longer a body-wide `contains(marker)` exclusion backing this up,
+# and that removal is the point: it was redundant against every real producer
+# (all of them emit the marker first) while silently dropping genuine requests
+# whose author quoted a bot post below their command — #221. Anchoring alone
+# carries it, which is what this scenario now asserts.
+echo "  scenario 4: bot's own auto-post cannot self-trigger (marker on line 1)..."
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -1299,21 +1298,27 @@ VOUCH_MATRIX=(
 
   "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
 
-  # The next two rows are a pair: one bot marker each, command first and marker
-  # trailing so `asks` is TRUE and the marker exclusion is the only thing that
-  # can reject. Keep them adjacent and keep them single-marker. The two
-  # exclusions are ANDed, so a body carrying BOTH is rejected by either alone
-  # and is insensitive to dropping one — it would fence neither, which is
-  # exactly the regression that produced this pairing. Sabotage check: drop
-  # $trigmark from the vouch scan and the first goes red; drop $mark and the
-  # second does.
+  # The auto-TRIGGER marker exclusion IS load-bearing: unlike every auto-post
+  # producer, the re-request bridge emits the command FIRST and its marker
+  # after, so anchoring alone would read it as a vouch. Drop $trigmark from the
+  # voucher selector and this row goes red.
   "the re-request bridge's auto-trigger is not a vouch — else a read-only author self-unblocks with one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
 
-  "a bot post whose command comes BEFORE its auto-post marker still cannot vouch|[{\"id\":7350,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->\"}]|$BOT_USER|none"
+  # The case the deleted marker guard was breaking (#221): a maintainer types
+  # the command, then quote-replies a bot review below it. The quoted text
+  # carries the auto-post marker, so the old body-wide filter dropped this
+  # silently. First-line anchoring still sees the command. Restore the
+  # `(.body | contains($mark) | not)` conjunct to the voucher selector and this
+  # row goes red — which is the whole argument for removing it.
+  "a vouch still counts when the maintainer quotes a bot review below it|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\n\\n> <!-- knightwatch-reviewer:auto-post -->\\n> the previous review said this was fine\"}]|$BOT_USER someuser|trusted"
 
-  "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
+  # /<prefix>-update-review asks for ONE incremental pass; it is not a standing
+  # statement about the author, so it must not admit an untrusted author's PR.
+  # Drop the narrowing (restore `or asks(cmd + "-update-review")` to the voucher
+  # selector) and this row goes red. The incremental TRIGGER selectors still
+  # honor the command — scenario 2 covers that — so this fences trust only.
+  "/srosro-update-review from a maintainer is a trigger, not a vouch|[{\"id\":7500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-update-review\"}]|$BOT_USER someuser|none"
 
-  "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
   # `asks` skips blank lines before taking the first line. Nothing else
   # covered that filter: delete the map(select(...)) from JQ_ASKS and every
   # other row stays green while this one goes red. GitHub's comment box

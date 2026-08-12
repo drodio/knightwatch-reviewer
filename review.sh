@@ -275,11 +275,11 @@ refresh_queue() {
             # case it used to disambiguate (both commands on different lines of
             # one comment) stopped being expressible under first-line anchoring.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review"))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-review"))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -294,12 +294,12 @@ refresh_queue() {
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -493,7 +493,17 @@ This request stays open and fires automatically on your next push. To force a wh
 
         # Requester trust — ONE value decides whether this PR is reviewed at all.
         # Opening the PR is the author's implicit request; a /<prefix>-review from
-        # a push-access user is an additional one. OR over that set, never
+        # a push-access user is an additional one.
+        #
+        # /<prefix>-update-review is deliberately NOT a vouch, matching what
+        # README documents. It asks for one incremental pass against the prior
+        # reviewed SHA; reading it as a standing statement about the author would
+        # let a one-time "check what changed" admit that author's later heads to
+        # Codex forever. Vouching is the broader grant, so it takes the explicit
+        # command. (The incremental-trigger selectors still honor it — this
+        # narrowing is about trust, not about firing a review.)
+        #
+        # OR over that set, never
         # "latest requester wins": an untrusted drive-by must not suppress a
         # review of a trusted author's PR, and an untrusted reply must not
         # nullify a maintainer's vouch.
@@ -544,12 +554,10 @@ This request stays open and fires automatically on your next push. To force a wh
             # $BOT_USER is the operator's own identity, so filtering the account
             # would discard a maintainer's hand-typed vouch.
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
-                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
+                jq -r --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
                       --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not)
-                                   and (.body | contains($trigmark) | not)
-                                   and (asks($cmd_prefix + "-review")
-                                        or asks($cmd_prefix + "-update-review")))]
+                    "$JQ_ASKS"'[.[] | select((.body | contains($trigmark) | not)
+                                   and asks($cmd_prefix + "-review"))]
                      | [.[].user.login] | unique | .[]' 2>/dev/null)
             if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
                 log "$PR_ID: vouch check deferred — API error; retrying next tick"

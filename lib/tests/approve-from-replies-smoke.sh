@@ -10,8 +10,9 @@
 #   2. Trusted user posts /srosro-approve as the whole comment → exactly
 #      one approve call with the bot marker in the body, seen state set.
 #   3. Same comment on a second tick → no second approve (already-seen).
-#   4. Bot's own auto-post that mentions /srosro-approve → no approve
-#      (BOT_AUTO_POST_MARKER filter).
+#   4. Bot's own auto-post that mentions /srosro-approve → no approve.
+#      Every producer puts the marker on line 1, so first-line anchoring
+#      rejects it; there is no body-wide marker filter to rely on.
 #   5. Untrusted user posts /srosro-approve → no approve, seen marked
 #      so the next tick doesn't re-log it.
 #   6. *[bot] commenter (e.g. copilot-swe-agent[bot]) → no approve,
@@ -246,42 +247,6 @@ run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 approves on bot post, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 
-# Scenario 4b: the same bot post, but past the 64KiB pipe buffer. The marker
-# filter used to be `printf '%s' "$BODY" | grep -qF "$MARKER" && continue`; the
-# marker is the body's first line, so grep matched and exited while printf was
-# still writing, and `set -o pipefail` promoted the resulting SIGPIPE to 141 —
-# so `&& continue` did NOT fire and the bot's own post fell through the only
-# self-trigger guard in the function. Reachable on real data: GitHub's 65536-
-# *character* cap exceeds the 65536-*byte* buffer as soon as the body has
-# multi-byte characters, and these reviews are full of em dashes.
-#
-# The old code passes this at small sizes and fails here — size IS the test.
-#
-# The command leads and the marker trails, for the same non-vacuity reason as
-# orchestrator scenario 4: with the marker on line 1, is_approve_request
-# rejects the body on its own and the marker filter is never what decides, so
-# the scenario would pass against the broken pipeline and fence nothing. (That
-# masking is also why this bug never fired in production.) Command-first makes
-# is_approve_request true, leaving the marker filter as the sole rejecter.
-#
-# This row asserts the BOT-authored case only. The filter is author-blind, so
-# the identical body shape from a HUMAN who leads with the command and
-# quote-replies a bot review below it (the quote carries the marker) is
-# silently dropped — a false negative, tracked as issue #221, whose fix is to
-# strip `>`-prefixed lines before testing rather than to loosen this filter.
-# Do not read this scenario as ratifying that behavior for human authors.
-echo "  scenario 4b: bot post >64KiB — marker filter must still fire (SIGPIPE/pipefail regression)..."
-echo '{}' > "$APPROVES_SEEN_FILE"
-BIG_TAIL=$(printf 'em—dash padding line %.0s' $(seq 1 4000))
-printf '[{"id":1008,"created_at":"%s","user":{"login":"srosro"},"body":"/srosro-approve\\n%s\\n%s"}]\n' \
-    "$NOW_ISO" "$BOT_AUTO_POST_MARKER" "$BIG_TAIL" > "$MOCK_COMMENTS_FILE"
-jq -e . "$MOCK_COMMENTS_FILE" >/dev/null || { echo "FATAL: scenario 4b built invalid JSON"; exit 1; }
-body_bytes=$(jq -r '.[0].body' "$MOCK_COMMENTS_FILE" | wc -c)
-[ "$body_bytes" -gt 65536 ] || { echo "FATAL: scenario 4b body is only $body_bytes bytes — under the pipe buffer, so it cannot reproduce the bug"; exit 1; }
-run_approve
-n=$(count_approves)
-[ "$n" -eq 0 ] || { echo "FAIL scenario 4b: expected 0 approves on a >64KiB bot post, got $n — the marker filter took SIGPIPE and failed open"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-
 # Scenario 5: untrusted user — no approve, seen marked
 echo "  scenario 5: untrusted /srosro-approve — no approve, seen marked..."
 echo '{}' > "$APPROVES_SEEN_FILE"
@@ -469,4 +434,4 @@ MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (15 scenarios + ${#APPROVE_BODY_MATRIX[@]} body rows: empty, trusted-approve, already-seen, bot-self-marker, bot-self-marker->64KiB, untrusted-skip, [bot]-skip, invocation-vs-mention matrix (first-non-blank-line), gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
+echo "  PASS (14 scenarios + ${#APPROVE_BODY_MATRIX[@]} body rows: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, invocation-vs-mention matrix (first-non-blank-line), gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
