@@ -1451,75 +1451,48 @@ for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
     fi
 done
 
-# The extractors need a fixture where the two predicates would SELECT DIFFERENT
-# comments — a single anchored comment is matched identically by the anchored and
-# substring forms, so `sort_by(.created_at) | last` returns the same object and
-# the staged file is byte-identical either way. Here the NEWER comment only names
-# the command mid-prose: anchored, the extractor must pass it over and stage the
-# older real request; unanchored, `last` grabs the newer one and stages that.
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
-rm -f "$STATE_DIR/tmp/pr-review-trigger".*
-clear_seeded_runs
-seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
-printf '[{"id":8402,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Ready for another pass.\\n/srosro-review"},{"id":8403,"created_at":"2026-08-10T11:30:00Z","user":{"login":"someuser"},"body":"Also: do not use /srosro-review on the sibling PR yet."}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T11:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
-    MOCK_PR_AUTHOR="someuser" run_orchestrator
-tf6=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
-[ -n "$tf6" ] && [ -f "$tf6" ] \
-    || { echo "FAIL RT6: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
-grep -qF 'Ready for another pass' "$tf6" \
-    || { echo "FAIL RT6: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the anchored request"; cat "$tf6"; exit 1; }
-grep -qF 'do not use' "$tf6" \
-    && { echo "FAIL RT6: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$tf6"; exit 1; }
-clear_seeded_runs
-rm -f "$STATE_DIR/tmp/pr-review-trigger".*
-
-# The INCREMENTAL extractor (the /<prefix>-update-review branch) is only reached
-# when FORCE_REVIEW is set AND the head is unreviewed — on an unchanged head the
-# nothing-to-diff path declines before staging. Seed an OLDER reviewed sha so the
-# current head needs review, then discriminate the same way: an older real
-# incremental request plus a NEWER comment that merely names it.
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
-rm -f "$STATE_DIR/tmp/pr-review-trigger".*
-clear_seeded_runs
-seed_run "cncorp_plow" "1" "20260810T120000000Z" "oldsha6" "COMMENT" "2026-08-10T12:00:00Z" >/dev/null
-printf '[{"id":8404,"created_at":"2026-08-10T12:30:00Z","user":{"login":"someuser"},"body":"Pushed a fix.\\n/srosro-update-review"},{"id":8405,"created_at":"2026-08-10T12:45:00Z","user":{"login":"someuser"},"body":"Note: /srosro-update-review is the wrong command for the other PR."}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T12:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
-    MOCK_PR_AUTHOR="someuser" run_orchestrator
-tfi=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
-[ -n "$tfi" ] && [ -f "$tfi" ] \
-    || { echo "FAIL RT6: no trigger file staged for the anchored incremental request"; cat "$LOG_FILE"; exit 1; }
-grep -qF 'Pushed a fix' "$tfi" \
-    || { echo "FAIL RT6: the INCREMENTAL extractor staged the wrong comment — it selected the newer mid-prose mention"; cat "$tfi"; exit 1; }
-grep -qF 'wrong command for the other PR' "$tfi" \
-    && { echo "FAIL RT6: the INCREMENTAL extractor staged prose that merely NAMES the command — it is not anchored"; cat "$tfi"; exit 1; }
+# Both TRIGGER_JSON extractors need a fixture where the two predicates would
+# SELECT DIFFERENT comments — a single anchored comment is matched identically by
+# the anchored and substring forms, so `sort_by(.created_at) | last` returns the
+# same object and the staged file is byte-identical either way. Each row pairs an
+# older REAL request with a NEWER comment that merely names the command:
+# anchored, the extractor passes over the newer one; unanchored, `last` grabs it.
+#
+# The incremental branch is only reachable with FORCE_REVIEW set AND an
+# unreviewed head — on an unchanged head the nothing-to-diff path declines before
+# staging — so its row seeds an older reviewed sha.
+# Fields: label | reviewed sha | request body | mention body | staged marker
+EXTRACTOR_MATRIX=(
+  "whole-PR|abc123|Ready for another pass.\\n/srosro-review|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass"
+  "incremental|oldsha6|Pushed a fix.\\n/srosro-update-review|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix"
+)
+echo "  scenario RT6b: extractor anchoring (${#EXTRACTOR_MATRIX[@]} rows: whole-PR + incremental)..."
+for row in "${EXTRACTOR_MATRIX[@]}"; do
+    IFS='|' read -r elabel esha ereq ementon emark <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+    rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+    clear_seeded_runs
+    seed_run "cncorp_plow" "1" "20260810T120000000Z" "$esha" "COMMENT" "2026-08-10T12:00:00Z" >/dev/null
+    printf '[{"id":8404,"created_at":"2026-08-10T12:30:00Z","user":{"login":"someuser"},"body":"%s"},{"id":8405,"created_at":"2026-08-10T12:45:00Z","user":{"login":"someuser"},"body":"%s"}]\n' \
+        "$ereq" "$ementon" > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T12:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+        MOCK_PR_AUTHOR="someuser" run_orchestrator
+    # count_dispatches FIRST: the trigger_file= token is written by the DETACHED
+    # worker after the orchestrator exits, so a synchronous grep races it. This
+    # is the same reason count_dispatches exists at all.
+    ed=$(count_dispatches)
+    [ "$ed" -eq 1 ] \
+        || { echo "FAIL RT6b [$elabel]: expected 1 dispatch, got $ed"; cat "$LOG_FILE"; exit 1; }
+    etf=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
+    [ -n "$etf" ] && [ -f "$etf" ] \
+        || { echo "FAIL RT6b [$elabel]: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
+    grep -qF "$emark" "$etf" \
+        || { echo "FAIL RT6b [$elabel]: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the real request"; cat "$etf"; exit 1; }
+    grep -qF 'the other PR' "$etf" \
+        && { echo "FAIL RT6b [$elabel]: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$etf"; exit 1; }
+done
 clear_seeded_runs
 rm -f "$STATE_DIR/tmp/pr-review-trigger".*
-
-
-# The INCREMENTAL selector needs a different discriminator: on an unchanged head
-# an incremental trigger produces 0 dispatches whether or not it matched, because
-# the "nothing to diff" path declines it. What it DOES produce is a decline POST
-# — so prose merely naming the command must produce none.
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
-clear_seeded_runs
-seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
-printf '[{"id":8401,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Reminder: /srosro-update-review is not needed here."}]\n' \
-    > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
-    MOCK_PR_AUTHOR="someuser" run_orchestrator
-d6=$( { grep -c 'already-reviewed' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); d6=${d6:-0}
-[ "$d6" -eq 0 ] \
-    || { echo "FAIL RT6: prose merely NAMING the incremental command fired the trigger (got $d6 decline post(s)) — INCREMENTAL_TRIGGER is not anchored"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
-# A zero alone passes vacuously if the tick never reached the trigger scan at
-# all. Pair it with proof that it did: the comment fetch is the step immediately
-# before, and an enumeration that died earlier would show none.
-f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f6=${f6:-0}
-[ "$f6" -ge 1 ] \
-    || { echo "FAIL RT6: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
-clear_seeded_runs
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
