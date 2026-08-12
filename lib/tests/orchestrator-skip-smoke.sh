@@ -1519,20 +1519,20 @@ f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); 
     || { echo "FAIL RT6c: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
 clear_seeded_runs
 
-# --- RT7: execution trust is recomputed at RUN time, not inherited. A queued
+# --- RT8: execution trust is recomputed at RUN time, not inherited. A queued
 # spec can wait behind other workers, and permission can be revoked in that gap;
 # a serialized boolean would still say "trusted" and hand repo secrets plus
 # `just test` execution to a contributor who no longer has push access. The
 # dispatcher owns "should we review?"; the worker owns "may this code run?".
-echo "  scenario RT7: the worker recomputes author trust rather than inheriting it..."
+echo "  scenario RT8: the worker recomputes author trust rather than inheriting it..."
 w7="$PROJECT_ROOT/lib/review-one-pr.sh"
 grep -qE 'is_trusted_repo_author "\$REPO" "\$PR_AUTHOR"' "$w7" \
-    || { echo "FAIL RT7: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
+    || { echo "FAIL RT8: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
 grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
-    && { echo "FAIL RT7: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
+    && { echo "FAIL RT8: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
 # And the dispatcher must not put it back into the queue.
 grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
-    && { echo "FAIL RT7: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
+    && { echo "FAIL RT8: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

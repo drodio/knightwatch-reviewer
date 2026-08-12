@@ -1370,6 +1370,43 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
     exit 1
 fi
 
+# ===== Scenario 10c: recomputed trust actually DENIES the mirror =====
+# Scenario 10 proves the mirror fires for a trusted author. This proves the
+# security-relevant DIRECTION: identical arrangement, identical seeded secret,
+# only the live permission answer differs — no GH_STUB_PERMISSION_ROLE, so the
+# worker's own recomputed lookup says no push access.
+#
+# This is the behavioral half of the recomputation. RT8/RT5 in
+# orchestrator-skip-smoke assert on source text (that the worker calls
+# is_trusted_repo_author, and that the gates read IS_TRUSTED_AUTHOR) — a
+# regression that kept both greps satisfied while feeding them a value that is
+# always true would pass those and fail here.
+echo "  scenario: recomputed trust denies the .env mirror for an untrusted author..."
+STATE10C="$TMPDIR/state-10c"
+seed_state_dir "$STATE10C"
+git clone -q "$GITHUB_BARE10" "$STATE10C/repos/test-org_probe-repo"
+REPO_ENV10C="$TMPDIR/repo-env-10c"
+mkdir -p "$REPO_ENV10C/test-org_probe-repo"
+echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/test-org_probe-repo/.env.test-live"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+# Vouched requester (so the review runs at all), untrusted author (so nothing
+# executes) — the exact split this branch exists to express.
+REPO_ENV_DIR="$REPO_ENV10C" run_worker_in_state "$STATE10C" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "true" || true
+RUN_DIR10C=$(find "$STATE10C/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
+[ -n "$RUN_DIR10C" ] || { echo "FAIL: scenario 10c — worker produced no run dir (a vouched requester must still be reviewed)"; exit 1; }
+LOG10C="$RUN_DIR10C/run.log"
+if grep -qE "mirrored [0-9]+ env file\(s\) from canonical" "$LOG10C"; then
+    echo "FAIL: scenario 10c — .env mirror fired for an author with no push access; recomputed trust is not gating execution"
+    [ -f "$LOG10C" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10C"; }
+    exit 1
+fi
+if ! grep -q "skipping .env mirror" "$LOG10C"; then
+    echo "FAIL: scenario 10c — no skip line; the mirror gate did not run at all, so the absence above proves nothing"
+    [ -f "$LOG10C" ] && { echo "--- run.log ---"; tail -n 30 "$LOG10C"; }
+    exit 1
+fi
+
 # ===== Scenario 11: pre-spend stale-head gate — mismatch → abort before specialists =====
 # The ONLY coverage of the pre-spend gate (the decision is inline in the
 # worker): when gh reports a headRefOid that differs from the

@@ -217,8 +217,15 @@ if [ -z "$REQUESTER_TRUSTED" ]; then
 fi
 # Recomputed here, not inherited: this is the permission that gates EXECUTION,
 # and it must reflect the moment the code would run, not the moment the PR was
-# enumerated. Any non-trusted result (untrusted OR unverifiable) means no
-# secrets and no tests — fail closed, since this side grants capability.
+# enumerated.
+#
+# Deliberately NOT tri-state. Elsewhere an indeterminate lookup (rc=2) must
+# defer rather than read as untrusted, because there the consequence of getting
+# it wrong is DROPPING a trusted author's PR. Here the consequence is inverted:
+# this boolean only ever GRANTS capability (.env mirror, `just test`), and
+# nothing is dropped by declining — the review still runs, read-only. So an
+# unverifiable lookup fails closed. Deferring instead would stall a review that
+# is safe to perform, to protect a capability we are declining to grant anyway.
 is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
 IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
 # Gates on the REQUESTER, not the author: "did someone with push access ask for
