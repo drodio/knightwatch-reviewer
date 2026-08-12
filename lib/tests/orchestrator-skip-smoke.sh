@@ -1416,6 +1416,25 @@ n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || 
 [ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
+# --- RT6: the TRIGGER selectors are anchored too, not just the vouch scan.
+# Prose that merely names the command must not start a whole-PR review. RT1's
+# mid-prose row exercises the requester scan; this exercises the four trigger
+# selectors, which bypassed the shared predicate until they were migrated to it.
+# Already-reviewed PR at an unchanged head by a TRUSTED author, so nothing but a
+# trigger can produce a dispatch — and the author is trusted, so the vouch scan
+# is not even consulted.
+echo "  scenario RT6: prose naming the command does not start a review..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+printf '[{"id":8400,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Please do not use /srosro-review on this yet — the migration is unfinished."}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="someuser" run_orchestrator
+n6=$(count_dispatches)
+[ "$n6" -eq 0 ] \
+    || { echo "FAIL RT6: prose merely NAMING the command started a whole-PR review ($n6 dispatch(es)) — the trigger selectors are not anchored"; cat "$LOG_FILE"; exit 1; }
+clear_seeded_runs
+
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
 # because the behavioral path needs the full worker harness — but falsifiable:
