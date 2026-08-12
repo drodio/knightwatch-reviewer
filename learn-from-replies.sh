@@ -117,9 +117,7 @@ for REPO in "${REPOS[@]}"; do
                 # Defensive: trust gate below would catch most bots (no
                 # push access), but keep the explicit *[bot]/Copilot
                 # filter as a cheap pre-check before the API call.
-                case "$USER" in
-                    *"[bot]"|"Copilot"|"copilot") continue ;;
-                esac
+                is_bot_account "$USER" && continue
                 # Cheap body filter first — skip the trust API call for
                 # any reply that isn't an explicit memorize request.
                 if ! is_memorize_request "$BODY"; then

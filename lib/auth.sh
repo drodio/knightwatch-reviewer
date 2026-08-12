@@ -32,6 +32,19 @@
 _AUTH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_AUTH_LIB_DIR/gh-retry.sh"  # defines gh() — the rate-limit seam
 
+# is_bot_account LOGIN → 0 when the login is a bot/automation account.
+#
+# One owner for a policy three authorization-adjacent paths consult: the
+# no-push-access notice (review.sh) must not address a bot that cannot act on
+# it, and the approve/memorize pollers must not honour a command from one. The
+# three had drifted into separate copies of the same case pattern.
+is_bot_account() {
+    case "$1" in
+        *"[bot]"|"Copilot"|"copilot") return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 is_trusted_repo_author() {
     local repo="$1" user="$2"
     [ -z "$user" ] && return 1

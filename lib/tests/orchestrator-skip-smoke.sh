@@ -1308,8 +1308,12 @@ for row in "${VOUCH_MATRIX[@]}"; do
         [ -n "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was dropped — expected it to be reviewable"; cat "$LOG_FILE"; exit 1; }
         [ "$(jq -r '.requester_trusted' <<<"$vspec")" = "true" ] \
             || { echo "FAIL RT1 [$vlabel]: requester_trusted != true; spec=$vspec"; exit 1; }
-        [ "$(jq -r '.author_trusted' <<<"$vspec")" = "false" ] \
-            || { echo "FAIL RT1 [$vlabel]: author_trusted must stay false — a vouch unlocks reading, never running; spec=$vspec"; exit 1; } ;;
+        # author_trusted is deliberately NOT in the spec: the worker recomputes
+        # it from the live author at execution time, because a queued spec can
+        # wait and permission can be revoked in that gap. RT5 fences the
+        # execution gates; RT7 fences the recomputation itself.
+        [ "$(jq -r 'has("author_trusted")' <<<"$vspec")" = "false" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec still serializes author_trusted — execution trust must be recomputed at run time; spec=$vspec"; exit 1; } ;;
       none)
         [ -z "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was made reviewable by a requester that must not count; spec=$vspec"; exit 1; }
         vwm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
@@ -1514,6 +1518,21 @@ f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); 
 [ "$f6" -ge 1 ] \
     || { echo "FAIL RT6c: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
 clear_seeded_runs
+
+# --- RT7: execution trust is recomputed at RUN time, not inherited. A queued
+# spec can wait behind other workers, and permission can be revoked in that gap;
+# a serialized boolean would still say "trusted" and hand repo secrets plus
+# `just test` execution to a contributor who no longer has push access. The
+# dispatcher owns "should we review?"; the worker owns "may this code run?".
+echo "  scenario RT7: the worker recomputes author trust rather than inheriting it..."
+w7="$PROJECT_ROOT/lib/review-one-pr.sh"
+grep -qE 'is_trusted_repo_author "\$REPO" "\$PR_AUTHOR"' "$w7" \
+    || { echo "FAIL RT7: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
+grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
+    && { echo "FAIL RT7: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
+# And the dispatcher must not put it back into the queue.
+grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
+    && { echo "FAIL RT7: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

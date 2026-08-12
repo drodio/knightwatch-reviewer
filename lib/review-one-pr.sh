@@ -25,15 +25,17 @@ PR_BRANCH="$4"
 # (preserves visible structure) and avoids the empty-field hazard.
 PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
-# Trust, computed once by the dispatcher and passed in. Two questions, kept
-# separate: AUTHOR_TRUSTED_ARG decides whether this author's CODE MAY RUN (.env
-# mirror, just test); REQUESTER_TRUSTED decides whether the PR is REVIEWED at
-# all. A maintainer vouching for a read-only contributor answers the second yes
-# and leaves the first no. REQUIRED, not defaulted: review.sh is the only caller
-# (lib/replay.sh mirrors the review logic rather than invoking this), so a
-# fallback derivation here would only be a second owner of one fact.
-AUTHOR_TRUSTED_ARG="${7:-}"
-REQUESTER_TRUSTED="${8:-}"
+# Two trust questions, each owned where it is ASKED:
+#   "should this PR be reviewed at all?" — the dispatcher decides, because only
+#     it can see the comment thread that carries a maintainer's vouch. Passed in.
+#   "may this author's CODE RUN?" (.env mirror, just test) — decided HERE, from
+#     the live PR_AUTHOR resolved below, because a queued spec can wait behind
+#     other workers and permission can be revoked in that gap. A serialized
+#     boolean would still say "trusted" and hand secrets plus test execution to
+#     a contributor who no longer has push access.
+# REQUIRED, not defaulted: review.sh is the only caller (lib/replay.sh mirrors
+# the review logic rather than invoking this).
+REQUESTER_TRUSTED="${7:-}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
@@ -209,11 +211,16 @@ fi
 # throttled lookup of a genuinely-trusted author (e.g. repo owner) would
 # silently drop their PR. Defer instead (exit 1, like the gh pr view guard
 # above) so the next tick re-checks once the throttle clears.
-if [ -z "$AUTHOR_TRUSTED_ARG" ] || [ -z "$REQUESTER_TRUSTED" ]; then
-    log "$PR_ID: FATAL — trust args missing (author='$AUTHOR_TRUSTED_ARG' requester='$REQUESTER_TRUSTED'); review.sh must pass both"
+if [ -z "$REQUESTER_TRUSTED" ]; then
+    log "$PR_ID: FATAL — requester trust arg missing; review.sh must pass it"
     exit 1
 fi
-IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
+# Recomputed here, not inherited: this is the permission that gates EXECUTION,
+# and it must reflect the moment the code would run, not the moment the PR was
+# enumerated. Any non-trusted result (untrusted OR unverifiable) means no
+# secrets and no tests — fail closed, since this side grants capability.
+is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
+IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
 # Gates on the REQUESTER, not the author: "did someone with push access ask for
 # this review?" — opening the PR is the author's own implicit request, and a
 # maintainer's /<prefix>-review vouches for a read-only contributor's. Execution

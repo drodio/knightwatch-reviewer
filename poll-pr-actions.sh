@@ -57,11 +57,10 @@ approve_check() {
         APPROVE_KEY="${REPO}#${PR_NUM}#${ID}"
         [ -n "$(seen_get "$APPROVES_SEEN_FILE" "$APPROVE_KEY")" ] && continue
         # Defensive bot filter (cheap pre-check before the trust API call).
-        case "$USER" in
-            *"[bot]"|"Copilot"|"copilot")
-                log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
-                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue ;;
-        esac
+        if is_bot_account "$USER"; then
+            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
+            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue
+        fi
         # Trust gate: only push-access collaborators can trigger an approval.
         # rc 2 = the permission fetch itself failed (transient API error) — leave
         # the comment UNSEEN so a legitimate request is retried next tick rather

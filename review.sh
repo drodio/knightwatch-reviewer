@@ -557,9 +557,9 @@ This request stays open and fires automatically on your next push. To force a wh
             # Not for bots or ghost accounts: dependabot/renovate/Copilot all
             # read as "no push access", so without this every dependency-bump PR
             # fleet-wide gets a comment its author cannot act on.
-            case "$PR_AUTHOR" in
-                ""|*"[bot]"|"Copilot"|"copilot") : ;;
-                *)
+            # Empty login (ghost account) would render "@ does not have push
+            # access"; a bot cannot act on the instruction at all.
+            if [ -z "$PR_AUTHOR" ] || is_bot_account "$PR_AUTHOR"; then :; else
                     # Bound note: this keys on BOT_USER matching the identity the
                     # token posts as — a repo-wide invariant DECLINED_ALREADY,
                     # is_approve_request's self-skip and learn-from-replies all
@@ -588,8 +588,8 @@ Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so 
 A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
                             || log "$PR_ID: could not post the no-push-access notice: $(tr '\n' ' ' < "$NOTICE_ERR" 2>/dev/null | head -c 400)"
                         rm -f "$NOTICE_ERR"
-                    fi ;;
-            esac
+                    fi
+            fi
             # Watermarked whether or not the POST landed — same policy as the
             # sibling decline POST (scenario 7d): a permanent failure would
             # otherwise re-POST every tick forever, feeding the rate limit this
@@ -611,10 +611,9 @@ A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
             --arg tick "$TICK_FETCHED_AT_ISO" \
-            --argjson atrust "$([ "$AUTHOR_TRUSTED" = true ] && echo true || echo false)" \
             --argjson rtrust "$([ "$REQUESTER_TRUSTED" = true ] && echo true || echo false)" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
-              force_whole_pr:$force, author_trusted:$atrust, requester_trusted:$rtrust,
+              force_whole_pr:$force, requester_trusted:$rtrust,
               trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
@@ -653,7 +652,7 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
-        AUTHOR_TRUSTED=$(jq -r '.author_trusted' <<<"$spec"); REQUESTER_TRUSTED=$(jq -r '.requester_trusted' <<<"$spec")
+        REQUESTER_TRUSTED=$(jq -r '.requester_trusted' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
@@ -707,7 +706,7 @@ consume_queue() {
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
             "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
-            "$AUTHOR_TRUSTED" "$REQUESTER_TRUSTED" &
+            "$REQUESTER_TRUSTED" &
         active=$((active + 1)); dispatched=$((dispatched + 1))
     done < <(jq -c '.[]' <<<"$specs")
 
