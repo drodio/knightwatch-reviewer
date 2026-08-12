@@ -1,12 +1,9 @@
 #!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
 #   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR REQUESTER_TRUSTED
-# where FORCE_WHOLE_PR is "true" or "false". REQUESTER_TRUSTED is REQUIRED and
-# fatals when absent — it answers "did someone with push access ask for this
-# review?", which only the dispatcher can see (it reads the comment thread).
-# AUTHOR trust is deliberately NOT passed: it gates execution and is recomputed
-# here from the live author, because a queued spec can wait and permission can
-# be revoked in that gap. TRIGGER_COMMENT_FILE is
+# where FORCE_WHOLE_PR is "true" or "false" and REQUESTER_TRUSTED is REQUIRED
+# (fatal when absent). Author trust is deliberately NOT an argument — see the
+# two-gates block below for why each is owned where it is. TRIGGER_COMMENT_FILE is
 # optional and points to a tmp file holding the body of the comment that
 # kicked off this review (when triggered by /review or @bot mention);
 # the worker slurps it and rm -fs the file early.

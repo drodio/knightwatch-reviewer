@@ -50,8 +50,8 @@ seed_state_dir() {
 # must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
 # regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
 # PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
-# repeated contract across the requester-gate skip,
-# and metadata-guard scenarios (was four hand-maintained copies).
+# repeated contract across the requester-gate skip and metadata-guard
+# scenarios (was four hand-maintained copies).
 assert_no_probe_pr1_run_dir() {
     # Capture once and test the string — NOT `find … | grep -q .`. Under this
     # script's `set -o pipefail`, grep -q exiting on the first match can SIGPIPE
@@ -69,7 +69,7 @@ assert_no_probe_pr1_run_dir() {
 
 # run_worker_in_state <state_dir> <worker arg>... — one worker run against a
 # state dir's standard layout (the six env exports + repos.conf that every
-# scenario repeats). Per-scenario extras (PATH shims, REVIEWER_CONTAINER_MODE,
+# scenario repeats). Per-scenario extras (PATH shims, GH_STUB_PERMISSION_ROLE,
 # KWR_CONFIG_*, ...) ride as env-prefixes on the call — bash's temporary
 # environment is inherited by the worker. The worker's exit code propagates;
 # append `|| true` at call sites that don't assert on it.
@@ -792,16 +792,18 @@ fi
 #     indeterminate lookup DEFERS (getting it wrong there drops a trusted
 #     author's PR). Fenced by orchestrator-skip-smoke's
 #     indeterminate-trigger-defer scenario.
-#   AUTHOR trust is recomputed HERE from the live author, gating execution only,
-#     and an unverifiable result declines capability rather than deferring —
-#     nothing is dropped, since the read is already authorized. Fenced by
-#     scenario 10c below and orchestrator-skip-smoke's RT8.
+#     AUTHOR trust is recomputed HERE from the live author, gating execution
+#     only. The worker branches on `rc == 0` alone, so "definitively untrusted"
+#     and "could not verify" take the identical path: capability is declined,
+#     nothing is deferred, and nothing is dropped — the read was already
+#     authorized upstream. Scenario 10c exercises that branch (via rc=1); an
+#     rc=2 case would re-test the same line. RT8 fences the recomputation.
 
 # ===== Scenario 6: metadata-lookup guard aborts BEFORE allocate_run_dir =====
 # The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
 # moved above allocate_run_dir with the trust gate, so a metadata-lookup failure
 # must also abort without leaking a run dir. Fences that half of the relocation
-# (the trust-gate half is scenarios 5/6): a future re-shuffle that pushed the
+# (the requester-gate half is scenario 5): a future re-shuffle that pushed the
 # guards back below allocation would otherwise go undetected. gh pr view returns
 # {} → empty BASE_REF/PR_AUTHOR → guard exit 1, no run dir, line on orchestrator.log.
 echo "  scenario: metadata-lookup guard aborts before run-dir allocation (no leak)..."
