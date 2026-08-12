@@ -1268,10 +1268,9 @@ if [ "$n" -ne 1 ]; then
 fi
 
 # ===================== Requester trust (RT*) =====================
-# CONTAINER MODE, because that is the only mode the feature exists in: the host
-# path reviews an untrusted author anyway (minus the .env mirror and just test),
-# so it has no unreviewable PR to drop, no loop to close, and nothing to notify.
-export REVIEWER_CONTAINER_MODE=1
+# Requester trust is unconditional: REVIEW.md records the host reviewer as
+# retired (units deleted), so the containerized loop is the only review path and
+# a mode branch here would describe something that cannot run.
 
 # --- RT1: who counts as a trusted requester. All rows share one arrange/act —
 # seed a thread, run a tick against an UNTRUSTED author, read the spec — and
@@ -1291,6 +1290,8 @@ VOUCH_MATRIX=(
   "prose that merely NAMES the command does not vouch|[{\"id\":8100,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"Please do not use /srosro-review on this yet — the migration is unfinished.\"}]|$BOT_USER someuser|none"
 
   "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
+
+  "the re-request bridge's auto-trigger is not a vouch — else a read-only author self-unblocks with one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
 
   "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer can comment /srosro-review on its own line.\"}]|$BOT_USER|none"
 )
@@ -1351,31 +1352,47 @@ MOCK_PR_UPDATED_AT="2026-08-10T01:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser
 q3=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q3=${q3:-0}
 [ "$q3" -eq 1 ] || { echo "FAIL RT3: a vouch after suppression did not re-open the PR (got $q3) — the watermark is a black hole"; cat "$LOG_FILE"; exit 1; }
 
-# --- RT4: the notice. Told once, never to a bot, and the drop always logs — the
-# notice is one-shot, so from the second tick an unreviewable PR would otherwise
-# produce no comment and no journal line at all.
-echo "  scenario RT4: the author is told once, bots never, and every drop logs..."
-printf '[]\n' > "$MOCK_COMMENTS_FILE"
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-n=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n=${n:-0}
-[ "$n" -eq 1 ] || { echo "FAIL RT4: expected exactly 1 explanatory comment, got $n"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
-grep -q "no trusted requester" "$LOG_FILE" \
-    || { echo "FAIL RT4: the drop logged nothing — an operator asking 'why is this unreviewed?' finds no answer"; cat "$LOG_FILE"; exit 1; }
-# Feed the notice back; a later tick must not repost it (updatedAt moved, so the
-# idle-skip does not suppress this tick — the marker is the only thing that does).
-printf '[{"id":7200,"created_at":"2026-08-10T02:30:00Z","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> no push access"}]\n' \
-    "$BOT_USER" > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T02:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-n2=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n2=${n2:-0}
-[ "$n2" -eq 0 ] || { echo "FAIL RT4: notice re-posted (got $n2) — not idempotent, and this tick fires every ~30s"; exit 1; }
-# Bots resolve to "no push access" too; without the filter every dependency-bump
-# PR fleet-wide gets a comment its author cannot act on.
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
-printf '[]\n' > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T02:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="dependabot[bot]" run_orchestrator
-nb=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); nb=${nb:-0}
-[ "$nb" -eq 0 ] || { echo "FAIL RT4: posted a no-push-access notice to a bot author — fires on every dependency-bump PR in every tracked repo"; exit 1; }
+# --- RT4: the notice, as one table. All five cases share the arrange/act — seed
+# a thread, run a tick against an untrusted author, count posts, check the
+# watermark — and differ only in the thread, the author, and whether the POST
+# fails. Fields: label | comments JSON | author | MOCK_POST_RC | posts | watermark
+BOT_NOTICE='[{"id":7200,"created_at":"2026-08-10T02:30:00Z","user":{"login":"'"$BOT_USER"'"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> no push access"}]'
+SPOOFED='[{"id":7600,"created_at":"2026-08-10T07:30:00Z","user":{"login":"stranger"},"body":"hmm <!-- knightwatch-reviewer:untrusted-requester-notice -->"}]'
+NOTICE_MATRIX=(
+  "an untrusted author is told once|[]|stranger||1"
+  "our own prior notice mutes it|$BOT_NOTICE|stranger||0"
+  "a stranger echoing the marker canNOT mute it — it is invisible when rendered|$SPOOFED|stranger||1"
+  "never addressed to a bot — else every dependency-bump PR fleet-wide gets one|[]|dependabot[bot]||0"
+  "a failed POST still watermarks — else a permanent failure re-POSTs every tick|[]|stranger|1|1"
+)
+echo "  scenario RT4: notice matrix (${#NOTICE_MATRIX[@]} rows: told once, never to bots, unspoofable, bounded on failure)..."
+for row in "${NOTICE_MATRIX[@]}"; do
+    IFS='|' read -r nlabel njson nauthor nrc nposts <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+    printf '%s\n' "$njson" > "$MOCK_COMMENTS_FILE"
+    MOCK_POST_RC="$nrc" MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" \
+        MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="$nauthor" run_orchestrator
+    got=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); got=${got:-0}
+    [ "$got" -eq "$nposts" ] \
+        || { echo "FAIL RT4 [$nlabel]: expected $nposts notice post(s), got $got"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+    # Watermarked on EVERY row, POST outcome included: without it a permanent
+    # failure re-POSTs every tick forever, feeding the rate limit this branch
+    # exists to stop. Same policy scenario 7d pins for the decline POST.
+    [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+        || { echo "FAIL RT4 [$nlabel]: no watermark — the PR is re-evaluated every tick forever"; exit 1; }
+    # Every drop logs: the notice is one-shot, so from the second tick an
+    # unreviewable PR would otherwise leave no answer on any surface.
+    grep -q "no trusted requester" "$LOG_FILE" \
+        || { echo "FAIL RT4 [$nlabel]: the drop logged nothing"; cat "$LOG_FILE"; exit 1; }
+    if [ -n "$nrc" ]; then
+        grep -q "could not post the no-push-access notice: .*simulated" "$LOG_FILE" \
+            || { echo "FAIL RT4 [$nlabel]: the POST failure logged no cause"; cat "$LOG_FILE"; exit 1; }
+        # gh's real errors wrap; the cause must be flattened onto ONE line.
+        grep -q "could not post the no-push-access notice: .*second line of the error" "$LOG_FILE" \
+            || { echo "FAIL RT4 [$nlabel]: a multi-line gh error was not flattened onto one log line"; cat "$LOG_FILE"; exit 1; }
+    fi
+done
+
 
 # --- RT7: an unverifiable VOUCHER defers; it must never read as "not vouched".
 # Worse than a plain miss, because the drop also watermarks: one 5xx would
@@ -1399,36 +1416,6 @@ n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || 
 [ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
 clear_seeded_runs
 
-# --- RT8: only OUR notice mutes the notice. The marker is an HTML comment and
-# renders invisible, so a bare substring test would let any drive-by paste it and
-# permanently silence the author's only notification.
-echo "  scenario RT8: a stranger echoing the marker cannot mute the notice..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[{"id":7600,"created_at":"2026-08-10T07:30:00Z","user":{"login":"stranger"},"body":"hmm <!-- knightwatch-reviewer:untrusted-requester-notice -->"}]\n' > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T07:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-n8=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n8=${n8:-0}
-[ "$n8" -eq 1 ] || { echo "FAIL RT8: a non-bot comment carrying the marker suppressed the notice (posted $n8) — any commenter can mute it"; exit 1; }
-
-# --- RT9: a failed notice POST must name its cause AND still watermark. Same
-# pair scenario 7d pins for the sibling decline POST: without the cause an
-# archived PR, a lost write scope and a 403 abuse limit are indistinguishable;
-# without the watermark a permanent failure re-POSTs every tick forever, feeding
-# the rate limit this branch exists to stop.
-echo "  scenario RT9: a failed notice POST logs its cause and still watermarks..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[]\n' > "$MOCK_COMMENTS_FILE"
-MOCK_POST_RC=1 MOCK_PR_UPDATED_AT="2026-08-10T09:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
-    MOCK_PR_AUTHOR="stranger" run_orchestrator
-grep -q "could not post the no-push-access notice: .*simulated" "$LOG_FILE" \
-    || { echo "FAIL RT9: the POST failure logged no cause — archived PR, lost scope and abuse limit are indistinguishable"; cat "$LOG_FILE"; exit 1; }
-# gh's real errors wrap, so the cause must be newline-normalized onto ONE line —
-# the sibling decline path pipes through tr for exactly this. A stray newline
-# splits one event across two log lines.
-grep -q "could not post the no-push-access notice: .*second line of the error" "$LOG_FILE" \
-    || { echo "FAIL RT9: a multi-line gh error was not flattened onto one log line — the second line was dropped or split off"; cat "$LOG_FILE"; exit 1; }
-[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
-    || { echo "FAIL RT9: no watermark after a failed notice POST — it re-POSTs every tick forever (scenario 7d pins the opposite for the decline POST)"; exit 1; }
-
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
 # because the behavioral path needs the full worker harness — but falsifiable:
@@ -1440,18 +1427,12 @@ grep -qE 'if \[ "\$IS_TRUSTED_AUTHOR" = true \]' "$w" \
 grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
     || { echo "FAIL RT5: just_test_skip_reason no longer keys on IS_TRUSTED_AUTHOR — a vouch would execute the PR's code"; exit 1; }
 
-unset REVIEWER_CONTAINER_MODE
 
-# --- RT6: the host path has no unreviewable PR — it reviews an untrusted author
-# anyway (minus the mirror and just test), so the dispatcher drop must not fire
-# there, or this deletes reviews main performs today.
-echo "  scenario RT6: host path still reviews an untrusted author (no drop, no notice)..."
-rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
-printf '[]\n' > "$MOCK_COMMENTS_FILE"
-MOCK_PR_UPDATED_AT="2026-08-10T08:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
-q6=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q6=${q6:-0}
-[ "$q6" -eq 1 ] || { echo "FAIL RT6: host-path review of an untrusted author was dropped at the dispatcher (got $q6) — main reviews this PR"; exit 1; }
-n6=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n6=${n6:-0}
-[ "$n6" -eq 0 ] || { echo "FAIL RT6: posted a no-push-access notice on the host path, where the PR is reviewed anyway"; exit 1; }
+# NOTE: RT6 (host path still reviews an untrusted author) was deleted here.
+# REVIEW.md records the single-account systemd-timer reviewer as RETIRED with
+# its units deleted — the containerized loop is the only review path — so the
+# requester-trust flow is now unconditional and there is no host path left for
+# that scenario to describe. Deleted rather than left dormant: it can no longer
+# reach a branch that exists.
 
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

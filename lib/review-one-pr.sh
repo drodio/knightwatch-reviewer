@@ -214,16 +214,11 @@ if [ -z "$AUTHOR_TRUSTED_ARG" ] || [ -z "$REQUESTER_TRUSTED" ]; then
     exit 1
 fi
 IS_TRUSTED_AUTHOR="$AUTHOR_TRUSTED_ARG"
-# The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
-# must never run (codex↔privileged-dind). On the host path an untrusted author
-# is reviewed anyway (just without the .env-mirror / just-test, gated on
-# IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
-# scoping it here keeps host behavior unchanged.
 # Gates on the REQUESTER, not the author: "did someone with push access ask for
 # this review?" — opening the PR is the author's own implicit request, and a
 # maintainer's /<prefix>-review vouches for a read-only contributor's. Execution
 # stays gated on IS_TRUSTED_AUTHOR further below.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
+if [ "$REQUESTER_TRUSTED" != true ]; then
     # Silent skip: no per-tick log line. This exit is now above the per-run
     # run.log, so the only place a line could land is the shared, 5 MB-rotated
     # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so

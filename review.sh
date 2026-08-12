@@ -221,11 +221,8 @@ refresh_queue() {
         is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
         # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
         # indeterminate result must never collapse to "untrusted" — that would
-        # drop a genuinely-trusted author's PR on a throttled lookup. Deferring
-        # is CONTAINER-MODE ONLY, matching the gate it feeds: the host path
-        # reviews an untrusted author anyway, so an unverifiable lookup there
-        # costs nothing and must not drop the PR.
-        if [ "$AUTHOR_TRUST_RC" -eq 2 ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+        # drop a genuinely-trusted author's PR on a throttled lookup.
+        if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
             log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
             continue
         fi
@@ -274,10 +271,10 @@ refresh_queue() {
             # the longer command doesn't accidentally satisfy both paths.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -293,11 +290,11 @@ refresh_queue() {
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -507,10 +504,10 @@ This request stays open and fires automatically on your next push. To force a wh
         # matching with no permission check, so gating on it would let an
         # untrusted author self-vouch.
         #
-        # Only asked when it can change the answer — a trusted author is already
-        # a trusted requester, and on the host path nothing consults the result.
+        # Only asked when it can change the answer: a trusted author is already a
+        # trusted requester.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
-        if [ "$REQUESTER_TRUSTED" != true ] && [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then
+        if [ "$REQUESTER_TRUSTED" != true ]; then
             VOUCH_INDETERMINATE=false
             while IFS= read -r _cand; do
                 [ -n "$_cand" ] || continue
@@ -523,11 +520,25 @@ This request stays open and fires automatically on your next push. To force a wh
                 # PR until its next updatedAt event, silently, with the notice
                 # already posted.
                 [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
-            # Distinct logins so one user repeating the command costs one call;
-            # bot posts excluded so our own notice can never vouch for itself.
+            # Distinct logins so one user repeating the command costs one call.
+            #
+            # BOTH bot markers are excluded, and that is load-bearing. The
+            # re-request bridge (poll-pr-actions.sh) posts a literal
+            # /<prefix>-review under $BOT_USER — which HAS push access — and is
+            # deliberately NOT auto-post marked, because it must still trigger
+            # reviews. GitHub lets a PR author re-request review WITHOUT push
+            # access and rerequest_check applies no author filter, so filtering
+            # on the auto-post marker alone would let a read-only contributor
+            # unlock Codex reading of their own PR with one click.
+            #
+            # Excluded by MARKER, never by author: in a single-account deploy
+            # $BOT_USER is the operator's own identity, so filtering the account
+            # would discard a maintainer's hand-typed vouch.
             done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
-                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                jq -r --arg mark "$BOT_AUTO_POST_MARKER" --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
+                      --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not)
+                                   and (.body | contains($trigmark) | not)
                                    and (asks($cmd_prefix + "-review")
                                         or asks($cmd_prefix + "-update-review")))]
                      | [.[].user.login] | unique | .[]' 2>/dev/null)
@@ -539,9 +550,8 @@ This request stays open and fires automatically on your next push. To force a wh
 
         # No trusted requester → not reviewable. Watermark and drop here rather
         # than queueing a worker that would only skip: that is what makes a
-        # PERMANENT skip cost one evaluation instead of one per tick. Container
-        # mode only, matching the worker gate — the host path reviews the PR.
-        if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$REQUESTER_TRUSTED" != true ]; then
+        # PERMANENT skip cost one evaluation instead of one per tick.
+        if [ "$REQUESTER_TRUSTED" != true ]; then
             log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
             # Tell the author once. The skip is permanent and otherwise silent.
             # Not for bots or ghost accounts: dependabot/renovate/Copilot all
