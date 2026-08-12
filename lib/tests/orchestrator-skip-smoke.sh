@@ -1294,6 +1294,8 @@ VOUCH_MATRIX=(
 
   "the re-request bridge's auto-trigger is not a vouch — else a read-only author self-unblocks with one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
 
+  "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
+
   "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer can comment /srosro-review on its own line.\"}]|$BOT_USER|none"
 )
 echo "  scenario RT1: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."
@@ -1441,7 +1443,7 @@ clear_seeded_runs
 # Fields: label | comment body | expected dispatches
 TRIGGER_ANCHOR_MATRIX=(
   "prose naming the whole-PR command does not start a review|Please do not use /srosro-review on this yet — the migration is unfinished.|0"
-  "an anchored command still triggers|Looks ready.\\n/srosro-review|1"
+  "an anchored command still triggers|/srosro-review\\n\\nLooks ready.|1"
 )
 echo "  scenario RT6: trigger-selector anchoring (${#TRIGGER_ANCHOR_MATRIX[@]} rows: both commands, both directions)..."
 for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
@@ -1478,8 +1480,8 @@ done
 # staging — so its row seeds an older reviewed sha.
 # Fields: label | reviewed sha | request body | mention body | staged marker | mention marker
 EXTRACTOR_MATRIX=(
-  "whole-PR|abc123|Ready for another pass.\\n/srosro-review|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass|sibling PR"
-  "incremental|oldsha6|Pushed a fix.\\n/srosro-update-review|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix|the other PR"
+  "whole-PR|abc123|/srosro-review\\n\\nReady for another pass.|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass|sibling PR"
+  "incremental|oldsha6|/srosro-update-review\\n\\nPushed a fix.|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix|the other PR"
 )
 echo "  scenario RT6b: extractor anchoring (${#EXTRACTOR_MATRIX[@]} rows: whole-PR + incremental)..."
 for row in "${EXTRACTOR_MATRIX[@]}"; do

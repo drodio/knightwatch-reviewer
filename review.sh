@@ -75,8 +75,9 @@ UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice --
 # \r\n, which would otherwise leave a \r before the terminator on every line
 # but the last. (is_approve_request has no such bug — POSIX [[:space:]] already
 # covers \r — so mirroring it means normalizing, not copying its character class.)
-JQ_ASKS='def asks(cmd): (.body | gsub("\r\n"; "\n")
-                               | test("(^|\n)[ \t]*/" + cmd + "([ \t\n]|$)"; "i"));' 
+JQ_ASKS='def asks(cmd): ((.body | gsub("\r\n"; "\n") | split("\n")
+                                | map(select(test("^[ \t]*$") | not)) | .[0] // "")
+                               | test("^[ \t]*/" + cmd + "([ \t]|$)"; "i"));' 
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.

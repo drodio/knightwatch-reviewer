@@ -192,13 +192,13 @@ Indices are built host-side (the `kid-refresh` timer indexes `KWR_CLONE_ROOT/<re
 
 ## Use on a PR
 
-Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window) — for PRs whose **author has push access**. A PR from a contributor without push access is not reviewed until someone with push access asks: the reviewer posts a one-time comment explaining that, and any collaborator **with push access** can unblock it with `/srosro-review` on its own line. The vouch admits the PR for **reading** only; the contributor's code is still never executed (no `.env` mirror, no `just test`), and it is re-verified at admission, so a maintainer who loses push access stops vouching. To force a fresh review on the new head, post a slash command:
+Reviews fire on PR open and again after a period of idle (the `STABLE_SECS` stability window) — for PRs whose **author has push access**. A PR from a contributor without push access is not reviewed until someone with push access asks: the reviewer posts a one-time comment explaining that, and any collaborator **with push access** can unblock it by posting `/srosro-review` as the **first line** of a comment (framing after it is kept and shapes the review; a mention inside prose or a fenced example deliberately does not vouch). The vouch admits the PR for **reading** only; the contributor's code is still never executed (no `.env` mirror, no `just test`), and it is re-verified at admission, so a maintainer who loses push access stops vouching. To force a fresh review on the new head, post a slash command:
 
 > **Command prefix:** all bot commands use the prefix from `BOT_CMD_PREFIX` (default: `srosro`). Set it in `~/.pr-reviewer/config.env` to fork-customize. Examples below use the default.
 
 | Command | What |
 |---|---|
-| `/srosro-update-review` | Incremental re-review against the prior reviewed SHA |
+| `/srosro-update-review` | Incremental re-review against the prior reviewed SHA. Must be the comment's first line — prose may follow. |
 | `/srosro-review` | Whole-PR re-review (full diff; keeps prior-review + decline memory). From a push-access collaborator this also **vouches** for a PR whose author lacks push access, admitting it for review — reading only, never execution. |
 | `/srosro-approve` | Approve the PR (push-access collaborators only) |
 | `/srosro-props [from: <specialist>]` | Give props to a specialist's contribution |
