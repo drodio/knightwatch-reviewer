@@ -202,7 +202,7 @@ elif [ "$1" = "api" ]; then
         # indeterminate too and defers before any voucher is consulted.
         for indet in ${MOCK_INDETERMINATE_USERS:-}; do
             if [ "$user" = "$indet" ]; then
-                echo "gh: HTTP 500: server error (simulated)" >&2
+                echo "gh: HTTP 418: unverifiable (simulated)" >&2
                 exit 1
             fi
         done
@@ -590,7 +590,7 @@ printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}
 # HTTP 500, not the default 403: a 403 stamps the fleet pause, which blocks the
 # comment fetch and skips the PR before the trigger is read — the scenario would
 # pass on the wrong branch.
-MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 500: server error (simulated)" run_orchestrator
+MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 418: unverifiable (simulated)" run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 6b: expected 0 dispatches under indeterminate trust (defer), got $n"

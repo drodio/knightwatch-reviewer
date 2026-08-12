@@ -45,21 +45,24 @@ seed_state_dir() {
     echo "{}" > "$1/state.json"
 }
 
-# assert_no_probe_pr1_run_dir STATE_DIR LABEL — fail if the worker allocated a
-# run dir for probe-repo#1 under STATE_DIR. The pre-allocation gates (issue #189)
-# must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
-# regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
-# PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
-# repeated contract across the requester-gate skip and metadata-guard
-# scenarios (was four hand-maintained copies).
-assert_no_probe_pr1_run_dir() {
+# assert_no_probe_run_dir STATE_DIR LABEL [PR] — fail if the worker allocated a
+# run dir for probe-repo#PR (default 1) under STATE_DIR. The pre-allocation gates
+# (issue #189) must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is
+# the regression. One helper for the repeated contract across the requester-gate
+# skip, deferral, and metadata-guard scenarios (was four hand-maintained copies).
+#
+# PR is a parameter, not a hardcoded glob: the previous name pinned PR 1 and
+# warned that reuse for another PR would pass vacuously — then a deferral
+# scenario on PR 10 reused it and did exactly that. A name cannot enforce a
+# constraint the signature allows.
+assert_no_probe_run_dir() {
     # Capture once and test the string — NOT `find … | grep -q .`. Under this
     # script's `set -o pipefail`, grep -q exiting on the first match can SIGPIPE
     # find (pipeline status 141 → the `if` is false), silently PASSING the leak
     # assertion at the exact moment a leak exists — a false-pass in the one fence
     # whose job is catching #189. Capturing also drops the duplicate find.
     local leaked
-    leaked=$(find "$1/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*')
+    leaked=$(find "$1/runs" -maxdepth 1 -type d -name "test-org_probe-repo__${3:-1}__*")
     if [ -n "$leaked" ]; then
         echo "FAIL: $2 — worker allocated a run-dir (pre-allocation gate didn't fire; leak — issue #189)"
         printf '%s\n' "$leaked"
@@ -693,7 +696,7 @@ GATE_EC=$?
 #
 # No `| head -1`: capture the full list so a failure names every leaked dir, and
 # so `set -o pipefail` can't SIGPIPE the find into a false pass — the same trap
-# documented on assert_no_probe_pr1_run_dir above.
+# documented on assert_no_probe_run_dir above.
 GATE_LEAK=$(find "$STATE_DIR/runs" -maxdepth 1 -type d -name 'test-org_probe-repo__1__*' -newer "$GATE_RUN_DIR")
 if [ -n "$GATE_LEAK" ]; then
     echo "FAIL: scenario 4 — dedup-gate skip left a run-dir behind (leak — issue #189)"
@@ -756,7 +759,7 @@ for _tick in 1 2; do
     # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
     # run-dir/#189 diagnostic is the informative one — the exit-code check would
     # otherwise mask it. Matches the metadata-guard site.
-    assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — unrequested skip"
+    assert_no_probe_run_dir "$STATE5" "scenario 5 tick $_tick — unrequested skip"
     if [ "$_ec" -ne 0 ]; then
         echo "FAIL: scenario 5 — unrequested tick $_tick exited $_ec (expected 0 from a clean requester-gate skip)"
         [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
@@ -808,7 +811,7 @@ GH_STUB_PRVIEW_EMPTY=1 run_worker_in_state "$STATE_MD" \
     "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Metadata-fail PR" "false" "someuser"
 GATE_MD_EC=$?
 LOG_MD="$STATE_MD/orchestrator.log"
-assert_no_probe_pr1_run_dir "$STATE_MD" "metadata-guard (gh-pr-view abort before allocation)"
+assert_no_probe_run_dir "$STATE_MD" "metadata-guard (gh-pr-view abort before allocation)"
 if [ "$GATE_MD_EC" -ne 1 ]; then
     echo "FAIL: metadata-guard — worker exited $GATE_MD_EC (expected 1 = abort on empty gh pr view)"
     [ -f "$LOG_MD" ] && { echo "--- orchestrator.log ---"; cat "$LOG_MD"; }
@@ -1391,7 +1394,7 @@ GH_STUB_INDETERMINATE_USERS="someuser" run_worker_in_state "$STATE10D" \
 DEFER_EC=$?
 [ "$DEFER_EC" -eq 1 ] \
     || { echo "FAIL: scenario 10b2 — worker exited $DEFER_EC (expected 1 = defer on an unverifiable requester); a skip here would silently drop a requested review"; exit 1; }
-assert_no_probe_pr1_run_dir "$STATE10D" "scenario 10b2 — deferral must not allocate a run dir (leaks one per retry, #189)"
+assert_no_probe_run_dir "$STATE10D" "scenario 10b2 — deferral must not allocate a run dir (leaks one per retry, #189)" 10
 grep -q "requester re-check deferred" "$STATE10D/orchestrator.log" 2>/dev/null \
     || { echo "FAIL: scenario 10b2 — no deferral line; an unverifiable requester collapsed to 'not requested'"; [ -f "$STATE10D/orchestrator.log" ] && cat "$STATE10D/orchestrator.log"; exit 1; }
 
