@@ -63,8 +63,17 @@ approve_check() {
     }
     while IFS= read -r COMMENT; do
         BODY=$(echo "$COMMENT" | jq -r '.body')
-        # Skip the bot's own auto-posts (footers/acks name /<prefix>-approve literally).
-        printf '%s' "$BODY" | grep -qF "$BOT_AUTO_POST_MARKER" && continue
+        # Skip the bot's own auto-posts (footers/acks name /<prefix>-approve
+        # literally). `case`, not `printf | grep -qF`: the marker is the body's
+        # FIRST line (pinned by review-header-smoke.sh), so grep -q matches and
+        # exits immediately while printf may still be writing — SIGPIPE, which
+        # `set -o pipefail` (line 15) promotes to 141, so `&& continue` does not
+        # fire and the bot's own post falls through this filter. GitHub's 65536
+        # *character* comment cap exceeds the 65536-*byte* pipe buffer as soon
+        # as the body has multi-byte characters (these reviews are full of em
+        # dashes), so it is reachable, not theoretical. Same trap as
+        # is_approve_request above, failing open instead of closed.
+        case "$BODY" in *"$BOT_AUTO_POST_MARKER"*) continue ;; esac
         is_approve_request "$BODY" || continue
         ID=$(echo "$COMMENT" | jq -r '.id')
         USER=$(echo "$COMMENT" | jq -r '.user.login')

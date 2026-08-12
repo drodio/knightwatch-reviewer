@@ -485,8 +485,15 @@ fi
 # AND the usage footer always names the slash commands literally; the
 # orchestrator excludes any comment containing that marker so a successful
 # review doesn't re-trigger itself on the next tick.
+#
+# The command leads and the marker trails — deliberately NOT the real post's
+# layout (marker first). Under first-non-blank-line anchoring a marker-first
+# body makes `asks` false on its own, so the scenario would pass with the
+# marker filter deleted and would fence nothing. Putting the command first
+# makes `asks` true, leaving the marker filter as the only thing that can
+# reject: delete it from the selector and this goes red.
 echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
-printf '[{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
+printf '[{"created_at":"%s","user":{"login":"%s"},"body":"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
@@ -1296,7 +1303,19 @@ VOUCH_MATRIX=(
 
   "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
 
-  "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer can comment /srosro-review on its own line.\"}]|$BOT_USER|none"
+  "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
+  # Belt-and-braces sibling of the row above: there the marker is the first
+  # line, so first-line anchoring alone makes `asks` false and the marker
+  # filter is never exercised. Here the command leads and the markers trail,
+  # so the marker exclusion is the ONLY thing that can reject it — drop
+  # either marker from the vouch scan's selector and this goes red. Both
+  # markers are on one body because either one alone must suffice.
+  "a bot post whose command comes BEFORE its markers still cannot vouch|[{\"id\":7300,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
+  # `asks` skips blank lines before taking the first line. Nothing else
+  # covered that filter: delete the map(select(...)) from JQ_ASKS and every
+  # other row stays green while this one goes red. GitHub's comment box
+  # produces this shape whenever someone hits return before typing.
+  "leading blank lines still vouch — first NON-BLANK line is the rule|[{\"id\":7400,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\n\\n/srosro-review\"}]|$BOT_USER someuser|trusted"
 )
 echo "  scenario RT1: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."
 for row in "${VOUCH_MATRIX[@]}"; do
