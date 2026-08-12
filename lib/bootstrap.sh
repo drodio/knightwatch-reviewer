@@ -9,14 +9,26 @@
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
-# Marker prepended to every bot auto-post. PRODUCER-SIDE CONTRACT: it must be
-# the FIRST line of the body, and a bot post must never lead with a slash
-# command. That is the entire self-trigger defense — `asks` (review.sh) and
-# is_approve_request (poll-pr-actions.sh) evaluate only the first non-blank
-# line, so a marker-first body cannot read as a request. There is deliberately
-# NO body-wide "contains this marker" filter: it was redundant against every
-# real producer and silently dropped genuine requests whose author quoted a bot
-# post below their command (#221). Lead a new producer with the marker.
+# Marker prepended to every bot auto-post. PRODUCER-SIDE CONTRACT, two parts:
+# lead the body with this marker (never with a slash command), and post as
+# $BOT_USER. Both are load-bearing, for different consumers.
+#
+# Marker-first covers the REQUEST selectors — `asks` (review.sh: trigger and
+# vouch) and is_approve_request (poll-pr-actions.sh). Those read only the first
+# non-blank line, so a marker-first body cannot read as a request. They carry no
+# body-wide "contains this marker" test: it was redundant against every real
+# producer and silently dropped genuine requests whose author quoted a bot post
+# below their command (#221).
+#
+# $BOT_USER covers the one command consumer marker-first does NOT protect:
+# is_memorize_request (learn-from-replies.sh) matches body-wide and unanchored,
+# so a marker-first body CAN read as a memorize request there. What stops it is
+# that file's author filter plus its ACK defanging — not anchoring.
+#
+# Two body-wide marker consumers remain by design, so a grep hit is not drift:
+# lib/pr-comments.sh (staging: anchored for auto-post, body-wide for the
+# auto-trigger marker) and specialist-bakeoff.sh (feedback signals).
+#
 # Must match the literal in lib/review-one-pr.sh — a smoke scenario catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
 # Marker on the re-request poller's auto-posted /<prefix>-review trigger. Unlike
