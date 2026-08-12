@@ -75,9 +75,7 @@ _pr_comments_from_json() {
     # see it, and its attribution note must never be staged as operator prose.
     local base
     base=$(printf '%s' "$raw" | jq -c --arg marker "$marker" --arg tmarker "$trigger_marker" \
-        'def firstline: (gsub("\r\n"; "\n") | split("\n")
-                         | map(select(test("^[ \t]*$") | not)) | .[0] // "");
-         [.[] | select(((.body | firstline | startswith($marker)) | not)
+        "$JQ_FIRSTLINE"'[.[] | select(((.body | firstline_is($marker)) | not)
                        and (.body | contains($tmarker) | not))] | sort_by(.created_at)')
 
     # Channel 1: human thread, restricted to TRUSTED commenters. Untrusted

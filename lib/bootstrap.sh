@@ -42,6 +42,7 @@ BOT_AUTO_TRIGGER_MARKER="${BOT_AUTO_TRIGGER_MARKER:-<!-- knightwatch-reviewer:au
 # self-triggering; this second marker is the idempotency key that keeps the
 # skip path from re-posting the same decline every tick.
 BOT_DECLINE_MARKER="${BOT_DECLINE_MARKER:-<!-- knightwatch-reviewer:already-reviewed -->}"
+
 . "$REVIEWER_LIB_DIR/tracked-repos.sh"
 . "$REVIEWER_LIB_DIR/auth.sh"
 . "$REVIEWER_LIB_DIR/state-io.sh"

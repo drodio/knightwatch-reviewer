@@ -47,6 +47,9 @@ require_repos
 . "$REVIEWER_LIB_DIR/bakeoff-store.sh"
 . "$REVIEWER_LIB_DIR/pr-enumerate.sh"
 . "$REVIEWER_LIB_DIR/gh-retry.sh"
+# JQ_FIRSTLINE — the shared "first non-blank line" jq fragment the feedback
+# scan below anchors on. Same definition the trigger/vouch/staging selectors use.
+. "$REVIEWER_LIB_DIR/gh-comments.sh"
 
 log() { echo "[$(date -u +%FT%TZ)] $*" >> "$LOG_FILE"; }
 
@@ -403,9 +406,16 @@ for repo in "${REPOS[@]}"; do
                 mark_critiqued "$DB_FILE" "$repo" "$target_review" "$specialist"
             done <<< "$negatives"
         fi
+    # Anchored to the first non-blank line, not body-wide (JQ_FIRSTLINE —
+    # lib/gh-comments.sh owns the definition; same rule as the trigger, vouch
+    # and staging selectors). The self-credit hedge is preserved because a real
+    # bot body always LEADS with the marker. Body-wide containment instead
+    # dropped the most natural way a human gives props — quote the probe you
+    # liked, then write the command under it — so the quoted marker silently
+    # discarded the entire loved/critiqued signal (#221, same class).
     done < <(printf '%s' "$comments_capped" \
         | jq -r --arg marker "$BOT_AUTO_POST_MARKER" \
-              '.[] | select(.body | contains($marker) | not)
+              "$JQ_FIRSTLINE"'.[] | select(.body | firstline_is($marker) | not)
                    | [.user.login, .issue_url, .body, .created_at] | @tsv')
 
     # Coverage tally: reuse the ceiling-capped stream so the caption counts only

@@ -26,6 +26,23 @@
 # shared seam: any future caller of this endpoint goes through this
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
+
+# The ONE definition of "the comment's first non-blank line", shared by every
+# consumer that anchors on it: review.sh's `asks` (trigger + vouch selectors)
+# and lib/pr-comments.sh's staging filter. CRLF-normalized because GitHub's web
+# UI returns \r\n, which would otherwise leave a \r before the terminator on
+# every line but the last.
+#
+# Lives here because this file is the common ancestor both consumers already
+# source. It was duplicated before, and the copies had silently drifted —
+# `asks` tolerated leading whitespace before the command, the staging filter
+# did not — so one comment could be judged differently by the selector that
+# admits it and the one that stages it. Build predicates ON TOP of these; do
+# not re-implement the extraction.
+JQ_FIRSTLINE='def firstline: (gsub("\r\n"; "\n") | split("\n")
+                             | map(select(test("^[ \t]*$") | not)) | .[0] // "");
+def firstline_is(m): (firstline | sub("^[ \t]+"; "") | startswith(m));'
+
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"  # defines gh() — the rate-limit seam
 
 fetch_issue_comments() {
