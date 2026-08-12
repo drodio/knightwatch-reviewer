@@ -1299,21 +1299,21 @@ VOUCH_MATRIX=(
 
   "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
 
+  # The next two rows are a pair: one bot marker each, command first and marker
+  # trailing so `asks` is TRUE and the marker exclusion is the only thing that
+  # can reject. Keep them adjacent and keep them single-marker. The two
+  # exclusions are ANDed, so a body carrying BOTH is rejected by either alone
+  # and is insensitive to dropping one — it would fence neither, which is
+  # exactly the regression that produced this pairing. Sabotage check: drop
+  # $trigmark from the vouch scan and the first goes red; drop $mark and the
+  # second does.
   "the re-request bridge's auto-trigger is not a vouch — else a read-only author self-unblocks with one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
+
+  "a bot post whose command comes BEFORE its auto-post marker still cannot vouch|[{\"id\":7350,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->\"}]|$BOT_USER|none"
 
   "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
 
   "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
-  # Fences the AUTO-POST marker specifically. The row above puts it on the
-  # first line, so first-line anchoring alone makes `asks` false and the
-  # exclusion is never exercised; here the command leads and the marker
-  # trails, so `(contains($mark) | not)` is the only thing that can reject.
-  #
-  # ONE marker per row, deliberately. The two exclusions are ANDed, so a body
-  # carrying both is rejected by either alone and is insensitive to dropping
-  # one — it would fence neither. $trigmark has its own single-marker row
-  # ("the re-request bridge's auto-trigger is not a vouch") directly below.
-  "a bot post whose command comes BEFORE its auto-post marker still cannot vouch|[{\"id\":7350,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->\"}]|$BOT_USER|none"
   # `asks` skips blank lines before taking the first line. Nothing else
   # covered that filter: delete the map(select(...)) from JQ_ASKS and every
   # other row stays green while this one goes red. GitHub's comment box
