@@ -785,12 +785,17 @@ if [ -s "$STATE5/orchestrator.log" ]; then
     exit 1
 fi
 
-# NOTE: the container-mode indeterminate-trust DEFER scenario lived here. The
-# worker no longer derives trust — review.sh is its only caller and passes both
-# values — so an indeterminate lookup is resolved, and deferred, at the
-# dispatcher before any worker is spawned. Covered by orchestrator-skip-smoke's
-# indeterminate-trigger-defer scenario. Deleted rather than left dormant: it can
-# no longer reach the branch it named.
+# NOTE: a worker-side indeterminate-trust DEFER scenario lived here, and was
+# deleted because the worker no longer defers on an unverifiable lookup — it
+# fails CLOSED. Trust reaches the worker as two separate questions now:
+#   REQUESTER trust arrives as argv, decided by review.sh, which is where an
+#     indeterminate lookup DEFERS (getting it wrong there drops a trusted
+#     author's PR). Fenced by orchestrator-skip-smoke's
+#     indeterminate-trigger-defer scenario.
+#   AUTHOR trust is recomputed HERE from the live author, gating execution only,
+#     and an unverifiable result declines capability rather than deferring —
+#     nothing is dropped, since the read is already authorized. Fenced by
+#     scenario 10c below and orchestrator-skip-smoke's RT8.
 
 # ===== Scenario 6: metadata-lookup guard aborts BEFORE allocate_run_dir =====
 # The gh pr view (BASE_REF/PR_AUTHOR) and gh repo view (REPO_VISIBILITY) guards
