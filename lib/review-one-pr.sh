@@ -37,7 +37,7 @@ FORCE_WHOLE_PR="${6:-false}"
 #     a contributor who no longer has push access.
 # REQUIRED, not defaulted: review.sh is the only caller (lib/replay.sh mirrors
 # the review logic rather than invoking this).
-REQUESTER_TRUSTED="${7:-}"
+REQUESTER_LOGIN="${7:-}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
@@ -212,10 +212,27 @@ fi
 #
 # WHETHER THIS AUTHOR'S CODE MAY RUN is decided below, and it is a separate
 # question with the opposite failure direction. See the block beneath.
-if [ -z "$REQUESTER_TRUSTED" ]; then
-    log "$PR_ID: FATAL — requester trust arg missing; review.sh must pass it"
+if [ -z "$REQUESTER_LOGIN" ]; then
+    log "$PR_ID: FATAL — requester login arg missing; review.sh must pass it"
     exit 1
 fi
+# Re-verify the requester AT ADMISSION. The dispatcher identified who asked —
+# only it can see the comment thread — but the spec can wait behind other
+# workers, and push access can be revoked in that gap. Reading is the boundary
+# here (codex runs sandbox-bypassed beside a privileged dind daemon), so a stale
+# "someone vouched" boolean would admit attacker-controlled content on authority
+# that no longer exists. Same shape as the author check below: identify
+# upstream, verify at the point of use.
+#
+# rc=1 (definitively no push access) → skip, exactly as if nobody had asked.
+# rc=2 (could not verify) → DEFER, not skip: this decision can DROP a PR a
+# maintainer legitimately requested, so an unverifiable lookup must retry.
+is_trusted_repo_author "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
+if [ "$REQUESTER_RC" -eq 2 ]; then
+    log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
+    exit 1
+fi
+REQUESTER_TRUSTED=false; [ "$REQUESTER_RC" -eq 0 ] && REQUESTER_TRUSTED=true
 # Recomputed here, not inherited: this is the permission that gates EXECUTION,
 # and it must reflect the moment the code would run, not the moment the PR was
 # enumerated.

@@ -1306,14 +1306,18 @@ for row in "${VOUCH_MATRIX[@]}"; do
     case "$vexpect" in
       trusted)
         [ -n "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was dropped — expected it to be reviewable"; cat "$LOG_FILE"; exit 1; }
-        [ "$(jq -r '.requester_trusted' <<<"$vspec")" = "true" ] \
-            || { echo "FAIL RT1 [$vlabel]: requester_trusted != true; spec=$vspec"; exit 1; }
+        # The spec carries WHO asked, not a boolean: the worker re-verifies that
+        # login at admission, because the queue can wait while access is revoked.
+        [ -n "$(jq -r '.requester_login // empty' <<<"$vspec")" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec carries no requester_login — the worker cannot re-verify who asked; spec=$vspec"; exit 1; }
         # author_trusted is deliberately NOT in the spec: the worker recomputes
         # it from the live author at execution time, because a queued spec can
         # wait and permission can be revoked in that gap. RT5 fences the
         # execution gates; RT8 fences the recomputation itself.
         [ "$(jq -r 'has("author_trusted")' <<<"$vspec")" = "false" ] \
-            || { echo "FAIL RT1 [$vlabel]: spec still serializes author_trusted — execution trust must be recomputed at run time; spec=$vspec"; exit 1; } ;;
+            || { echo "FAIL RT1 [$vlabel]: spec still serializes author_trusted — execution trust must be recomputed at run time; spec=$vspec"; exit 1; }
+        [ "$(jq -r 'has("requester_trusted")' <<<"$vspec")" = "false" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec still serializes requester_trusted — admission must be re-verified from the login at run time; spec=$vspec"; exit 1; } ;;
       none)
         [ -z "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was made reviewable by a requester that must not count; spec=$vspec"; exit 1; }
         vwm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
@@ -1533,6 +1537,10 @@ grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
 # And the dispatcher must not put it back into the queue.
 grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
     && { echo "FAIL RT8: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
+grep -qF 'requester_trusted:' "$PROJECT_ROOT/review.sh" \
+    && { echo "FAIL RT8: review.sh serializes requester_trusted again — admission must re-verify the requester's login, since reading is the boundary"; exit 1; }
+grep -qE 'is_trusted_repo_author "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
+    || { echo "FAIL RT8: the worker no longer re-verifies the requester at admission — a revoked voucher would still admit content to sandbox-bypassed codex"; exit 1; }
 
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,

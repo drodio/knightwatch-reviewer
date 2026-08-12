@@ -132,7 +132,7 @@ refresh_queue() {
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
     local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
-    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR
+    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR REQUESTER_LOGIN
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -507,12 +507,16 @@ This request stays open and fires automatically on your next push. To force a wh
         # Only asked when it can change the answer: a trusted author is already a
         # trusted requester.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
+        # WHO asked, not merely that someone did — the worker re-verifies this
+        # login at admission, because the queue can wait and push access can be
+        # revoked in the gap. The author is the implicit requester when trusted.
+        REQUESTER_LOGIN="$PR_AUTHOR"
         if [ "$REQUESTER_TRUSTED" != true ]; then
             VOUCH_INDETERMINATE=false
             while IFS= read -r _cand; do
                 [ -n "$_cand" ] || continue
                 is_trusted_repo_author "$REPO" "$_cand"; _cand_rc=$?
-                if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; break; fi
+                if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; REQUESTER_LOGIN="$_cand"; break; fi
                 # rc=2 is "could not verify", never "not a voucher" — the same
                 # rule the author and trigger-prose checks state explicitly.
                 # Collapsing it here is worse than a plain miss: the drop below
@@ -611,9 +615,9 @@ A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
             --arg tick "$TICK_FETCHED_AT_ISO" \
-            --argjson rtrust "$([ "$REQUESTER_TRUSTED" = true ] && echo true || echo false)" \
+            --arg rlogin "$REQUESTER_LOGIN" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
-              force_whole_pr:$force, requester_trusted:$rtrust,
+              force_whole_pr:$force, requester_login:$rlogin,
               trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
@@ -652,7 +656,7 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
-        REQUESTER_TRUSTED=$(jq -r '.requester_trusted' <<<"$spec")
+        REQUESTER_LOGIN=$(jq -r '.requester_login' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
@@ -706,7 +710,7 @@ consume_queue() {
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
             "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
-            "$REQUESTER_TRUSTED" &
+            "$REQUESTER_LOGIN" &
         active=$((active + 1)); dispatched=$((dispatched + 1))
     done < <(jq -c '.[]' <<<"$specs")
 
