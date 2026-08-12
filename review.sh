@@ -426,8 +426,9 @@ $BOT_DECLINE_MARKER
                     jq --arg since "$REVIEWED_AT_ISO" --arg header "$DECLINE_HEADER" --arg bot "$BOT_USER" \
                         '[.[] | select(.user.login == $bot and (.body | startswith($header)) and .created_at > $since)] | length')
                 if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
-                    # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
-                    # above already exclude it — the decline can't self-trigger.
+                    # Leads with BOT_AUTO_POST_MARKER, so `asks` — which reads
+                    # only the first non-blank line — can't read the decline as
+                    # a request; it cannot self-trigger.
                     # Capture gh's stderr rather than /dev/null'ing it (same
                     # contract as fetch_issue_comments): a locked/archived PR or
                     # an abuse-limit 403 would otherwise fail every tick behind
@@ -541,7 +542,11 @@ This request stays open and fires automatically on your next push. To force a wh
                 [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
             # Distinct logins so one user repeating the command costs one call.
             #
-            # BOTH bot markers are excluded, and that is load-bearing. The
+            # The auto-TRIGGER marker is excluded, and that is load-bearing.
+            # It is the ONE producer that leads with a command instead of a
+            # marker, so first-line anchoring cannot filter it. Every auto-POST
+            # producer leads with its marker and is filtered by anchoring
+            # alone — which is why no auto-post exclusion appears here. The
             # re-request bridge (poll-pr-actions.sh) posts a literal
             # /<prefix>-review under $BOT_USER — which HAS push access — and is
             # deliberately NOT auto-post marked, because it must still trigger

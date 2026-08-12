@@ -230,7 +230,12 @@ printf '[{"id":1001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosr
 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
-grep -qF "$BOT_AUTO_POST_MARKER" "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 2: approve body missing BOT_AUTO_POST_MARKER"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+# Marker must LEAD the body, not merely appear in it. With no body-wide
+# containment filter left, first-line anchoring is the whole self-trigger
+# defense, so "marker is line 1" is a producer-side contract this asserts
+# directly (lib/bootstrap.sh documents it). `tr` maps newlines to `|`, so
+# line 1 is everything up to the first `|`.
+grep -qF "body=${BOT_AUTO_POST_MARKER}" "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 2: approve body does not LEAD with BOT_AUTO_POST_MARKER — a bot post whose first line is not the marker can self-trigger"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1001" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 2: seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
 # Scenario 3: same comment on a second tick — already-seen, no approve
@@ -246,6 +251,31 @@ printf '[{"id":1002,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nApp
 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 approves on bot post, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+
+# Scenario 4b: a REAL approval on a body past the 64KiB pipe buffer.
+# is_approve_request extracts the first non-blank line with a `while read`
+# loop rather than `grep -v '^[[:space:]]*$' | head -1`, because head exits
+# after one line and the upstream grep then takes SIGPIPE — which `set -o
+# pipefail` (poll-pr-actions.sh:15) promotes to 141, reading as "not an
+# approval" and silently dropping it. Every other row here is a few dozen
+# bytes, so without this one a "simplification" back to the pipeline passes
+# the whole suite while dropping real approvals on long comments.
+#
+# Positive, not negative: an approval that must FIRE cannot be made vacuous by
+# a filter rejecting the body for some unrelated reason. Size is the test, so
+# the byte count is asserted rather than assumed.
+echo "  scenario 4b: >64KiB body with the command on line 1 — approve still fires..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+: > "$STUB_ACTIONS_LOG"
+BIG_TAIL=$(printf '> quoted em—dash diff line %.0s' $(seq 1 4000))
+printf '[{"id":1008,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve\\n\\n%s"}]\n' \
+    "$NOW_ISO" "$BIG_TAIL" > "$MOCK_COMMENTS_FILE"
+jq -e . "$MOCK_COMMENTS_FILE" >/dev/null || { echo "FATAL: scenario 4b built invalid JSON"; exit 1; }
+body_bytes=$(jq -r '.[0].body' "$MOCK_COMMENTS_FILE" | wc -c)
+[ "$body_bytes" -gt 65536 ] || { echo "FATAL: scenario 4b body is only $body_bytes bytes — under the pipe buffer, so it cannot reproduce the bug"; exit 1; }
+run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the first-line extractor dropped a real approval (SIGPIPE under pipefail)"; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 5: untrusted user — no approve, seen marked
 echo "  scenario 5: untrusted /srosro-approve — no approve, seen marked..."
@@ -434,4 +464,4 @@ MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (14 scenarios + ${#APPROVE_BODY_MATRIX[@]} body rows: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, invocation-vs-mention matrix (first-non-blank-line), gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
+echo "  PASS (15 scenarios + ${#APPROVE_BODY_MATRIX[@]} body rows: empty, trusted-approve, already-seen, bot-self-marker, large-body-approve-fires, untrusted-skip, [bot]-skip, invocation-vs-mention matrix (first-non-blank-line), gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"

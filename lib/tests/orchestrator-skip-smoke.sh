@@ -46,6 +46,30 @@ export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
 export COMMENT_POST_LOG="$STATE_DIR/comment-post.log"
+
+# Producer-side contract (lib/bootstrap.sh): every bot auto-post must LEAD with
+# the auto-post marker and must never lead with a slash command. With no
+# body-wide containment filter left, first-line anchoring is the entire
+# self-trigger defense, so this asserts it against what was actually POSTed.
+# The stub writes "POST <body>"; a multi-line body spills onto following lines,
+# so each `^POST ` line IS some post's first line.
+#
+# The literal, not an inherited env var: BOT_AUTO_POST_MARKER is not set in this
+# smoke's shell, so "POST $BOT_AUTO_POST_MARKER" would degrade to "POST " —
+# matching every post, filtering everything out, and passing unconditionally.
+# It did exactly that on first writing. Guarded so it cannot recur.
+SMOKE_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
+
+assert_posts_lead_with_marker() {
+    local scenario="$1" bad
+    [ -n "$SMOKE_AUTO_POST_MARKER" ] || { echo "FATAL: SMOKE_AUTO_POST_MARKER empty — this assertion would pass unconditionally"; exit 1; }
+    bad=$(grep '^POST ' "$COMMENT_POST_LOG" 2>/dev/null | grep -vF "POST $SMOKE_AUTO_POST_MARKER" || true)
+    if [ -n "$bad" ]; then
+        echo "FAIL $scenario: a bot post does not lead with the auto-post marker — first-line anchoring cannot filter it, so it can self-trigger"
+        printf '%s\n' "$bad" | cut -c1-120
+        exit 1
+    fi
+}
 export PERMISSION_CALL_LOG="$STATE_DIR/permission-call.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
@@ -365,6 +389,7 @@ run_orchestrator() {
 assert_decline_posts() {
     local expected="$1" label="$2" n
     n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+    assert_posts_lead_with_marker "decline post"
     [ "$n" -eq "$expected" ] && return
     echo "FAIL $label: expected $expected decline POST(s), got $n"
     echo "--- posts ---"; cat "$COMMENT_POST_LOG"
@@ -1298,6 +1323,10 @@ VOUCH_MATRIX=(
 
   "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
 
+  "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
+
+  "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
+
   # The auto-TRIGGER marker exclusion IS load-bearing: unlike every auto-post
   # producer, the re-request bridge emits the command FIRST and its marker
   # after, so anchoring alone would read it as a vouch. Drop $trigmark from the
@@ -1424,6 +1453,7 @@ for row in "${NOTICE_MATRIX[@]}"; do
     # exists to stop. Same policy scenario 7d pins for the decline POST.
     [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
         || { echo "FAIL RT4 [$nlabel]: no watermark — the PR is re-evaluated every tick forever"; exit 1; }
+    assert_posts_lead_with_marker "RT4 [$nlabel]"
     # Every drop logs: the notice is one-shot, so from the second tick an
     # unreviewable PR would otherwise leave no answer on any surface.
     grep -q "no trusted requester" "$LOG_FILE" \
