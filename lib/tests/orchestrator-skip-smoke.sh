@@ -1397,6 +1397,21 @@ MOCK_PR_UPDATED_AT="2026-08-10T07:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR
 n8=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n8=${n8:-0}
 [ "$n8" -eq 1 ] || { echo "FAIL RT8: a non-bot comment carrying the marker suppressed the notice (posted $n8) — any commenter can mute it"; exit 1; }
 
+# --- RT9: a failed notice POST must name its cause AND still watermark. Same
+# pair scenario 7d pins for the sibling decline POST: without the cause an
+# archived PR, a lost write scope and a 403 abuse limit are indistinguishable;
+# without the watermark a permanent failure re-POSTs every tick forever, feeding
+# the rate limit this branch exists to stop.
+echo "  scenario RT9: a failed notice POST logs its cause and still watermarks..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_POST_RC=1 MOCK_PR_UPDATED_AT="2026-08-10T09:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_PR_AUTHOR="stranger" run_orchestrator
+grep -q "could not post the no-push-access notice: .*simulated" "$LOG_FILE" \
+    || { echo "FAIL RT9: the POST failure logged no cause — archived PR, lost scope and abuse limit are indistinguishable"; cat "$LOG_FILE"; exit 1; }
+[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+    || { echo "FAIL RT9: no watermark after a failed notice POST — it re-POSTs every tick forever (scenario 7d pins the opposite for the decline POST)"; exit 1; }
+
 # --- RT5: the execution gates must NEVER move to requester trust. A vouch says
 # "this diff is worth reading", not "run this author's code". Structural,
 # because the behavioral path needs the full worker harness — but falsifiable:
