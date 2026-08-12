@@ -198,19 +198,18 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
-# Author trust — computed once, before any placeholder/clone/codex. Container-
-# mode review gate: codex agents run sandbox-bypassed and share the privileged
-# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
-# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
-# pipeline) so untrusted content never reaches codex. Trusted (push-access)
-# authors review normally; the host (non-container) path is unaffected. Lifts
-# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
-# Tri-state trust (lib/auth.sh): 0=trusted, 1=definitively untrusted,
-# 2=indeterminate (403 rate-limit / 5xx / network — couldn't verify). An
-# indeterminate result must NEVER fall through to untrusted-and-skip: a
-# throttled lookup of a genuinely-trusted author (e.g. repo owner) would
-# silently drop their PR. Defer instead (exit 1, like the gh pr view guard
-# above) so the next tick re-checks once the throttle clears.
+# Two gates, two owners, two different questions — do not conflate them.
+#
+# WHETHER TO REVIEW AT ALL is decided by REQUESTER trust, upstream in review.sh.
+# codex agents run sandbox-bypassed and share the privileged dind daemon's netns,
+# so merely READING an untrusted PR risks prompt-injection → daemon → host root.
+# That is why the dispatcher refuses a PR nobody with push access asked for, and
+# why its indeterminate lookups DEFER rather than decide: getting that one wrong
+# drops a trusted author's PR. By the time control reaches here, someone with
+# push access has asked for this review — that is what authorizes the read.
+#
+# WHETHER THIS AUTHOR'S CODE MAY RUN is decided below, and it is a separate
+# question with the opposite failure direction. See the block beneath.
 if [ -z "$REQUESTER_TRUSTED" ]; then
     log "$PR_ID: FATAL — requester trust arg missing; review.sh must pass it"
     exit 1
@@ -219,13 +218,15 @@ fi
 # and it must reflect the moment the code would run, not the moment the PR was
 # enumerated.
 #
-# Deliberately NOT tri-state. Elsewhere an indeterminate lookup (rc=2) must
-# defer rather than read as untrusted, because there the consequence of getting
-# it wrong is DROPPING a trusted author's PR. Here the consequence is inverted:
-# this boolean only ever GRANTS capability (.env mirror, `just test`), and
-# nothing is dropped by declining — the review still runs, read-only. So an
-# unverifiable lookup fails closed. Deferring instead would stall a review that
-# is safe to perform, to protect a capability we are declining to grant anyway.
+# Deliberately NOT tri-state, and that is not the contradiction it looks like.
+# Upstream, an indeterminate lookup must DEFER, because getting it wrong there
+# drops a trusted author's PR. Here it fails CLOSED, because this boolean only
+# ever grants capability — the .env mirror and `just test`.
+#
+# Nothing is lost by declining: the read was already authorized by the requester
+# gate above (a push-access human asked for this review), so it proceeds either
+# way. Deferring instead would stall a review someone explicitly requested, in
+# order to protect a capability we are declining to grant anyway.
 is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
 IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
 # Gates on the REQUESTER, not the author: "did someone with push access ask for

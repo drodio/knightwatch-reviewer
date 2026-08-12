@@ -1311,7 +1311,7 @@ for row in "${VOUCH_MATRIX[@]}"; do
         # author_trusted is deliberately NOT in the spec: the worker recomputes
         # it from the live author at execution time, because a queued spec can
         # wait and permission can be revoked in that gap. RT5 fences the
-        # execution gates; RT7 fences the recomputation itself.
+        # execution gates; RT8 fences the recomputation itself.
         [ "$(jq -r 'has("author_trusted")' <<<"$vspec")" = "false" ] \
             || { echo "FAIL RT1 [$vlabel]: spec still serializes author_trusted — execution trust must be recomputed at run time; spec=$vspec"; exit 1; } ;;
       none)
