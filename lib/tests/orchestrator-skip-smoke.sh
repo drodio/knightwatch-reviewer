@@ -1426,7 +1426,7 @@ clear_seeded_runs
 # Fields: label | comment body | expected dispatches
 TRIGGER_ANCHOR_MATRIX=(
   "prose naming the whole-PR command does not start a review|Please do not use /srosro-review on this yet — the migration is unfinished.|0"
-  "an anchored command still triggers — this is what reaches the extractors|Looks ready.\\n/srosro-review|1"
+  "an anchored command still triggers|Looks ready.\\n/srosro-review|1"
 )
 echo "  scenario RT6: trigger-selector anchoring (${#TRIGGER_ANCHOR_MATRIX[@]} rows: both commands, both directions)..."
 for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
@@ -1447,9 +1447,34 @@ for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
     # fixture, so without this a regression in either is invisible.
     if [ "$texpect" -gt 0 ]; then
         grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE" \
-            || { echo "FAIL RT6 [$tlabel]: dispatched without a staged trigger file — the TRIGGER_JSON extractor did not select the anchored command"; cat "$LOG_FILE"; exit 1; }
+            || { echo "FAIL RT6 [$tlabel]: dispatched without a staged trigger file"; cat "$LOG_FILE"; exit 1; }
     fi
 done
+
+# The extractors need a fixture where the two predicates would SELECT DIFFERENT
+# comments — a single anchored comment is matched identically by the anchored and
+# substring forms, so `sort_by(.created_at) | last` returns the same object and
+# the staged file is byte-identical either way. Here the NEWER comment only names
+# the command mid-prose: anchored, the extractor must pass it over and stage the
+# older real request; unanchored, `last` grabs the newer one and stages that.
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+printf '[{"id":8402,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Ready for another pass.\\n/srosro-review"},{"id":8403,"created_at":"2026-08-10T11:30:00Z","user":{"login":"someuser"},"body":"Also: do not use /srosro-review on the sibling PR yet."}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T11:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+    MOCK_PR_AUTHOR="someuser" run_orchestrator
+tf6=$(grep -o 'trigger_file=[^ ]*' "$LOG_FILE" | tail -1 | cut -d= -f2)
+[ -n "$tf6" ] && [ -f "$tf6" ] \
+    || { echo "FAIL RT6: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
+grep -qF 'Ready for another pass' "$tf6" \
+    || { echo "FAIL RT6: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the anchored request"; cat "$tf6"; exit 1; }
+grep -qF 'do not use' "$tf6" \
+    && { echo "FAIL RT6: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$tf6"; exit 1; }
+clear_seeded_runs
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
 
 # The INCREMENTAL selector needs a different discriminator: on an unchanged head
 # an incremental trigger produces 0 dispatches whether or not it matched, because
