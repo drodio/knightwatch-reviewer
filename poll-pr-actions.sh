@@ -30,11 +30,25 @@ RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
 # (presence for approves, timestamp watermark for re-request), and seen_get
 # returns either shape — so no explicit init or per-store helper is needed.
 
-# Opt-in signal: comment body must START with /<prefix>-approve on a line
-# (optional leading whitespace, optional trailing args). A substring match would
-# treat "don't use /srosro-approve yet" as an approval — wrong for this side effect.
+# Opt-in signal: /<prefix>-approve must be the comment's FIRST non-blank line
+# (optional leading whitespace, optional trailing args). Anchoring to any line
+# would let a push-access collaborator who merely *documents* the command — a
+# fenced example, a quoted runbook, "post this:" — submit a real approval on
+# whatever PR the comment sits on. Same rule as review.sh's `asks`, and for a
+# sharper reason: an approval is durable, outward-facing, and can satisfy a
+# required-approval branch rule. Trust does not substitute for it — the actor
+# mentioning the command is exactly the trusted one.
+#
+# Extracted with a loop rather than `grep -v '^[[:space:]]*$' | head -1`: head
+# exits after one line, so on a body past the pipe buffer grep takes SIGPIPE,
+# and `set -o pipefail` (line 15) turns that 141 into the function's exit
+# status — reading as "not an approval" and silently dropping a real one.
 is_approve_request() {
-    printf '%s' "$1" | grep -qiE "^[[:space:]]*/${BOT_CMD_PREFIX}-approve([[:space:]]|$)"
+    local body="${1//$'\r'/}" line first=""
+    while IFS= read -r line; do
+        if [ -n "${line//[[:space:]]/}" ]; then first="$line"; break; fi
+    done <<< "$body"
+    grep -qiE "^[[:space:]]*/${BOT_CMD_PREFIX}-approve([[:space:]]|$)" <<< "$first"
 }
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.

@@ -68,10 +68,12 @@ ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
 # Idempotency key for the "author has no push access" notice. Distinct from
 # BOT_AUTO_POST_MARKER, which rides every bot post and so cannot identify it.
 UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice -->"
-# `asks` — does this comment REQUEST a review? Anchored to the start of a line,
-# matching poll-pr-actions.sh's is_approve_request: a substring test would let
-# prose that merely names the command ("don't use /<prefix>-review yet")
-# authorize a review. CRLF-normalized first because GitHub's web UI returns
+# `asks` — does this comment REQUEST a review? The command must be the FIRST
+# non-blank line, matching poll-pr-actions.sh's is_approve_request: anchoring to
+# any line would let a comment that merely *names* the command — prose ("don't
+# use /<prefix>-review yet"), a fenced example, a quoted runbook — authorize a
+# review of an untrusted author's diff. Framing after the command is kept and
+# shapes the review. CRLF-normalized first because GitHub's web UI returns
 # \r\n, which would otherwise leave a \r before the terminator on every line
 # but the last. (is_approve_request has no such bug — POSIX [[:space:]] already
 # covers \r — so mirroring it means normalizing, not copying its character class.)
@@ -266,13 +268,15 @@ refresh_queue() {
             # filtering also drops legitimate slash-command comments the
             # human posts.
             #
-            # Two slash commands; substring tests are sufficient because
-            # the strings are disjoint (neither contains the other as a
-            # substring). Whole-PR check excludes /srosro-update-review so
-            # the longer command doesn't accidentally satisfy both paths.
+            # Two slash commands, disjoint by construction: `asks` evaluates a
+            # single line and its terminator class ([ \t]|$) rejects the `-` in
+            # /<prefix>-update-review, so the whole-PR predicate cannot match
+            # the incremental command. No exclusion clause needed — the one
+            # case it used to disambiguate (both commands on different lines of
+            # one comment) stopped being expressible under first-line anchoring.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | length')
+                    "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review"))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
@@ -291,7 +295,7 @@ refresh_queue() {
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review") and (asks($cmd_prefix + "-update-review") | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_ASKS"'[.[] | select((.body | contains($mark) | not) and .created_at > $since and asks($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
@@ -590,7 +594,7 @@ This request stays open and fires automatically on your next push. To force a wh
                             -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
-A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
+A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
                             || log "$PR_ID: could not post the no-push-access notice: $(tr '\n' ' ' < "$NOTICE_ERR" 2>/dev/null | head -c 400)"
                         rm -f "$NOTICE_ERR"
                     fi
