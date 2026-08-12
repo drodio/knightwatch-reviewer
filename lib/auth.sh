@@ -24,8 +24,11 @@
 #   2 — indeterminate  : couldn't verify — 403/5xx/network, or any non-zero
 #                        gh exit that isn't a clean "not a collaborator"
 # Callers that only branch trusted/untrusted (`if is_trusted_repo_author`)
-# treat 2 as falsy → fail closed; the container gate in review-one-pr.sh
-# branches on 2 explicitly to DEFER (retry next tick) instead of mislabeling.
+# treat 2 as falsy → fail closed. Two callers branch on 2 explicitly, in
+# opposite directions, and both are deliberate: review.sh DEFERS (an
+# unverifiable lookup must not drop a trusted author's PR), while
+# review-one-pr.sh's execution gate fails CLOSED (it only grants capability,
+# and the read is already authorized by the requester gate upstream).
 #
 # Reuses gh_api_retry: it bounded-retries 5xx/network but intentionally NOT
 # 403 — exactly the "transient couldn't-verify vs definitive" split here.

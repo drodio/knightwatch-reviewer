@@ -177,7 +177,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
 
-# --- author trust + container-mode gate (BEFORE the per-run dir) ---------
+# --- requester gate + author trust (BEFORE the per-run dir) --------------
 # This must run before allocate_run_dir: a skipped/deferred review that
 # allocated a run dir first would leak runs/<id>/ on every ~30s poll of a
 # permanently-untrusted PR (issue #189). Resolving metadata + trust here and
@@ -242,9 +242,8 @@ if [ "$REQUESTER_TRUSTED" != true ]; then
     # unbounded-per-PR-artifact shape this branch just removed. An untrusted skip
     # is stable POLICY, not a failure, and was already effectively invisible
     # pre-change (buried in the leaked run.log). The operator-facing "why is this
-    # PR unreviewed?" signal belongs at the dispatcher, logged once when it
-    # decides coverage — tracked as the dispatcher-side gate follow-up on #189.
-    # (The indeterminate DEFER above still logs: it's transient and low-volume.)
+    # PR unreviewed?" signal belongs at the dispatcher, which now logs it once
+    # when it decides coverage — the follow-up this comment tracked on #189.
     exit 0
 fi
 
@@ -254,7 +253,7 @@ fi
 # Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
 # above: a metadata-lookup break must not silently downgrade a public repo to
 # the quieter private posture (under-calibrated security + portability review).
-# Resolved AFTER the container-mode gate on purpose: an untrusted-author skip
+# Resolved AFTER the requester gate on purpose: an unreviewable-PR skip
 # re-fires every ~30s per PR, so a `gh repo view` above the gate would burn an
 # API call per skip tick for a review that never runs. Only reviews that get
 # past the gate (and thus reach the prompt build that consumes it) pay for it.
@@ -701,9 +700,9 @@ fi
 # Trust gate: only mirror when PR_AUTHOR has push access to the repo.
 # Otherwise an untrusted contributor's `just test` recipe could
 # exfiltrate live API keys before the eager-delete runs.
-# IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
-# where it also gates the container-mode review skip. Reused here for the .env
-# mirror + just-test skip gate (just_test_skip_reason, lib/auth.sh).
+# IS_TRUSTED_AUTHOR is recomputed from the LIVE author above — it gates
+# execution only, never whether the review happens (that is the requester
+# gate). Reused here and by just_test_skip_reason (lib/auth.sh).
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do

@@ -50,7 +50,7 @@ seed_state_dir() {
 # must skip/abort before allocate_run_dir, so a leaked runs/<id>/ is the
 # regression. Name pins the hardcoded PR-1 glob so a future reuse for a different
 # PR (#2 exists elsewhere in this file) can't pass vacuously. One helper for the
-# repeated contract across the container-mode untrusted-skip,
+# repeated contract across the requester-gate skip,
 # and metadata-guard scenarios (was four hand-maintained copies).
 assert_no_probe_pr1_run_dir() {
     # Capture once and test the string — NOT `find … | grep -q .`. Under this
@@ -733,15 +733,16 @@ if grep -q "finalize_run failed" "$GATE_LOG"; then
     exit 1
 fi
 
-# ===== Scenario 5: container-mode gate skips untrusted-author PRs =====
+# ===== Scenario 5: the requester gate skips a PR nobody with push access asked for =====
 # codex review agents run sandbox-bypassed and share the privileged dind
 # daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection →
-# host root. In REVIEWER_CONTAINER_MODE the worker must skip an untrusted author
-# entirely — before any placeholder, clone, or codex. The decisive contrast:
-# scenarios 1-4 use the SAME gh stub (author test-user, `gh api …permission`
-# → empty → untrusted) but WITHOUT container mode, and the worker proceeds to
-# clone/meta.json. Flipping only REVIEWER_CONTAINER_MODE must flip to a skip.
-echo "  scenario: container-mode gate skips untrusted-author PR before placeholder/clone..."
+# host root, so the worker must skip a PR no push-access human asked for —
+# before any placeholder, clone, or codex. The decisive contrast: scenarios 1-4
+# pass the SAME untrusted author with requester_trusted=true (a maintainer's
+# vouch), and the worker proceeds to clone/meta.json. Flipping only the
+# REQUESTER arg to false must flip it to a skip — author trust never decides
+# this, it only gates execution further down.
+echo "  scenario: requester gate skips an unrequested PR before placeholder/clone..."
 STATE5="$TMPDIR/state-5"
 seed_state_dir "$STATE5"
 write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; permission unset → untrusted
@@ -750,20 +751,20 @@ write_gh_stub "$HOME/.local/bin/gh" "main" "$NEW_PR_SHA"   # author=test-user; p
 # behavioral contract is clean exit 0, no run dir, AND silence (no per-tick log
 # line — see the silence assertion below). A regression that failed to skip
 # would proceed to clone + allocate a run dir (like scenarios 1-4, same gh stub
-# minus container mode), tripping the no-run-dir assertion. Run TWO ticks: a
+# with a vouched requester), tripping the no-run-dir assertion. Run TWO ticks: a
 # permanently-untrusted PR is polled indefinitely, so the skip must stay clean
 # and dir-free every tick.
 for _tick in 1 2; do
-    REVIEWER_CONTAINER_MODE=1 run_worker_in_state "$STATE5" \
+    run_worker_in_state "$STATE5" \
         "test-org/probe-repo" "1" "$NEW_PR_SHA" "feat/test" "Untrusted PR" "false" "false"
     _ec=$?
     # Leak check FIRST: a gate that failed to fire proceeds to clone/allocate
     # (like scenarios 1-4) AND aborts downstream with a non-zero exit, so the
     # run-dir/#189 diagnostic is the informative one — the exit-code check would
     # otherwise mask it. Matches the metadata-guard site.
-    assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — untrusted skip"
+    assert_no_probe_pr1_run_dir "$STATE5" "scenario 5 tick $_tick — unrequested skip"
     if [ "$_ec" -ne 0 ]; then
-        echo "FAIL: scenario 5 — untrusted tick $_tick exited $_ec (expected 0 from a clean container-mode skip)"
+        echo "FAIL: scenario 5 — unrequested tick $_tick exited $_ec (expected 0 from a clean requester-gate skip)"
         [ -f "$STATE5/orchestrator.log" ] && { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
         exit 1
     fi
@@ -779,7 +780,7 @@ done
 # ruling out a false pass from a leaked tick-1 PR lock or a future exit-0 path
 # added above the gate.
 if [ -s "$STATE5/orchestrator.log" ]; then
-    echo "FAIL: scenario 5 — untrusted skip wrote to orchestrator.log (silence contract broken → shared-log flood risk)"
+    echo "FAIL: scenario 5 — unrequested skip wrote to orchestrator.log (silence contract broken → shared-log flood risk)"
     { echo "--- orchestrator.log ---"; cat "$STATE5/orchestrator.log"; }
     exit 1
 fi
@@ -1537,4 +1538,4 @@ if ! grep -qF "$LOC_LINE12" "$IN12/reeval-status.md"; then
     exit 1
 fi
 
-echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + container-mode untrusted-author skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
+echo "  PASS (16 scenarios: SHA race + non-default-base + canonical alignment + worker dedup gate + requester-gate skip + metadata-lookup guard pre-allocation abort + placeholder reuse anti-spam + codex 429 backoff + usage-cap quota placeholder w/ pool status + both-sentinel fatal-auth precedence + convention-repo scratch staging + repo-env seed→trusted mirror + repo-env seed fail-loud + pre-spend superseded abort + whole-PR re-review keeps memory)"
