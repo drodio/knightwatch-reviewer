@@ -1304,13 +1304,16 @@ VOUCH_MATRIX=(
   "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
 
   "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
-  # Belt-and-braces sibling of the row above: there the marker is the first
-  # line, so first-line anchoring alone makes `asks` false and the marker
-  # filter is never exercised. Here the command leads and the markers trail,
-  # so the marker exclusion is the ONLY thing that can reject it — drop
-  # either marker from the vouch scan's selector and this goes red. Both
-  # markers are on one body because either one alone must suffice.
-  "a bot post whose command comes BEFORE its markers still cannot vouch|[{\"id\":7300,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
+  # Fences the AUTO-POST marker specifically. The row above puts it on the
+  # first line, so first-line anchoring alone makes `asks` false and the
+  # exclusion is never exercised; here the command leads and the marker
+  # trails, so `(contains($mark) | not)` is the only thing that can reject.
+  #
+  # ONE marker per row, deliberately. The two exclusions are ANDed, so a body
+  # carrying both is rejected by either alone and is insensitive to dropping
+  # one — it would fence neither. $trigmark has its own single-marker row
+  # ("the re-request bridge's auto-trigger is not a vouch") directly below.
+  "a bot post whose command comes BEFORE its auto-post marker still cannot vouch|[{\"id\":7350,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<!-- knightwatch-reviewer:auto-post -->\"}]|$BOT_USER|none"
   # `asks` skips blank lines before taking the first line. Nothing else
   # covered that filter: delete the map(select(...)) from JQ_ASKS and every
   # other row stays green while this one goes red. GitHub's comment box
