@@ -141,7 +141,10 @@ elif [ "$1" = "api" ]; then
             # since a failed POST is not retried this round (scenario 7d) — is
             # exercised rather than assumed.
             if [ -n "${MOCK_POST_RC:-}" ]; then
-                echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                # Multi-line on purpose: gh's real errors wrap, and a caller that
+                # does not newline-normalize would break the one-line-per-event
+                # log format. A single-line stub makes that invisible.
+                printf 'gh: HTTP 403: simulated-abuse-limit\nsecond line of the error\n' >&2
                 exit "$MOCK_POST_RC"
             fi
             echo '{"id":1}'
@@ -1409,6 +1412,11 @@ MOCK_POST_RC=1 MOCK_PR_UPDATED_AT="2026-08-10T09:00:00Z" MOCK_TRUSTED_USERS="$BO
     MOCK_PR_AUTHOR="stranger" run_orchestrator
 grep -q "could not post the no-push-access notice: .*simulated" "$LOG_FILE" \
     || { echo "FAIL RT9: the POST failure logged no cause — archived PR, lost scope and abuse limit are indistinguishable"; cat "$LOG_FILE"; exit 1; }
+# gh's real errors wrap, so the cause must be newline-normalized onto ONE line —
+# the sibling decline path pipes through tr for exactly this. A stray newline
+# splits one event across two log lines.
+grep -q "could not post the no-push-access notice: .*second line of the error" "$LOG_FILE" \
+    || { echo "FAIL RT9: a multi-line gh error was not flattened onto one log line — the second line was dropped or split off"; cat "$LOG_FILE"; exit 1; }
 [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
     || { echo "FAIL RT9: no watermark after a failed notice POST — it re-POSTs every tick forever (scenario 7d pins the opposite for the decline POST)"; exit 1; }
 

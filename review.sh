@@ -576,7 +576,7 @@ This request stays open and fires automatically on your next push. To force a wh
 Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
 
 A maintainer with push access can unblock it by commenting \`/${BOT_CMD_PREFIX}-review\` on its own line. The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
-                            || log "$PR_ID: could not post the no-push-access notice: $(head -c 400 "$NOTICE_ERR" 2>/dev/null)"
+                            || log "$PR_ID: could not post the no-push-access notice: $(tr '\n' ' ' < "$NOTICE_ERR" 2>/dev/null | head -c 400)"
                         rm -f "$NOTICE_ERR"
                     fi ;;
             esac
