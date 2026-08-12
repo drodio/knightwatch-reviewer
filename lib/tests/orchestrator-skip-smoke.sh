@@ -587,9 +587,10 @@ fi
 echo "  scenario 6b: same SHA + /srosro-review under indeterminate trust (403) → defer, no dispatch, no watermark..."
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # clear any residue so the assertion is decisive
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-# HTTP 500, not the default 403: a 403 stamps the fleet pause, which blocks the
+# HTTP 418, not the default 403: a 403 stamps the fleet pause, which blocks the
 # comment fetch and skips the PR before the trigger is read — the scenario would
-# pass on the wrong branch.
+# pass on the wrong branch. It also dodges 5xx, which GH_API_TRANSIENT_RE
+# matches — gh_retry would retry that, burning the budget for no signal.
 MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 418: unverifiable (simulated)" run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
