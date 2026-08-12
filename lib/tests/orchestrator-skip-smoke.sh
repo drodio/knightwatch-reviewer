@@ -1308,8 +1308,14 @@ for row in "${VOUCH_MATRIX[@]}"; do
         [ -n "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was dropped — expected it to be reviewable"; cat "$LOG_FILE"; exit 1; }
         # The spec carries WHO asked, not a boolean: the worker re-verifies that
         # login at admission, because the queue can wait while access is revoked.
-        [ -n "$(jq -r '.requester_login // empty' <<<"$vspec")" ] \
+        # WHICH login, not merely that one exists: the matrix arranges an
+        # untrusted author (stranger) with someuser as the voucher, so a spec
+        # naming the author would re-verify the wrong person and admit nothing.
+        vrl=$(jq -r '.requester_login // empty' <<<"$vspec")
+        [ -n "$vrl" ] \
             || { echo "FAIL RT1 [$vlabel]: spec carries no requester_login — the worker cannot re-verify who asked; spec=$vspec"; exit 1; }
+        [ "$vrl" != "stranger" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec names the untrusted AUTHOR as requester — the worker would re-verify the wrong person; spec=$vspec"; exit 1; }
         # author_trusted is deliberately NOT in the spec: the worker recomputes
         # it from the live author at execution time, because a queued spec can
         # wait and permission can be revoked in that gap. RT5 fences the

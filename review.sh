@@ -656,7 +656,7 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
-        REQUESTER_LOGIN=$(jq -r '.requester_login' <<<"$spec")
+        REQUESTER_LOGIN=$(jq -r '.requester_login // empty' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.

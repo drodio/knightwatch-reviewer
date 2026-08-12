@@ -1,8 +1,9 @@
 #!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
-#   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR REQUESTER_TRUSTED
-# where FORCE_WHOLE_PR is "true" or "false" and REQUESTER_TRUSTED is REQUIRED
-# (fatal when absent). Author trust is deliberately NOT an argument — see the
+#   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR REQUESTER_LOGIN
+# where FORCE_WHOLE_PR is "true" or "false" and REQUESTER_LOGIN is REQUIRED
+# (fatal when absent) — the login of whoever asked for this review, re-verified
+# here at admission. Author trust is deliberately NOT an argument — see the
 # two-gates block below for why each is owned where it is. TRIGGER_COMMENT_FILE is
 # optional and points to a tmp file holding the body of the comment that
 # kicked off this review (when triggered by /review or @bot mention);
@@ -232,7 +233,20 @@ if [ "$REQUESTER_RC" -eq 2 ]; then
     log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
     exit 1
 fi
-REQUESTER_TRUSTED=false; [ "$REQUESTER_RC" -eq 0 ] && REQUESTER_TRUSTED=true
+if [ "$REQUESTER_RC" -ne 0 ]; then
+    # Silent skip: no per-tick log line. This exit is now above the per-run
+    # run.log, so the only place a line could land is the shared, 5 MB-rotated
+    # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so
+    # logging here (deduped or not) is the wrong layer: it either floods the
+    # operator log or needs a per-PR marker that reintroduces the same
+    # unbounded-per-PR-artifact shape this branch just removed. An untrusted skip
+    # is stable POLICY, not a failure, and was already effectively invisible
+    # pre-change (buried in the leaked run.log). The operator-facing "why is this
+    # PR unreviewed?" signal belongs at the dispatcher, which now logs it once
+    # when it decides coverage — the follow-up this comment tracked on #189.
+    exit 0
+fi
+
 # Recomputed here, not inherited: this is the permission that gates EXECUTION,
 # and it must reflect the moment the code would run, not the moment the PR was
 # enumerated.
@@ -246,25 +260,20 @@ REQUESTER_TRUSTED=false; [ "$REQUESTER_RC" -eq 0 ] && REQUESTER_TRUSTED=true
 # gate above (a push-access human asked for this review), so it proceeds either
 # way. Deferring instead would stall a review someone explicitly requested, in
 # order to protect a capability we are declining to grant anyway.
-is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
+# Reuse the requester's answer when they ARE the author — the common case, set
+# unconditionally by the dispatcher when the author is trusted. Two identical
+# `collaborators/<login>/permission` calls per review is precisely the per-tick
+# API cost this branch exists to remove, reintroduced one screen apart.
+if [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ]; then
+    AUTHOR_RC="$REQUESTER_RC"
+else
+    is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
+fi
 IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
 # Gates on the REQUESTER, not the author: "did someone with push access ask for
 # this review?" — opening the PR is the author's own implicit request, and a
 # maintainer's /<prefix>-review vouches for a read-only contributor's. Execution
 # stays gated on IS_TRUSTED_AUTHOR further below.
-if [ "$REQUESTER_TRUSTED" != true ]; then
-    # Silent skip: no per-tick log line. This exit is now above the per-run
-    # run.log, so the only place a line could land is the shared, 5 MB-rotated
-    # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so
-    # logging here (deduped or not) is the wrong layer: it either floods the
-    # operator log or needs a per-PR marker that reintroduces the same
-    # unbounded-per-PR-artifact shape this branch just removed. An untrusted skip
-    # is stable POLICY, not a failure, and was already effectively invisible
-    # pre-change (buried in the leaked run.log). The operator-facing "why is this
-    # PR unreviewed?" signal belongs at the dispatcher, which now logs it once
-    # when it decides coverage — the follow-up this comment tracked on #189.
-    exit 0
-fi
 
 # Repo visibility (public|private|internal), lowercased — feeds the security
 # threat model and portability bar into the specialist prompts. `gh repo view`

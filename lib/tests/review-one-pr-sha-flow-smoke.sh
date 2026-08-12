@@ -85,12 +85,7 @@ run_worker_in_state() {
         export CANONICAL_LOCKS_DIR="$state/canonical-locks"
         export PR_REVIEW_LOCK_DIR="$state/locks"
         write_probe_repos_conf "$state/repos.conf"
-        # WORKER_MAX_SECS bounds a scenario whose assertions live in run.log
-        # BEFORE the pipeline stage — without it such a scenario enters
-        # pipeline.py, which has no codex stub here and never returns. Unset for
-        # every scenario that wants the full run.
         TRIGGER_COMMENT_FILE="" \
-            timeout "${WORKER_MAX_SECS:-0}" \
             bash "$PROJECT_ROOT/lib/review-one-pr.sh" "$@" \
             >/dev/null 2>&1
     )
@@ -104,28 +99,7 @@ write_gh_stub() {
     local stub_path="$1" base_ref="$2" head_oid="$3"
     cat > "$stub_path" <<STUB
 #!/bin/bash
-# Permission endpoint: the worker recomputes AUTHOR trust here — execution
-# trust must reflect the moment the code would run, not enumeration time — so
-# this arm is live. Default unset → no push role → untrusted, which is what
-# most scenarios arrange; GH_STUB_PERMISSION_ROLE=write opts a scenario into
-# the trusted-author path (.env mirror + just test).
-# Per-user, because the worker now asks about TWO people: the requester (at
-# admission) and the author (before executing anything). A blanket role would
-# make them indistinguishable and silently collapse the two-gate contract these
-# scenarios exist to fence. GH_STUB_TRUSTED_USERS is a space-separated list;
-# anyone outside it gets no push role. GH_STUB_PERMISSION_ROLE stays as the
-# blanket form for scenarios that do not care about the distinction.
-for arg in "\$@"; do
-    case "\$arg" in
-        */collaborators/*/permission)
-            _who="\${arg##*/collaborators/}"; _who="\${_who%/permission}"
-            for _t in \${GH_STUB_TRUSTED_USERS:-}; do
-                [ "\$_who" = "\$_t" ] && { printf 'write\\n'; exit 0; }
-            done
-            if [ -n "\${GH_STUB_PERMISSION_ROLE:-}" ]; then printf '%s\\n' "\$GH_STUB_PERMISSION_ROLE"; exit 0; fi
-            printf 'none\\n'; exit 0 ;;
-    esac
-done
+$(gh_permission_stub_body)
 
 # Issue-comments endpoint: opt-in JSON fixture (scenario 12's operator thread).
 if [ -n "\${GH_STUB_ISSUE_COMMENTS_FILE:-}" ]; then
@@ -879,20 +853,7 @@ write_stateful_gh_stub() {
 STORE="$store"
 BOT_LOGIN="${BOT_USER:-test-user}"
 
-# Permission endpoint. The worker asks about TWO people now — the requester at
-# admission and the author before executing — so this stub needs the arm too;
-# without it both lookups fail, the requester re-check defers, and the worker
-# exits before the placeholder this scenario is about.
-for arg in "\$@"; do
-    case "\$arg" in
-        */collaborators/*/permission)
-            _who="\${arg##*/collaborators/}"; _who="\${_who%/permission}"
-            for _t in \${GH_STUB_TRUSTED_USERS:-}; do
-                [ "\$_who" = "\$_t" ] && { printf 'write\\n'; exit 0; }
-            done
-            printf 'none\\n'; exit 0 ;;
-    esac
-done
+$(gh_permission_stub_body)
 
 # --- gh pr view / gh repo view (canned, same shape as write_gh_stub) ---
 if { [ "\$1" = "pr" ] || [ "\$1" = "repo" ]; } && [ "\$2" = "view" ]; then
@@ -1413,6 +1374,30 @@ if grep -q "mirrored .* env file(s) from canonical" "$LOG10B"; then
     exit 1
 fi
 
+# ===== Scenario 10b2: an unverifiable REQUESTER defers, it does not skip =====
+# The other half of the symmetric contract, and the one direction with no
+# behavioral coverage until now. Admission owns a decision that can DROP a PR a
+# maintainer legitimately requested, so an unverifiable lookup must retry — the
+# opposite of the execution gate below, which fails closed because it only
+# grants capability. Exit 1 (defer), no run dir, and the retry line on the
+# orchestrator fallback log.
+echo "  scenario: an unverifiable requester DEFERS (exit 1), no run dir..."
+STATE10D="$TMPDIR/state-10d"
+seed_state_dir "$STATE10D"
+git clone -q "$GITHUB_BARE10" "$STATE10D/repos/test-org_probe-repo"
+write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
+GH_STUB_INDETERMINATE_USERS="someuser" run_worker_in_state "$STATE10D" \
+    "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "someuser"
+DEFER_EC=$?
+[ "$DEFER_EC" -eq 1 ] \
+    || { echo "FAIL: scenario 10b2 — worker exited $DEFER_EC (expected 1 = defer on an unverifiable requester); a skip here would silently drop a requested review"; exit 1; }
+if find "$STATE10D/runs" -type d -name 'test-org_probe-repo__10__*' 2>/dev/null | grep -q .; then
+    echo "FAIL: scenario 10b2 — a run dir was allocated before the deferral (leaks one per retry, #189)"
+    exit 1
+fi
+grep -q "requester re-check deferred" "$STATE10D/orchestrator.log" 2>/dev/null \
+    || { echo "FAIL: scenario 10b2 — no deferral line; an unverifiable requester collapsed to 'not requested'"; [ -f "$STATE10D/orchestrator.log" ] && cat "$STATE10D/orchestrator.log"; exit 1; }
+
 # ===== Scenario 10c: recomputed trust actually DENIES the mirror =====
 # Scenario 10 proves the mirror fires for a trusted author. This proves the
 # security-relevant DIRECTION: identical arrangement, identical seeded secret,
@@ -1434,7 +1419,7 @@ echo "ANTHROPIC_API_KEY=sk-test-live-fixture" > "$REPO_ENV10C/test-org_probe-rep
 write_gh_stub "$HOME/.local/bin/gh" "main" "$PR_SHA10"
 # Vouched requester (so the review runs at all), untrusted author (so nothing
 # executes) — the exact split this branch exists to express.
-GH_STUB_TRUSTED_USERS="someuser" REPO_ENV_DIR="$REPO_ENV10C" WORKER_MAX_SECS=60 run_worker_in_state "$STATE10C" \
+GH_STUB_TRUSTED_USERS="someuser" REPO_ENV_DIR="$REPO_ENV10C" run_worker_in_state "$STATE10C" \
     "test-org/probe-repo" "10" "$PR_SHA10" "feat/test" "Live-cred PR" "false" "someuser" || true
 RUN_DIR10C=$(find "$STATE10C/runs" -type d -name 'test-org_probe-repo__*__*' | head -1)
 [ -n "$RUN_DIR10C" ] || { echo "FAIL: scenario 10c — worker produced no run dir (a vouched requester must still be reviewed)"; exit 1; }

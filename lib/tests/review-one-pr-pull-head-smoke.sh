@@ -56,17 +56,7 @@ write_gh_stub() {
 #!/bin/bash
 echo "\$@" >> "$gh_call_log"
 
-# Permission endpoint. The worker asks about two people — the requester at
-# admission and the author before executing — so this stub needs the arm or both
-# lookups fail, admission defers, and the worker never reaches the head-fetch
-# path these scenarios exist to test. someuser has push access; test-user (the
-# PR author) does not, which keeps execution gated while the read proceeds.
-for _a in "\$@"; do
-    case "\$_a" in
-        */collaborators/someuser/permission) printf 'write\\n'; exit 0 ;;
-        */collaborators/*/permission)        printf 'none\\n';  exit 0 ;;
-    esac
-done
+$(gh_permission_stub_body)
 
 # gh pr view N --repo <repo> --json baseRefName,title,body,author,closingIssuesReferences
 if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
@@ -169,7 +159,7 @@ run_scenario() {
 
     local worker_log="$scenario_dir/worker.log"
     set +e
-    TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+    GH_STUB_TRUSTED_USERS="someuser" TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
         "test-org/probe-repo" 99 "$pr_sha" \
         "feat/test" "Test PR" "false" "someuser" \
         > "$worker_log" 2>&1
