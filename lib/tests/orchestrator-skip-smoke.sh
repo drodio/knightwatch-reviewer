@@ -711,6 +711,15 @@ if ! grep -q 'simulated-abuse-limit' "$LOG_FILE"; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+# gh's real errors wrap, so the cause must be flattened onto ONE line — this is
+# what review.sh's `tr '\n' ' '` on DECLINE_ERR buys. The stub emits multi-line
+# stderr precisely so this is observable; without the assertion the tr is
+# unfenced and a stray newline splits one event across two log lines.
+if ! grep -q 'simulated-abuse-limit second line of the error' "$LOG_FILE"; then
+    echo "FAIL scenario 7d (multi-line cause): a wrapped gh error was not flattened onto one log line"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
 if [ ! -f "$STATE_DIR/seen-updated/cncorp_plow__1" ]; then
     echo "FAIL scenario 7d (unbounded retry): watermark withheld after a failed decline POST — a permanent failure would re-POST every tick"
     exit 1
