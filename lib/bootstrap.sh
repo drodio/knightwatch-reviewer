@@ -12,9 +12,10 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 # Marker prepended to every bot auto-post. PRODUCER-SIDE CONTRACT: lead the
 # body with this marker (never with a slash command), and post as $BOT_USER.
 #
-# Marker-first is what keeps bot posts from self-triggering: every command
-# consumer reads only the first non-blank line (lib/gh-comments.sh), so a
-# marker-first body cannot contain a command as far as they are concerned.
+# Marker-first is what keeps bot posts from self-triggering in the ANCHORED
+# request selectors — `asks` (review.sh) and is_approve_request, which now
+# calls it (lib/gh-comments.sh). They read only the first non-blank line, so a
+# marker-first body carries no command as far as they are concerned.
 # There is no body-wide "contains this marker" test in any command selector —
 # it was redundant, and it dropped real requests that quoted a bot post (#221).
 #

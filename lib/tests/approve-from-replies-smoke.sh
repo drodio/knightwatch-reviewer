@@ -253,17 +253,20 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 approves on bot post, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 
 # Scenario 4b: a REAL approval on a body past the 64KiB pipe buffer.
-# is_approve_request extracts the first non-blank line with a `while read`
-# loop rather than `grep -v '^[[:space:]]*$' | head -1`, because head exits
-# after one line and the upstream grep then takes SIGPIPE — which `set -o
-# pipefail` (poll-pr-actions.sh:15) promotes to 141, reading as "not an
-# approval" and silently dropping it. Every other row here is a few dozen
-# bytes, so without this one a "simplification" back to the pipeline passes
-# the whole suite while dropping real approvals on long comments.
+# is_approve_request feeds the whole body to `jq -Rse`, which slurps it — no
+# consumer closes the stream early. This row is the only automated evidence for
+# that property: every other body here is a few dozen bytes, so it goes red if
+# the extractor is ever rebuilt on a streaming or early-exit shape (`| head -1`,
+# a `read`+break across a pipe, a non-slurping jq) under `set -o pipefail`,
+# where the producer takes SIGPIPE and 141 reads as "not an approval".
 #
-# Positive, not negative: an approval that must FIRE cannot be made vacuous by
-# a filter rejecting the body for some unrelated reason. Size is the test, so
-# the byte count is asserted rather than assumed.
+# That failure mode is not hypothetical here: it is exactly the traffic this bot
+# generates — its own reviews run past 64KiB once multi-byte characters are in
+# the body, and a quote-reply carries one back.
+#
+# Positive, not negative: an approval that must FIRE cannot be made vacuous by a
+# filter rejecting the body for some unrelated reason. Size is the test, so the
+# byte count is asserted rather than assumed.
 echo "  scenario 4b: >64KiB body with the command on line 1 — approve still fires..."
 echo '{}' > "$APPROVES_SEEN_FILE"
 : > "$STUB_ACTIONS_LOG"
@@ -275,7 +278,7 @@ body_bytes=$(jq -r '.[0].body' "$MOCK_COMMENTS_FILE" | wc -c)
 [ "$body_bytes" -gt 65536 ] || { echo "FATAL: scenario 4b body is only $body_bytes bytes — under the pipe buffer, so it cannot reproduce the bug"; exit 1; }
 run_approve
 n=$(count_approves)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the first-line extractor dropped a real approval (SIGPIPE under pipefail)"; cat "$LOG_FILE"; exit 1; }
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the extractor dropped a real approval on a long body — an early-closing consumer took SIGPIPE and pipefail read 141 as "no approval""; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 5: untrusted user — no approve, seen marked
 echo "  scenario 5: untrusted /srosro-approve — no approve, seen marked..."
