@@ -1341,13 +1341,10 @@ VOUCH_MATRIX=(
   # row goes red — which is the whole argument for removing it.
   "a vouch still counts when the maintainer quotes a bot review below it|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\n\\n> <!-- knightwatch-reviewer:auto-post -->\\n> the previous review said this was fine\"}]|$BOT_USER someuser|trusted"
 
-  # Widening fences for the shared grammar. Removal of either property is
-  # caught elsewhere (the CRLF and leading-blank rows in both matrices).
-  #
-  #   7800 (\v)  the blank class ([ \t] -> \s) — no other row covers this
-  #   7900 (CR)  \r normalization; also covered from the approve side by
-  #              "lone CR as the final byte", which additionally fences the
-  #              terminator class that neither row here sees
+  # Control characters are NOT blank: a \v or a lone \r IS the first line, so
+  # neither body carries a command. Only \r\n is normalized. (Coverage of the
+  # blank class and \r normalization is shared with APPROVE_BODY_MATRIX, which
+  # drives the same grammar — see there for its side.)
   "a vertical tab is NOT blank — it is the first line, so no vouch|[{\"id\":7800,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\u000b\\n/srosro-review\"}]|$BOT_USER someuser|none"
 
   "a leading lone CR is NOT blank — only \\r\\n is normalized|[{\"id\":7900,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\r/srosro-review\"}]|$BOT_USER someuser|none"
@@ -1359,10 +1356,9 @@ VOUCH_MATRIX=(
   # honor the command — scenario 2 covers that — so this fences trust only.
   "/srosro-update-review from a maintainer is a trigger, not a vouch|[{\"id\":7500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-update-review\"}]|$BOT_USER someuser|none"
 
-  # `asks` skips blank lines before taking the first line. Nothing else
-  # covered that filter: delete the map(select(...)) from JQ_ASKS and every
-  # other row stays green while this one goes red. GitHub's comment box
-  # produces this shape whenever someone hits return before typing.
+  # Blank lines are skipped before the first line is taken (the filter lives in
+  # JQ_FIRSTLINE, lib/gh-comments.sh). GitHub's comment box produces this shape
+  # whenever someone hits return before typing.
   "leading blank lines still vouch — first NON-BLANK line is the rule|[{\"id\":7400,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\n\\n/srosro-review\"}]|$BOT_USER someuser|trusted"
 )
 echo "  scenario RT1: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."

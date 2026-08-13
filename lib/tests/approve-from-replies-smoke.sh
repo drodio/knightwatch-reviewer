@@ -254,8 +254,8 @@ n=$(count_approves)
 
 # Scenario 4b: a REAL approval on a body past the 64KiB pipe buffer.
 # is_approve_request feeds the whole body to `jq -Rse`, which slurps it — no
-# consumer closes the stream early. This row is the only automated evidence for
-# that property: every other body here is a few dozen bytes, so it goes red if
+# consumer closes the stream early. This is the one row whose body exceeds the
+# pipe buffer (it asserts its own byte count below), so it goes red if
 # the extractor is ever rebuilt on a streaming or early-exit shape (`| head -1`,
 # a `read`+break across a pipe, a non-slurping jq) under `set -o pipefail`,
 # where the producer takes SIGPIPE and 141 reads as "not an approval".
