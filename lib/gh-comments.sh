@@ -43,8 +43,15 @@
 # semantically identical by hand, and that obligation is real — the two had
 # already drifted on the blank-line class ([[:space:]] there vs [ \t] here,
 # which made a leading vertical tab approve what this fragment read as
-# no-request) and on \r handling. Both are aligned now and pinned by
-# APPROVE_BODY_MATRIX; if you change the semantics here, change them there too.
+# no-request) and on \r handling. Both are aligned now, and each SIDE has its
+# own fence — APPROVE_BODY_MATRIX drives only the bash twin and never evaluates
+# this fragment, so it cannot catch a change made here:
+#   this fragment  -> VOUCH_MATRIX rows 7800 (\v) and 7900 (leading CR)
+#   the bash twin  -> APPROVE_BODY_MATRIX's vertical-tab and leading-CR rows
+# Widening `test("^[ \t]*$")` to `test("^\\s*$")` is the natural
+# simplification and re-opens the split mirrored: jq's \s matches \v, \f and
+# lone \r. Change the semantics here and you must change the twin too — and
+# both matrices above, or one side will silently stop being fenced.
 #
 # Lives in this file because it is the common ancestor every jq consumer already
 # sources.

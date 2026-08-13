@@ -258,15 +258,28 @@ refresh_queue() {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # Exclude the bot's own auto-posts (review ack, final review,
+            # The bot's own auto-posts (review ack, final review,
             # learn-from-replies acks, and the usage footer that appears on
-            # every review and itself contains the slash commands) by
-            # matching the hidden HTML-comment marker every auto-post
-            # template prepends. The earlier `.user.login != $user` filter
-            # (e1d91a0) over-excluded: in single-account deployments
-            # BOT_USER is the human's own GH identity, so user-based
-            # filtering also drops legitimate slash-command comments the
-            # human posts.
+            # every review and itself names the slash commands) are excluded
+            # by FIRST-LINE ANCHORING, not by a marker test. Every producer
+            # leads with the auto-post marker — the producer-side contract at
+            # lib/bootstrap.sh — so `asks`, which reads only the first
+            # non-blank line, cannot see a command in any of them.
+            #
+            # Do NOT "restore" a body-wide `contains($mark)` conjunct here. It
+            # was removed deliberately: it was redundant against every real
+            # producer and it dropped genuine requests whose author quoted a
+            # bot review below their command (#221). VOUCH_MATRIX row 7700
+            # goes red if it comes back.
+            #
+            # No author filter either. The earlier `.user.login != $user`
+            # (e1d91a0) over-excluded: in single-account deployments BOT_USER
+            # is the human's own GH identity, so user-based filtering also
+            # drops legitimate slash-command comments the human posts.
+            #
+            # The one marker test that survives is the auto-TRIGGER exclusion
+            # in the vouch scan below — that producer leads with the command
+            # instead of its marker, so anchoring cannot filter it.
             #
             # Two slash commands, disjoint by construction: `asks` evaluates a
             # single line and its terminator class ([ \t]|$) rejects the `-` in
