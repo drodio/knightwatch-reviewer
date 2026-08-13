@@ -1341,13 +1341,17 @@ VOUCH_MATRIX=(
   # row goes red — which is the whole argument for removing it.
   "a vouch still counts when the maintainer quotes a bot review below it|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\n\\n> <!-- knightwatch-reviewer:auto-post -->\\n> the previous review said this was fine\"}]|$BOT_USER someuser|trusted"
 
-  # Control characters are NOT blank: a \v or a lone \r IS the first line, so
-  # neither body carries a command. Only \r\n is normalized. (Coverage of the
-  # blank class and \r normalization is shared with APPROVE_BODY_MATRIX, which
-  # drives the same grammar — see there for its side.)
+  # Two different mechanisms, despite looking alike — measured, not assumed:
+  #   7800  body is TWO lines; the \v line survives the blank filter, so
+  #         firstline is "\u000b" and carries no command. Red iff the blank
+  #         class widens ([ \t] -> \s).
+  #   7900  body is ONE line; firstline is "\r/srosro-review", so blankness
+  #         never enters. The leading CR sits outside asks's [ \t]* prefix
+  #         class. Red iff that prefix widens to \s, or \r normalization
+  #         widens past \r\n.
   "a vertical tab is NOT blank — it is the first line, so no vouch|[{\"id\":7800,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\u000b\\n/srosro-review\"}]|$BOT_USER someuser|none"
 
-  "a leading lone CR is NOT blank — only \\r\\n is normalized|[{\"id\":7900,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\r/srosro-review\"}]|$BOT_USER someuser|none"
+  "a leading lone CR is not leading whitespace — only \\r\\n is normalized|[{\"id\":7900,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\r/srosro-review\"}]|$BOT_USER someuser|none"
 
   # /<prefix>-update-review asks for ONE incremental pass; it is not a standing
   # statement about the author, so it must not admit an untrusted author's PR.
