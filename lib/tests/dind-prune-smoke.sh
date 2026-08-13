@@ -78,13 +78,26 @@ if [ "\$1" = exec ]; then
             [ -n "\${IMAGES_FAIL:-}" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
             cat "\${IMAGES_FIXTURE:-$d/images}"; exit 0 ;;
         "rmi "*)
-            # RMI_FAIL: every tag conflicts (stopped containers pin them all) —
-            # the permanent zero-reclaim shape. Default: all tags untag.
+            # Error text mirrors the real CLI, which prefixes daemon errors with
+            # "Error response from daemon:" — a hand-written 'conflict: ...'
+            # fixture would let a prefix-matching bug pass here and fail live.
+            shift
+            conflict='Error response from daemon: conflict: unable to remove repository reference'
+            # RMI_FAIL: every tag conflicts — nothing untagged at all.
             if [ -n "\${RMI_FAIL:-}" ]; then
-                echo "conflict: unable to remove repository reference: container 9f2 is using it" >&2
+                echo "\$conflict \\"\$1\\" (must force) - container 9f2 is using its referenced image" >&2
                 exit 1
             fi
-            shift; for t in "\$@"; do echo "Untagged: \$t"; done; exit 0 ;;
+            # RMI_PARTIAL: the benign shape — all but the first tag untag, one
+            # conflicts. Must stay green and must NOT report "none untagged".
+            if [ -n "\${RMI_PARTIAL:-}" ]; then
+                first="\$1"; shift
+                for t in "\$@"; do echo "Untagged: \$t"; done
+                echo "\$conflict \\"\$first\\" (must force) - container 9f2 is using its referenced image" >&2
+                exit 1
+            fi
+            for t in "\$@"; do echo "Untagged: \$t"; done; exit 0 ;;
+        "container prune") echo "Total reclaimed space: 0B"; exit 0 ;;
         "image prune")
             [ -n "\${PRUNE_FAIL:-}" ] && { echo "Error response from daemon: prune failed" >&2; exit 1; }
             echo "Total reclaimed space: 1.5GB"; exit 0 ;;
@@ -214,7 +227,35 @@ echo "  (i) tags selected but none untagged is reported as failure..."
 : > "$CALLS"; : > "$d/dind-prune.log"
 RMI_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(i) exited 0 when every selected tag failed to remove"
 grep -q "none untagged" "$d/dind-prune.log" || fail "(i) the zero-reclaim case was not surfaced"
+# The daemon's own line must reach the log — this is the one condition that
+# turns the unit red, so a bare "none untagged" with no reason is a dead end.
+grep -q "container 9f2 is using its referenced image" "$d/dind-prune.log" \
+    || fail "(i) the daemon's error text never reached the failure line"
+echo "  PASS"
+
+# --- (j) a partial removal stays green -------------------------------------
+# The half the zero-untagged discriminator is contrasted against. A whole PR's
+# ~5 scenario images share one __<PR#>- prefix, so a review that claimed a PR
+# since the idle check keeps its own group while the rest untag — expected, and
+# it must not turn the unit red. Without this, collapsing the branch back to
+# "any nonzero rmi raises FAILED" passes every other case.
+echo "  (j) partial removal is informational, not a failure..."
+: > "$CALLS"; : > "$d/dind-prune.log"
+RMI_PARTIAL=1 STATE_DIR="$d" bash "$SCRIPT" || fail "(j) a benign partial conflict turned the unit red"
+grep -q "none untagged" "$d/dind-prune.log" && fail "(j) reported the zero-reclaim shape on a partial removal"
+grep -q "rmi reported errors" "$d/dind-prune.log" || fail "(j) the partial conflict was not logged at all"
+echo "  PASS"
+
+# --- (k) the image pin is cleared before removal ---------------------------
+# An idle sandbox normally holds its last review's exited containers, and those
+# pin that review's images. Reaping them is what makes "none untagged" mean
+# something unexplained rather than "a stopped container is holding these".
+echo "  (k) stopped containers are reaped before rmi..."
+run_prune || fail "(k) run exited non-zero"
+grep -q "container prune -f" "$CALLS" || fail "(k) leftover containers never reaped — images stay pinned"
+awk '/container prune -f/{p=1} /docker rmi/{if(!p) exit 1}' "$CALLS" \
+    || fail "(k) rmi ran before the container reap, so the pin was still in place"
 echo "  PASS"
 
 echo ""
-echo "PASS (9 checks)"
+echo "PASS (11 checks)"

@@ -163,24 +163,40 @@ for C in "${DINDS[@]}"; do
         || log "$C: WARNING -- $UNPARSED image timestamp(s) unparseable, those images were not considered"
 
     if [ "${#STALE[@]}" -ne 0 ]; then
-        # No -f: an image still referenced by a container must survive.
+        # Remove the pin before trying to remove the images. lib/run-dir.sh
+        # reaps a sandbox's leftover containers at the START of its next review
+        # and nothing cleans up when one ends, so an idle sandbox is normally
+        # sitting on its last review's exited scenario containers — and those
+        # pin that review's images. A whole PR's ~5 scenario images share one
+        # __<PR#>- prefix, so one pinned review blocks the entire group, which
+        # makes "some removed, some conflicted" a poor signal and "none
+        # removed" an ambiguous one.
+        #
+        # `container prune -f` only ever removes STOPPED containers, so it
+        # cannot disturb a review that started since the idle check above —
+        # that review's containers are running and stay. Same reap lib/run-dir
+        # already performs, just at the other end of the idle window.
+        REAPED=$(nested "$C" container prune -f) || { REAPED="FAILED"; FAILED=1; }
+
+        # No -f: an image still referenced by a RUNNING container must survive.
         RMI=$(docker exec "$C" docker rmi "${STALE[@]}" 2>&1)
         UNTAGGED=$(printf '%s\n' "$RMI" | grep -c '^Untagged:')
-        log "$C: ${#STALE[@]} stale per-PR tag(s) selected, $UNTAGGED untagged"
-        ERRS=$(printf '%s\n' "$RMI" | grep -i '^error\|^conflict' | tail -1)
+        log "$C: ${#STALE[@]} stale per-PR tag(s) selected, $UNTAGGED untagged; containers -- ${REAPED:-no output}"
         if [ "$UNTAGGED" -eq 0 ]; then
-            # Selected work, removed none. A genuine mid-run race (a review
-            # started since the idle check) conflicts on the one tag it just
-            # claimed and untags the rest, so it never lands here. Zero untagged
-            # is the persistent shape instead: lib/run-dir.sh reaps a sandbox's
-            # leftover containers at the START of its next review and nothing
-            # cleans up when one ends, so a sandbox that stops claiming PRs sits
-            # on stopped containers pinning its own images and reclaims nothing
-            # on every tick, forever. Raise it rather than let that read green.
-            log "$C: FAILED -- ${#STALE[@]} tag(s) selected but none untagged${ERRS:+ -- $ERRS}"
+            # With the pin cleared this no longer means "a review is holding
+            # these" — it means something we don't have an account of. Log the
+            # daemon's own last line verbatim rather than a prefix-filtered
+            # one: a dead nested daemon or a concurrent prune reports through
+            # shapes that match no fixed prefix, and this is the one condition
+            # here that turns the unit red, so it is the one an operator will
+            # actually open the journal for.
+            log "$C: FAILED -- ${#STALE[@]} tag(s) selected, none untagged -- $(printf '%s\n' "$RMI" | tail -1)"
             FAILED=1
-        elif [ -n "$ERRS" ]; then
-            log "$C: rmi reported errors -- $ERRS"
+        else
+            # Partial conflicts are expected and benign: a review that claimed
+            # a PR since the idle check keeps its own group. Informational only.
+            ERRS=$(printf '%s\n' "$RMI" | grep -i '^error' | tail -1)
+            [ -z "$ERRS" ] || log "$C: rmi reported errors -- $ERRS"
         fi
     else
         log "$C: no per-PR images older than ${PRUNE_HOURS}h"
