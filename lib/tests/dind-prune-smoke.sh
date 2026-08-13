@@ -139,6 +139,11 @@ grep -q "image prune -f" "$CALLS" || fail "(a) dangling-layer prune never ran"
 # 1.29 TB of images), and lib/run-dir.sh already reaps anonymous ones per review.
 # Pruning them here would delete the set the next review reuses.
 grep -q "volume prune" "$CALLS" && fail "(a) volume prune reintroduced — deletes the reused working set for no reclaim"
+# `docker container prune` also removes `created` containers, so a review mid
+# `compose up` would lose them and their anonymous volumes — a destructive act
+# inside the very race this script's idle check exists to avoid.
+grep -q "container prune" "$CALLS" \
+    && fail "(a) container prune reintroduced — it deletes created-state containers of an in-flight review"
 grep -q "builder prune" "$CALLS" || fail "(a) BuildKit cache never pruned"
 
 # Every reclaim phase must report into the journal — a muted phase turns a
@@ -217,11 +222,7 @@ PRUNE_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(h) exited 0 despite a faile
 grep -q "'docker image' failed" "$d/dind-prune.log" || fail "(h) prune failure never logged"
 echo "  PASS"
 
-# --- (i) selected tags but none removed is a failure, not a clean tick ------
-# lib/run-dir.sh reaps a sandbox's leftover containers at the START of its next
-# review and nothing cleans up when one ends, so a sandbox that stops claiming
-# PRs sits on stopped containers pinning its own images — reclaiming nothing on
-# every tick, forever, while the journal shows a one-line error and exit 0.
+# --- (i) a total image conflict is logged, not failed -----------------------
 # An image conflict is REPORTED, never adjudicated. The states that produce one
 # — a review re-claiming its PR mid-tick, a crashed review's exited containers,
 # a sandbox that stopped claiming entirely — are indistinguishable from here,
@@ -236,6 +237,7 @@ grep -q "container 9f2 is using its referenced image" "$d/dind-prune.log" \
     || fail "(i) the daemon's own error text never reached the log"
 echo "  PASS"
 
+# --- (j) a partial image conflict is logged, not failed ---------------------
 echo "  (j) a partial image conflict is logged, not failed..."
 : > "$CALLS"; : > "$d/dind-prune.log"
 RMI_PARTIAL=1 STATE_DIR="$d" bash "$SCRIPT" || fail "(j) a benign partial conflict turned the unit red"
@@ -246,15 +248,5 @@ grep -q "container 9f2 is using its referenced image" "$d/dind-prune.log" \
     || fail "(j) the daemon's own error text never reached the log"
 echo "  PASS"
 
-# Nothing may reintroduce a reap here: `docker container prune` also removes
-# `created` containers, so a review mid-`compose up` would lose them and their
-# anonymous volumes — a destructive act inside the very race this script's idle
-# check exists to avoid.
-echo "  (k) no container reap is performed..."
-run_prune || fail "(k) run exited non-zero"
-grep -q "container prune" "$CALLS" \
-    && fail "(k) container prune reintroduced — it deletes created-state containers of an in-flight review"
-echo "  PASS"
-
 echo ""
-echo "PASS (11 checks)"
+echo "PASS (10 checks)"
