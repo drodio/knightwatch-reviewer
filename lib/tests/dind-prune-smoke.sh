@@ -97,7 +97,6 @@ if [ "\$1" = exec ]; then
                 exit 1
             fi
             for t in "\$@"; do echo "Untagged: \$t"; done; exit 0 ;;
-        "container prune") echo "Total reclaimed space: 0B"; exit 0 ;;
         "image prune")
             [ -n "\${PRUNE_FAIL:-}" ] && { echo "Error response from daemon: prune failed" >&2; exit 1; }
             echo "Total reclaimed space: 1.5GB"; exit 0 ;;
@@ -223,38 +222,38 @@ echo "  PASS"
 # review and nothing cleans up when one ends, so a sandbox that stops claiming
 # PRs sits on stopped containers pinning its own images — reclaiming nothing on
 # every tick, forever, while the journal shows a one-line error and exit 0.
-echo "  (i) tags selected but none untagged is reported as failure..."
+# An image conflict is REPORTED, never adjudicated. The states that produce one
+# — a review re-claiming its PR mid-tick, a crashed review's exited containers,
+# a sandbox that stopped claiming entirely — are indistinguishable from here,
+# and since a PR's ~5 images share one __<PR#>- prefix a single pin takes the
+# whole group. So neither full nor partial conflict may turn the unit red;
+# FAILED belongs to the unambiguous failures only (cases d, e, h).
+echo "  (i) a total image conflict is logged, not failed..."
 : > "$CALLS"; : > "$d/dind-prune.log"
-RMI_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(i) exited 0 when every selected tag failed to remove"
-grep -q "none untagged" "$d/dind-prune.log" || fail "(i) the zero-reclaim case was not surfaced"
-# The daemon's own line must reach the log — this is the one condition that
-# turns the unit red, so a bare "none untagged" with no reason is a dead end.
+RMI_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" || fail "(i) a self-healing image conflict turned the unit red"
+grep -q "0 untagged" "$d/dind-prune.log" || fail "(i) the zero-reclaim outcome was not recorded"
 grep -q "container 9f2 is using its referenced image" "$d/dind-prune.log" \
-    || fail "(i) the daemon's error text never reached the failure line"
+    || fail "(i) the daemon's own error text never reached the log"
 echo "  PASS"
 
-# --- (j) a partial removal stays green -------------------------------------
-# The half the zero-untagged discriminator is contrasted against. A whole PR's
-# ~5 scenario images share one __<PR#>- prefix, so a review that claimed a PR
-# since the idle check keeps its own group while the rest untag — expected, and
-# it must not turn the unit red. Without this, collapsing the branch back to
-# "any nonzero rmi raises FAILED" passes every other case.
-echo "  (j) partial removal is informational, not a failure..."
+echo "  (j) a partial image conflict is logged, not failed..."
 : > "$CALLS"; : > "$d/dind-prune.log"
 RMI_PARTIAL=1 STATE_DIR="$d" bash "$SCRIPT" || fail "(j) a benign partial conflict turned the unit red"
-grep -q "none untagged" "$d/dind-prune.log" && fail "(j) reported the zero-reclaim shape on a partial removal"
-grep -q "rmi reported errors" "$d/dind-prune.log" || fail "(j) the partial conflict was not logged at all"
+# Two tags are stale (__950, __951); RMI_PARTIAL conflicts on the first only.
+grep -q "2 stale per-PR tag(s) selected, 1 untagged" "$d/dind-prune.log" \
+    || fail "(j) the partial-removal count was not recorded"
+grep -q "container 9f2 is using its referenced image" "$d/dind-prune.log" \
+    || fail "(j) the daemon's own error text never reached the log"
 echo "  PASS"
 
-# --- (k) the image pin is cleared before removal ---------------------------
-# An idle sandbox normally holds its last review's exited containers, and those
-# pin that review's images. Reaping them is what makes "none untagged" mean
-# something unexplained rather than "a stopped container is holding these".
-echo "  (k) stopped containers are reaped before rmi..."
+# Nothing may reintroduce a reap here: `docker container prune` also removes
+# `created` containers, so a review mid-`compose up` would lose them and their
+# anonymous volumes — a destructive act inside the very race this script's idle
+# check exists to avoid.
+echo "  (k) no container reap is performed..."
 run_prune || fail "(k) run exited non-zero"
-grep -q "container prune -f" "$CALLS" || fail "(k) leftover containers never reaped — images stay pinned"
-awk '/container prune -f/{p=1} /docker rmi/{if(!p) exit 1}' "$CALLS" \
-    || fail "(k) rmi ran before the container reap, so the pin was still in place"
+grep -q "container prune" "$CALLS" \
+    && fail "(k) container prune reintroduced — it deletes created-state containers of an in-flight review"
 echo "  PASS"
 
 echo ""
