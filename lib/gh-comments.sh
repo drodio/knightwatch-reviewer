@@ -43,15 +43,18 @@
 # semantically identical by hand, and that obligation is real — the two had
 # already drifted on the blank-line class ([[:space:]] there vs [ \t] here,
 # which made a leading vertical tab approve what this fragment read as
-# no-request) and on \r handling. Both are aligned now, and each SIDE has its
-# own fence — APPROVE_BODY_MATRIX drives only the bash twin and never evaluates
-# this fragment, so it cannot catch a change made here:
-#   this fragment  -> VOUCH_MATRIX rows 7800 (\v) and 7900 (leading CR)
-#   the bash twin  -> APPROVE_BODY_MATRIX's vertical-tab and leading-CR rows
-# Widening `test("^[ \t]*$")` to `test("^\\s*$")` is the natural
-# simplification and re-opens the split mirrored: jq's \s matches \v, \f and
-# lone \r. Change the semantics here and you must change the twin too — and
-# both matrices above, or one side will silently stop being fenced.
+# no-request) and on \r handling. Both are aligned now.
+#
+# Fences, stated narrowly because per-edit attribution here has been wrong
+# twice: `firstline` is exercised through `asks` by VOUCH_MATRIX (row 7800 — a
+# \v first line — covers the blank class; row 7900 — a leading lone CR —
+# covers \r normalization) and through is_approve_request by
+# APPROVE_BODY_MATRIX's mirrors of the same two. `firstline_is`'s own
+# `sub("^[ \t]+"; "")` is NOT covered by either: no staging or bake-off fixture
+# has a \v/\f/lone-CR first line, so widening that class alone leaves both
+# matrices green. Held by hand; widen it and nothing will tell you.
+#
+# Whatever you change here, change the bash twin too.
 #
 # Lives in this file because it is the common ancestor every jq consumer already
 # sources.

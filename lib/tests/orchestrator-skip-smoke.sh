@@ -1341,13 +1341,15 @@ VOUCH_MATRIX=(
   # row goes red — which is the whole argument for removing it.
   "a vouch still counts when the maintainer quotes a bot review below it|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\n\\n> <!-- knightwatch-reviewer:auto-post -->\\n> the previous review said this was fine\"}]|$BOT_USER someuser|trusted"
 
-  # Blank-class mirrors of APPROVE_BODY_MATRIX's \v and leading-CR rows. That
-  # matrix drives only the BASH twin (is_approve_request); nothing evaluated
-  # JQ_FIRSTLINE's blank class, so widening `test("^[ \t]*$")` to `test("^\\s*$")`
-  # here — jq's \s matches \v, \f and lone \r, and it is the natural
-  # "simplification" — left every approve row green while re-opening the
-  # ADMIT/APPROVE split mirrored: `asks` would skip the \v and admit a request
-  # the bash side still refuses. These two rows are that fence.
+  # jq-side mirrors of APPROVE_BODY_MATRIX's \v and leading-CR rows. That
+  # matrix drives only the BASH twin (is_approve_request) and never evaluates
+  # JQ_FIRSTLINE, so before these rows a change made on the jq side alone left
+  # every approve row green while re-opening the ADMIT/APPROVE split mirrored.
+  #
+  # One edit each — measured, not assumed:
+  #   7800 (\v)  goes red iff the blank class widens ([ \t] -> \s)
+  #   7900 (CR)  goes red iff \r normalization widens (gsub("\r\n") -> gsub("\r"))
+  # Neither catches the other's edit, so do not treat either as covering both.
   "a vertical tab is NOT blank — it is the first line, so no vouch|[{\"id\":7800,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\u000b\\n/srosro-review\"}]|$BOT_USER someuser|none"
 
   "a leading lone CR is NOT blank — only \\r\\n is normalized|[{\"id\":7900,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\r/srosro-review\"}]|$BOT_USER someuser|none"

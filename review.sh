@@ -277,9 +277,14 @@ refresh_queue() {
             # is the human's own GH identity, so user-based filtering also
             # drops legitimate slash-command comments the human posts.
             #
-            # The one marker test that survives is the auto-TRIGGER exclusion
-            # in the vouch scan below — that producer leads with the command
-            # instead of its marker, so anchoring cannot filter it.
+            # The only surviving $BOT_AUTO_POST_MARKER test in a COMMAND
+            # selector is the auto-TRIGGER exclusion in the vouch scan below —
+            # that producer leads with the command instead of its marker, so
+            # anchoring cannot filter it. (`grep contains($mark)` also hits
+            # NOTICED_ALREADY further down; that one tests a different marker
+            # to dedupe the no-push-access notice, not to exclude a command.
+            # Deleting it re-posts that notice on every updatedAt change, to
+            # the one author who cannot act on it.)
             #
             # Two slash commands, disjoint by construction: `asks` evaluates a
             # single line and its terminator class ([ \t]|$) rejects the `-` in
