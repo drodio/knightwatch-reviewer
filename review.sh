@@ -75,8 +75,10 @@ UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice --
 # review of an untrusted author's diff. Framing after the command is kept and
 # shapes the review. CRLF-normalized first because GitHub's web UI returns
 # \r\n, which would otherwise leave a \r before the terminator on every line
-# but the last. (is_approve_request has no such bug — POSIX [[:space:]] already
-# covers \r — so mirroring it means normalizing, not copying its character class.)
+# but the last. is_approve_request is the hand-maintained bash twin of
+# this rule (it cannot share the fragment — pipe-buffer SIGPIPE); it uses the
+# same [ \t] blank class and strips \r as a line suffix, so the two agree. See
+# lib/gh-comments.sh for the carve-out and APPROVE_BODY_MATRIX for its fences.
 JQ_ASKS="$JQ_FIRSTLINE"'def asks(cmd): (.body | firstline | test("^[ \t]*/" + cmd + "([ \t]|$)"; "i"));'
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under

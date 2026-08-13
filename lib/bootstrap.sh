@@ -27,7 +27,9 @@ BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
 #
 # Two body-wide marker consumers remain by design, so a grep hit is not drift:
 # lib/pr-comments.sh (staging: anchored for auto-post, body-wide for the
-# auto-trigger marker) and specialist-bakeoff.sh (feedback signals).
+# auto-trigger marker) and specialist-bakeoff.sh's SUBSTANTIVE_REVIEW_JQ, which
+# uses containment POSITIVELY to identify bot reviews. That file's pass-2
+# feedback scan is anchored like everything else — do not "fix" it back.
 #
 # Must match the literal in lib/review-one-pr.sh — a smoke scenario catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"
