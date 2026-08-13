@@ -43,12 +43,27 @@ RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
 # exits after one line, so on a body past the pipe buffer grep takes SIGPIPE,
 # and `set -o pipefail` (line 15) turns that 141 into the function's exit
 # status — reading as "not an approval" and silently dropping a real one.
+#
+# THE ONE CONSUMER THAT CANNOT SHARE lib/gh-comments.sh's JQ_FIRSTLINE, because
+# of that pipe-buffer constraint. It is therefore held semantically IDENTICAL to
+# it by hand, which is a real obligation: the two had already drifted apart in
+# two ways, and the drift was reachable.
+#   - blank line: `[ \t]` here, matching jq. `[[:space:]]` also matches \v, \f
+#     and lone \r, so a body whose first line was a vertical tab skipped that
+#     line here and approved, while `asks` took the \v AS the first line and
+#     read no request — the approve poller acting on what the admit selector
+#     had already declined.
+#   - carriage return: stripped per-line-suffix, matching jq's
+#     gsub("\r\n"; "\n"). Blanket "${1//$'\r'/}" also removed lone mid-line \r,
+#     which jq keeps.
+# APPROVE_BODY_MATRIX pins both cases; change one side and it goes red.
 is_approve_request() {
-    local body="${1//$'\r'/}" line first=""
+    local line first="" tab=$'\t'
     while IFS= read -r line; do
-        if [ -n "${line//[[:space:]]/}" ]; then first="$line"; break; fi
-    done <<< "$body"
-    grep -qiE "^[[:space:]]*/${BOT_CMD_PREFIX}-approve([[:space:]]|$)" <<< "$first"
+        line="${line%$'\r'}"
+        if [ -n "${line//[ $tab]/}" ]; then first="$line"; break; fi
+    done <<< "$1"
+    grep -qiE "^[ $tab]*/${BOT_CMD_PREFIX}-approve([ $tab]|$)" <<< "$first"
 }
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.

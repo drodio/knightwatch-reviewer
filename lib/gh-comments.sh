@@ -27,18 +27,27 @@
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
 
-# The ONE definition of "the comment's first non-blank line", shared by every
-# consumer that anchors on it: review.sh's `asks` (trigger + vouch selectors)
-# and lib/pr-comments.sh's staging filter. CRLF-normalized because GitHub's web
-# UI returns \r\n, which would otherwise leave a \r before the terminator on
-# every line but the last.
+# The shared definition of "the comment's first non-blank line". CRLF-normalized
+# because GitHub's web UI returns \r\n, which would otherwise leave a \r before
+# the terminator on every line but the last.
 #
-# Lives here because this file is the common ancestor both consumers already
-# source. It was duplicated before, and the copies had silently drifted —
-# `asks` tolerated leading whitespace before the command, the staging filter
-# did not — so one comment could be judged differently by the selector that
-# admits it and the one that stages it. Build predicates ON TOP of these; do
-# not re-implement the extraction.
+# jq consumers, all three built on this — never re-implementing it:
+#   review.sh            `asks` (trigger + vouch selectors)
+#   lib/pr-comments.sh   thread-staging filter
+#   specialist-bakeoff.sh  pass-2 feedback scan
+#
+# ONE anchoring consumer deliberately does NOT share it: is_approve_request in
+# poll-pr-actions.sh. It must extract the first line with a bash loop, because
+# the pipeline form takes SIGPIPE on bodies past the pipe buffer and
+# `set -o pipefail` turns that into "no approval". It is instead held
+# semantically identical by hand, and that obligation is real — the two had
+# already drifted on the blank-line class ([[:space:]] there vs [ \t] here,
+# which made a leading vertical tab approve what this fragment read as
+# no-request) and on \r handling. Both are aligned now and pinned by
+# APPROVE_BODY_MATRIX; if you change the semantics here, change them there too.
+#
+# Lives in this file because it is the common ancestor every jq consumer already
+# sources.
 JQ_FIRSTLINE='def firstline: (gsub("\r\n"; "\n") | split("\n")
                              | map(select(test("^[ \t]*$") | not)) | .[0] // "");
 def firstline_is(m): (firstline | sub("^[ \t]+"; "") | startswith(m));'

@@ -316,6 +316,16 @@ APPROVE_BODY_MATRIX=(
     'framing BEFORE the command|0|LGTM all green\n/srosro-approve'
     'fenced example in a doc comment|0|To approve, post:\n\n```\n/srosro-approve\n```'
     'quoted runbook (GitHub quote-reply)|0|> /srosro-approve\n\nthat is the command you want'
+    # Cross-implementation rows. is_approve_request is the one anchoring
+    # consumer that cannot share lib/gh-comments.sh's JQ_FIRSTLINE (pipe-buffer
+    # SIGPIPE), so it is held identical by hand and these pin the two ways it
+    # had already drifted. Both were reachable: under the old `[[:space:]]`
+    # blank test a leading vertical tab was SKIPPED and the command approved,
+    # while `asks` took the \v as the first line and read no request — the
+    # poller approving what the admit selector had declined.
+    'vertical tab first line — blank class is [ \\t], matching jq, not [[:space:]]|0|\u000b\n/srosro-approve'
+    'form feed first line — same class|0|\u000c\n/srosro-approve'
+    'lone CR is not a terminator — only \\r\\n is normalized, as in jq|0|/srosro-approve\rx'
 )
 mid=1005
 for row in "${APPROVE_BODY_MATRIX[@]}"; do

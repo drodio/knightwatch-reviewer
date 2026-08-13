@@ -371,7 +371,12 @@ export MOCK_COMMENTS_FILE_PAGE2="$TMPDIR_SMOKE/comments-page2.json"
 python3 - <<PYEOF > "$MOCK_COMMENTS_FILE_PAGE2"
 import json
 comments = [
-    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_TRUSTED}", "user": {"login": "trusted-human"},  "body": "/srosro-props [from: aggregator]"},
+    # Quote-reply shape, deliberately: quoting the probe you liked and writing
+    # the command under it is how props actually get given. The quoted text
+    # carries the auto-post marker, so pass 2's marker filter MUST be anchored
+    # to the first non-blank line — body-wide containment drops this comment and
+    # the LOVED_AGG=1 assertion below goes red, which is the fence.
+    {"id": 4, "issue_url": "https://api.github.com/repos/srosro/test-repo/issues/20", "created_at": "${TS_TRUSTED}", "user": {"login": "trusted-human"},  "body": "/srosro-props [from: aggregator]\n\n> <!-- knightwatch-reviewer:auto-post -->\n> the aggregator probe I am crediting"},
 ]
 print(json.dumps(comments))
 PYEOF
