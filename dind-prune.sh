@@ -26,6 +26,13 @@ LOCK="${LOCK:-$STATE_DIR/dind-prune.lock}"
 # re-reviews the same PR across days and does reuse that PR's images, so this
 # window is what keeps the prune from forcing a ~4 GB scenario rebuild
 # mid-loop.
+#
+# Known limit, accepted rather than engineered around: a cache-hit rebuild does
+# not refresh Created, so this measures time since FIRST build, not since last
+# use. A review loop still running past the window loses its images despite
+# active reuse. Docker exposes no last-used timestamp for images, and the only
+# fix would couple this script to the reviewer containers' workdir list; the
+# cost of being wrong is one rebuild, so it is left as is.
 PRUNE_HOURS="${PRUNE_HOURS:-168}"
 
 # Per-PR images are named for the compose project, which docker compose derives
@@ -74,13 +81,29 @@ if [ "${#DINDS[@]}" -eq 0 ]; then
     exit 0
 fi
 
+# Bounded readiness poll. knightwatch-reviewer.service is Type=oneshot around
+# `docker compose up -d`, which returns once the dind CONTAINER has started —
+# not once the dockerd inside it accepts connections, which takes seconds more
+# for storage init. Ordering After= that unit is therefore not sufficient on
+# the Persistent=true boot catch-up run: without a retry every sandbox reads
+# "unreachable" and the tick this timer exists to catch is burned again.
+NESTED_READY_TRIES="${NESTED_READY_TRIES:-6}"
+NESTED_READY_SLEEP="${NESTED_READY_SLEEP:-5}"
+
 # Count containers running inside a sandbox's nested daemon. Fails loudly
 # rather than reporting 0: an unreachable daemon read as "idle" would let the
 # destructive phases below fire against a sandbox we cannot actually see into.
 nested_running() {
-    local out
-    out=$(docker exec "$1" docker ps -q 2>&1) || { printf '%s' "$out"; return 1; }
-    printf '%s\n' "$out" | sed '/^$/d' | wc -l
+    local out="" i
+    for ((i = 1; i <= NESTED_READY_TRIES; i++)); do
+        if out=$(docker exec "$1" docker ps -q 2>&1); then
+            printf '%s\n' "$out" | sed '/^$/d' | wc -l
+            return 0
+        fi
+        [ "$i" -lt "$NESTED_READY_TRIES" ] && sleep "$NESTED_READY_SLEEP"
+    done
+    printf '%s' "$out"
+    return 1
 }
 
 CUTOFF=$(date -d "$PRUNE_HOURS hours ago" +%s)
@@ -95,33 +118,58 @@ for C in "${DINDS[@]}"; do
         continue
     fi
 
-    mapfile -t STALE < <(
-        docker exec "$C" docker images --format '{{.ID}}	{{.Repository}}	{{.CreatedAt}}' 2>/dev/null \
-            | while IFS=$'\t' read -r id repo created; do
-                [[ "$repo" =~ $PR_IMAGE_RE ]] || continue
-                # `docker` prints "... +0000 UTC"; date(1) parses the offset but
-                # not the trailing zone name, so drop it.
-                built=$(date -d "${created% UTC}" +%s 2>/dev/null) || continue
-                [ "$built" -lt "$CUTOFF" ] && echo "$id"
-            done | sort -u
-    )
+    # Same fail-loud contract as the host `docker ps` above: an errored list
+    # read as "no images" would log a clean green tick while the sandbox refills.
+    if ! IMAGES=$(docker exec "$C" docker images --format '{{.Repository}}:{{.Tag}}	{{.CreatedAt}}' 2>&1); then
+        log "$C: cannot list images -- skipping ($(printf '%s' "$IMAGES" | tail -1))"
+        continue
+    fi
+
+    # Select TAGS, never bare image IDs. Two PRs whose build context is
+    # identical produce one cache-hit image carrying both tags, and
+    # `docker rmi <id>` refuses a multi-repository image ("must be forced") —
+    # so an ID-based sweep would skip exactly the repeat-build case that
+    # accumulates fastest. Removing by tag untags only what matched and lets
+    # Docker free the image with its last tag; deduping would be wrong here.
+    STALE=(); UNPARSED=0
+    while IFS=$'\t' read -r tag created; do
+        [ -n "$tag" ] || continue
+        [[ "$tag" =~ $PR_IMAGE_RE ]] || continue
+        # CreatedAt renders as "<date> <time> <offset> <zone-name>". Take only
+        # the first three fields: the zone NAME varies with the daemon's TZ and
+        # date(1) cannot parse it, while the numeric offset is unambiguous.
+        built=$(date -d "$(printf '%s' "$created" | awk '{print $1, $2, $3}')" +%s 2>/dev/null) || {
+            UNPARSED=$((UNPARSED + 1)); continue
+        }
+        [ "$built" -lt "$CUTOFF" ] && STALE+=("$tag")
+    done < <(printf '%s\n' "$IMAGES")
+
+    # Never let a parse failure masquerade as "nothing to collect".
+    [ "$UNPARSED" -eq 0 ] \
+        || log "$C: WARNING -- $UNPARSED image timestamp(s) unparseable, those images were not considered"
 
     if [ "${#STALE[@]}" -ne 0 ]; then
         # No -f: an image still referenced by a container must survive. rmi
-        # reports per-image errors and removes the rest, which is exactly the
+        # reports per-tag errors and removes the rest, which is exactly the
         # behavior wanted if a review started since the idle check above.
-        OUT=$(docker exec "$C" docker rmi "${STALE[@]}" 2>&1 | tail -1)
-        log "$C: removed ${#STALE[@]} stale per-PR image(s) -- ${OUT:-no output}"
+        RMI=$(docker exec "$C" docker rmi "${STALE[@]}" 2>&1)
+        # Report what actually went, not what was attempted.
+        UNTAGGED=$(printf '%s\n' "$RMI" | grep -c '^Untagged:')
+        log "$C: ${#STALE[@]} stale per-PR tag(s) selected, $UNTAGGED untagged"
+        ERRS=$(printf '%s\n' "$RMI" | grep -i '^error' | tail -1)
+        [ -z "$ERRS" ] || log "$C: rmi reported errors -- $ERRS"
     else
         log "$C: no per-PR images older than ${PRUNE_HOURS}h"
     fi
 
     # Dangling layers only — deliberately NOT `-a`, per the header note.
-    docker exec "$C" docker image prune -f >/dev/null 2>&1
+    DANGLING=$(docker exec "$C" docker image prune -f 2>&1 | tail -1)
     # BuildKit's until= DOES key off last use, unlike the image filter, so the
     # age window means what it says here. Build cache is a first-class consumer
-    # in a sandbox that rebuilds ~4 GB of scenario stacks per PR.
-    docker exec "$C" docker builder prune -f --filter "until=${PRUNE_HOURS}h" >/dev/null 2>&1
+    # in a sandbox that rebuilds ~4 GB of scenario stacks per PR, so its
+    # reclaimed total belongs in the journal rather than /dev/null.
+    BUILDER=$(docker exec "$C" docker builder prune -f --filter "until=${PRUNE_HOURS}h" 2>&1 | tail -1)
+    log "$C: dangling -- ${DANGLING:-no output}; build cache -- ${BUILDER:-no output}"
 
     # Re-check idle immediately before the volume sweep. The image work above
     # runs for minutes on a backlogged sandbox and review-loop.sh polls

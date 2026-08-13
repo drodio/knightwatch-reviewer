@@ -5,7 +5,10 @@ Description=Plow PR reviewer — prune stale per-PR images inside the dind sandb
 # alone it lands before any dind container exists, finds nothing to prune, and
 # burns the catch-up tick it was scheduled for.
 After=docker.service knightwatch-reviewer.service
-Wants=docker.service
+# Wants= both: After= alone is a no-op when the named unit isn't already being
+# pulled into the same boot transaction. Ordering without the dependency edge
+# would silently degrade to no ordering at all.
+Wants=docker.service knightwatch-reviewer.service
 
 [Service]
 Type=oneshot

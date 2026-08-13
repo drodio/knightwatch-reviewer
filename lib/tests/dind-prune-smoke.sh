@@ -39,15 +39,29 @@ knightwatch-reviewer-reviewer-1-1	reviewer-1
 plow-db-1	db
 HOSTPS
 
-# Nested image inventory. Only stale-per-PR (aaa111) is collectable:
-#   bbb222 — per-PR but built inside the window (a live /babysit-pr loop)
-#   ccc333/ddd444 — base images, Created months ago, no __<digits>- in the repo
+# Nested image inventory, as repo:tag + CreatedAt. Collectable: the two stale
+# per-PR tags only.
+#   __950 / __951 — a cache-hit twin pair. Identical build context yields ONE
+#                   image id under two tags; selecting by id and deduping would
+#                   collapse them and then fail rmi outright ("referenced in
+#                   multiple repositories, must be forced"), which is why
+#                   selection is by tag. Both must be untagged.
+#   __962         — per-PR but built inside the window (a live /babysit-pr loop)
+#   python/ubuntu — base images, Created months ago, no __<digits>- in the repo
 cat > "$d/images" <<IMAGES
-aaa111	cncorp_plow__950-scenarios-plow-api	$OLD_DATE
-bbb222	cncorp_plow__962-scenarios-plow-api	$NEW_DATE
-ccc333	python	$OLD_DATE
-ddd444	ubuntu	$OLD_DATE
+cncorp_plow__950-scenarios-plow-api:latest	$OLD_DATE
+cncorp_plow__951-scenarios-plow-api:latest	$OLD_DATE
+cncorp_plow__962-scenarios-plow-api:latest	$NEW_DATE
+python:3.12-slim	$OLD_DATE
+ubuntu:24.04	$OLD_DATE
 IMAGES
+
+# Zone NAME varies with the daemon's TZ and date(1) cannot parse it; only the
+# numeric offset is portable. A row that still won't parse must be counted and
+# surfaced, never silently dropped into a clean all-clear.
+cat > "$d/images-badtime" <<BADTIME
+cncorp_plow__950-scenarios-plow-api:latest	not-a-timestamp
+BADTIME
 
 cat > "$d/bin/docker" <<STUB
 #!/bin/bash
@@ -67,7 +81,9 @@ if [ "\$1" = exec ]; then
                 [ "\$n" -gt 1 ] && echo deadbeefcafe
             fi
             exit 0 ;;
-        "images --format") cat "$d/images"; exit 0 ;;
+        "images --format")
+            [ -n "\${IMAGES_FAIL:-}" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+            cat "\${IMAGES_FIXTURE:-$d/images}"; exit 0 ;;
     esac
     exit 0
 fi
@@ -87,10 +103,15 @@ run_prune() { : > "$CALLS"; : > "$d/dind-prune.log"; STATE_DIR="$d" bash "$SCRIP
 echo "  (a) collects stale per-PR images, keeps base + in-window images..."
 run_prune || fail "(a) clean run exited non-zero"
 
-grep -q "rmi.*aaa111" "$CALLS" || fail "(a) stale per-PR image aaa111 was not removed"
-grep -q "rmi.*bbb222" "$CALLS" && fail "(a) removed bbb222, a per-PR image still inside the ${PRUNE_HOURS:-168}h window"
-grep -q "rmi.*ccc333" "$CALLS" && fail "(a) removed python base image — the Created-vs-pulled inversion is back"
-grep -q "rmi.*ddd444" "$CALLS" && fail "(a) removed ubuntu base image — the Created-vs-pulled inversion is back"
+grep -q "rmi.*__950" "$CALLS" || fail "(a) stale per-PR tag __950 was not removed"
+grep -q "rmi.*__951" "$CALLS" || fail "(a) cache-hit twin __951 was not removed — id-dedupe regression"
+grep -q "rmi.*__962" "$CALLS" && fail "(a) removed __962, a per-PR image still inside the window"
+grep -q "rmi.*python" "$CALLS" && fail "(a) removed python base image — the Created-vs-pulled inversion is back"
+grep -q "rmi.*ubuntu" "$CALLS" && fail "(a) removed ubuntu base image — the Created-vs-pulled inversion is back"
+
+# Both twins must ride in ONE rmi call, by tag, with no id-dedupe collapsing them.
+grep -qE "rmi .*__950.*__951|rmi .*__951.*__950" "$CALLS" \
+    || fail "(a) cache-hit twins were not passed together as tags"
 
 # The regression guard proper: no code path may reintroduce the blanket sweep.
 grep -qE "image prune.*-a|image prune.*--all" "$CALLS" \
@@ -101,6 +122,12 @@ grep -q "image prune -f" "$CALLS" || fail "(a) dangling-layer prune never ran"
 # unqualified form reclaims nothing.
 grep -q "volume prune -af" "$CALLS" || fail "(a) volume prune did not use -a (named volumes would be missed)"
 grep -q "builder prune" "$CALLS"    || fail "(a) BuildKit cache never pruned"
+
+# Every reclaim phase must report into the journal — a muted phase turns a
+# failed prune into a green tick.
+grep -q "dangling --"    "$d/dind-prune.log" || fail "(a) dangling prune result never logged"
+grep -q "build cache --" "$d/dind-prune.log" || fail "(a) builder prune result never logged"
+grep -q "volumes --"     "$d/dind-prune.log" || fail "(a) volume prune result never logged"
 echo "  PASS"
 
 # --- (b) only ^dind services are targeted -----------------------------------
@@ -156,5 +183,23 @@ grep -q "exec knightwatch-reviewer-dind-1-1 docker volume prune" "$CALLS" \
     && fail "(f) volume-pruned a sandbox that turned busy mid-run — the TOCTOU re-check is missing"
 echo "  PASS"
 
+# --- (g) a failing image list is not a clean all-clear ----------------------
+echo "  (g) unlistable images skip the sandbox loudly..."
+IMAGES_FAIL=1 run_prune || fail "(g) run exited non-zero"
+grep -q "cannot list images" "$d/dind-prune.log" || fail "(g) image-list failure never surfaced"
+grep -q "no per-PR images older than" "$d/dind-prune.log" \
+    && fail "(g) reported a clean all-clear despite being unable to list images"
+grep -q "docker rmi" "$CALLS" && fail "(g) attempted removals from an unlistable sandbox"
+grep -q "volume prune" "$CALLS" && fail "(g) volume-pruned a sandbox it could not list"
+echo "  PASS"
+
+# --- (h) unparseable timestamps are counted, not swallowed ------------------
+echo "  (h) unparseable image timestamps are surfaced..."
+IMAGES_FIXTURE="$d/images-badtime" run_prune || fail "(h) run exited non-zero"
+grep -q "WARNING -- 1 image timestamp" "$d/dind-prune.log" \
+    || fail "(h) unparseable timestamp was silently dropped"
+grep -q "rmi" "$CALLS" && fail "(h) removed an image whose age could not be established"
+echo "  PASS"
+
 echo ""
-echo "PASS (6 checks)"
+echo "PASS (8 checks)"
