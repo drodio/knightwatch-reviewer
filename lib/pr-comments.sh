@@ -60,9 +60,23 @@ _pr_comments_from_json() {
 
     # One definition of "human (non-bot), chronological comments" the thread
     # derives from, so the trust/filter contract has a single home.
+    # Auto-post marker matched on the FIRST non-blank line, not body-wide.
+    # Every auto-post producer leads with it (lib/bootstrap.sh states that
+    # contract), so anchoring drops exactly the bot's own posts — while a
+    # human who quote-replies a bot review keeps their comment, marker in the
+    # quoted text and all. Body-wide containment dropped those humans from the
+    # thread entirely, which broke the promise the untrusted-requester notice
+    # makes to the very maintainer being asked to vouch: "any framing after it
+    # is kept and shapes the review" (#221).
+    #
+    # The trigger marker stays body-wide, deliberately. That producer is the
+    # exception to the marker-first contract — the re-request bridge leads with
+    # the command so the orchestrator still dispatches — so anchoring cannot
+    # see it, and its attribution note must never be staged as operator prose.
     local base
     base=$(printf '%s' "$raw" | jq -c --arg marker "$marker" --arg tmarker "$trigger_marker" \
-        '[.[] | select((.body | contains($marker) | not) and (.body | contains($tmarker) | not))] | sort_by(.created_at)')
+        "$JQ_FIRSTLINE"'[.[] | select(((.body | firstline_is($marker)) | not)
+                       and (.body | contains($tmarker) | not))] | sort_by(.created_at)')
 
     # Channel 1: human thread, restricted to TRUSTED commenters. Untrusted
     # (drive-by, non-push-access) prose must never reach the

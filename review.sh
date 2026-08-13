@@ -65,6 +65,20 @@ if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKER
 # eligible-PR queue under the election flock; every container consumes it.
 . "$REVIEWER_LIB_DIR/queue.sh"
 ENUMERATE_SECS="${ENUMERATE_SECS:-60}"
+# Idempotency key for the "author has no push access" notice. Distinct from
+# BOT_AUTO_POST_MARKER, which rides every bot post and so cannot identify it.
+UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice -->"
+# `asks` — does this comment REQUEST a review? The command must be the FIRST
+# non-blank line, matching poll-pr-actions.sh's is_approve_request: anchoring to
+# any line would let a comment that merely *names* the command — prose ("don't
+# use /<prefix>-review yet"), a fenced example, a quoted runbook — authorize a
+# review of an untrusted author's diff. Framing after the command is kept and
+# shapes the review. CRLF-normalized first because GitHub's web UI returns
+# \r\n, which would otherwise leave a \r before the terminator on every line
+# but the last.
+# `asks` itself lives in JQ_FIRSTLINE (lib/gh-comments.sh); it takes a string,
+# so the selectors below pipe .body into it.
+JQ_ASKS="$JQ_FIRSTLINE"'def asks_body(cmd): (.body | asks(cmd));'
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -119,6 +133,8 @@ refresh_queue() {
     # (jq '.[]' on [] emits nothing), and the single tail write handles the
     # 0-eligible case — one writer, not two copies of the same empty write.
     local PR_JSON REPO PR_NUM PR_TITLE PR_BRANCH PR_SHA PR_ID
+    local PR_AUTHOR AUTHOR_TRUST_RC AUTHOR_TRUSTED REQUESTER_TRUSTED _cand _cand_rc
+    local VOUCH_INDETERMINATE NOTICED_ALREADY NOTICE_ERR REQUESTER_LOGIN
     local TICK_FETCHED_AT_ISO REPO_SLUG_FOR_GATE KNOWN_SHA
     local FORCE_REVIEW FORCE_WHOLE_PR TRIGGER_USER TRIGGER_BODY
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
@@ -132,6 +148,7 @@ refresh_queue() {
         PR_BRANCH=$(echo "$PR_JSON" | jq -r '.headRefName')
         PR_SHA=$(echo "$PR_JSON" | jq -r '.headRefOid')
         PR_UPDATED_AT=$(echo "$PR_JSON" | jq -r '.updatedAt // ""')
+        PR_AUTHOR=$(echo "$PR_JSON" | jq -r '.author.login // ""')
         PR_ID="${REPO}#${PR_NUM}"
 
         # In-flight guard: skip a PR whose review is already running. Eligibility
@@ -188,17 +205,41 @@ refresh_queue() {
         SEEN_UPDATED_FILE="$STATE_DIR/seen-updated/${REPO_SLUG_FOR_GATE}__${PR_NUM}"
         LAST_SEEN_UPDATED_AT=""
         [ -f "$SEEN_UPDATED_FILE" ] && LAST_SEEN_UPDATED_AT=$(cat "$SEEN_UPDATED_FILE")
-        if [ -n "$KNOWN_SHA" ] && [ "$PR_SHA" = "$KNOWN_SHA" ] \
-            && [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
+        # The watermark is written ONLY on paths that decided "nothing to
+        # dispatch", so a watermark equal to the current updatedAt already means
+        # "this exact state was fully evaluated and needed nothing" — which makes
+        # the SHA comparison this gate used to carry redundant. Dropping it is
+        # what lets the gate cover an UNREVIEWABLE PR too: such a PR never gets a
+        # KNOWN_SHA (the worker exits above allocate_run_dir, deliberately —
+        # #189), so it was re-enumerated and trust-checked every ~30s forever.
+        if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
             continue
         fi
+
+        # Author trust, derived once per surviving PR and passed to the worker
+        # rather than re-derived there. Below the idle-skip on purpose: a gate
+        # that needed trust to decide could not save the trust call, and that
+        # call is one uncached core-API request per PR per tick per container.
+        is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_TRUST_RC=$?
+        # Tri-state (lib/auth.sh): 0 trusted, 1 untrusted, 2 INDETERMINATE. An
+        # indeterminate result must never collapse to "untrusted" — that would
+        # drop a genuinely-trusted author's PR on a throttled lookup.
+        if [ "$AUTHOR_TRUST_RC" -eq 2 ]; then
+            log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
+            continue
+        fi
+        AUTHOR_TRUSTED=false; [ "$AUTHOR_TRUST_RC" -eq 0 ] && AUTHOR_TRUSTED=true
 
         FORCE_REVIEW=false
         FORCE_WHOLE_PR=false
         TRIGGER_USER=""
         TRIGGER_BODY=""
 
-        if [ -n "$KNOWN_SHA" ]; then
+        # `|| untrusted`: a vouch is a trigger on a never-reviewed PR, so without
+        # this the override could never be seen — the comment carrying it would
+        # never be read. The idle-skip above keeps it cheap: an unreviewable PR is
+        # only re-read when its updatedAt moves, which is when a vouch arrives.
+        if [ -n "$KNOWN_SHA" ] || [ "$AUTHOR_TRUSTED" != true ]; then
             # Cutoff timestamp sources from runs/ (meta.json.started_at)
             # — single source of truth since state.json was retired in
             # PR #38. started_at is stamped at run init (line ~165 of
@@ -216,26 +257,27 @@ refresh_queue() {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # Exclude the bot's own auto-posts (review ack, final review,
-            # learn-from-replies acks, and the usage footer that appears on
-            # every review and itself contains the slash commands) by
-            # matching the hidden HTML-comment marker every auto-post
-            # template prepends. The earlier `.user.login != $user` filter
-            # (e1d91a0) over-excluded: in single-account deployments
-            # BOT_USER is the human's own GH identity, so user-based
-            # filtering also drops legitimate slash-command comments the
-            # human posts.
+            # The bot's own auto-posts can't self-trigger: every producer
+            # leads with BOT_AUTO_POST_MARKER (the contract in
+            # lib/bootstrap.sh) and `asks` reads only the first non-blank line.
             #
-            # Two slash commands; substring tests are sufficient because
-            # the strings are disjoint (neither contains the other as a
-            # substring). Whole-PR check excludes /srosro-update-review so
-            # the longer command doesn't accidentally satisfy both paths.
+            # Do NOT add a body-wide `contains($mark)` conjunct. It was removed
+            # deliberately — redundant against every real producer, and it
+            # dropped genuine requests whose author quoted a bot review below
+            # their command (#221). VOUCH_MATRIX row 7700 catches its return.
+            # No author filter either: BOT_USER is the operator's own identity
+            # in a single-account deploy, so filtering it drops their real
+            # commands (the `.user.login != $user` filter e1d91a0 removed).
+            #
+            # /<prefix>-review and /<prefix>-update-review are disjoint by
+            # construction: one line is evaluated and the terminator class
+            # rejects the `-`, so no exclusion clause is needed.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-review"))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
-                jq --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | length')
+                jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-update-review"))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -250,12 +292,12 @@ refresh_queue() {
             if [ "$FORCE_REVIEW" = "true" ]; then
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-review"; "i")) and ((.body | test("/" + $cmd_prefix + "-update-review"; "i")) | not))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
-                        jq -c --arg since "$REVIEWED_AT_ISO" --arg mark "$BOT_AUTO_POST_MARKER" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            '[.[] | select((.body | contains($mark) | not) and .created_at > $since and (.body | test("/" + $cmd_prefix + "-update-review"; "i")))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                        jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -382,8 +424,9 @@ $BOT_DECLINE_MARKER
                     jq --arg since "$REVIEWED_AT_ISO" --arg header "$DECLINE_HEADER" --arg bot "$BOT_USER" \
                         '[.[] | select(.user.login == $bot and (.body | startswith($header)) and .created_at > $since)] | length')
                 if [ "${DECLINED_ALREADY:-0}" -eq 0 ]; then
-                    # Carries BOT_AUTO_POST_MARKER too, so the trigger filters
-                    # above already exclude it — the decline can't self-trigger.
+                    # Leads with BOT_AUTO_POST_MARKER, so `asks` — which reads
+                    # only the first non-blank line — can't read the decline as
+                    # a request; it cannot self-trigger.
                     # Capture gh's stderr rather than /dev/null'ing it (same
                     # contract as fetch_issue_comments): a locked/archived PR or
                     # an abuse-limit 403 would otherwise fail every tick behind
@@ -447,6 +490,130 @@ This request stays open and fires automatically on your next push. To force a wh
             fi
         fi
 
+        # Requester trust — ONE value decides whether this PR is reviewed at
+        # all. Opening the PR is the author's implicit request; a
+        # /<prefix>-review from a push-access user is an additional one.
+        #
+        # OR over that set, never "latest wins": an untrusted drive-by must not
+        # suppress a trusted author's review, nor nullify a maintainer's vouch.
+        #
+        # Scanned over the WHOLE thread rather than post-cutoff comments. A
+        # trigger is one-shot, consumed by the review it causes; a vouch is a
+        # standing statement about the AUTHOR (the operator's ruling on #222),
+        # so it covers later heads too. Execution stays keyed to author trust —
+        # a vouch unlocks reading, never running.
+        #
+        # /<prefix>-update-review is NOT a vouch (README says so): it asks for
+        # one incremental pass, and treating it as standing would let a
+        # one-time "check what changed" admit that author's later heads
+        # forever. The incremental TRIGGER selectors still honor it.
+        #
+        # FORCE_REVIEW is NOT consulted: it comes from comment text with no
+        # permission check, so gating on it would let an author self-vouch.
+        #
+        # Only asked when it can change the answer — a trusted author is
+        # already a trusted requester.
+        REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
+        # WHO asked, not merely that someone did — the worker re-verifies this
+        # login at admission, because the queue can wait and push access can be
+        # revoked in the gap. The author is the implicit requester when trusted.
+        REQUESTER_LOGIN="$PR_AUTHOR"
+        if [ "$REQUESTER_TRUSTED" != true ]; then
+            VOUCH_INDETERMINATE=false
+            while IFS= read -r _cand; do
+                [ -n "$_cand" ] || continue
+                is_trusted_repo_author "$REPO" "$_cand"; _cand_rc=$?
+                if [ "$_cand_rc" -eq 0 ]; then REQUESTER_TRUSTED=true; REQUESTER_LOGIN="$_cand"; break; fi
+                # rc=2 is "could not verify", never "not a voucher" — the same
+                # rule the author and trigger-prose checks state explicitly.
+                # Collapsing it here is worse than a plain miss: the drop below
+                # also WATERMARKS, so one 403 would suppress a genuinely-vouched
+                # PR until its next updatedAt event, silently, with the notice
+                # already posted.
+                [ "$_cand_rc" -eq 2 ] && VOUCH_INDETERMINATE=true
+            # Distinct logins so one user repeating the command costs one call.
+            #
+            # The auto-TRIGGER marker is excluded, and that is load-bearing.
+            # It is the ONE producer that leads with a command instead of a
+            # marker, so first-line anchoring cannot filter it. Every auto-POST
+            # producer leads with its marker and is filtered by anchoring
+            # alone — which is why no auto-post exclusion appears here. The
+            # re-request bridge (poll-pr-actions.sh) posts a literal
+            # /<prefix>-review under $BOT_USER — which HAS push access — and is
+            # deliberately NOT auto-post marked, because it must still trigger
+            # reviews. GitHub lets a PR author re-request review WITHOUT push
+            # access and rerequest_check applies no author filter, so filtering
+            # on the auto-post marker alone would let a read-only contributor
+            # unlock Codex reading of their own PR with one click.
+            #
+            # Excluded by MARKER, never by author: in a single-account deploy
+            # $BOT_USER is the operator's own identity, so filtering the account
+            # would discard a maintainer's hand-typed vouch.
+            done < <(printf '%s' "${COMMENTS_JSON:-[]}" |
+                jq -r --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
+                      --arg cmd_prefix "$BOT_CMD_PREFIX" \
+                    "$JQ_ASKS"'[.[] | select((.body | contains($trigmark) | not)
+                                   and asks_body($cmd_prefix + "-review"))]
+                     | [.[].user.login] | unique | .[]' 2>/dev/null)
+            if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
+                log "$PR_ID: vouch check deferred — API error; retrying next tick"
+                continue
+            fi
+        fi
+
+        # No trusted requester → not reviewable. Watermark and drop here rather
+        # than queueing a worker that would only skip: that is what makes a
+        # PERMANENT skip cost one evaluation instead of one per tick.
+        if [ "$REQUESTER_TRUSTED" != true ]; then
+            log "$PR_ID: not reviewed — no trusted requester (author @${PR_AUTHOR:-?} has no push access; a maintainer can comment /${BOT_CMD_PREFIX}-review)"
+            # Tell the author once. The skip is permanent and otherwise silent.
+            # Not for bots or ghost accounts: dependabot/renovate/Copilot all
+            # read as "no push access", so without this every dependency-bump PR
+            # fleet-wide gets a comment its author cannot act on.
+            # Empty login (ghost account) would render "@ does not have push
+            # access"; a bot cannot act on the instruction at all.
+            if [ -z "$PR_AUTHOR" ] || is_bot_account "$PR_AUTHOR"; then :; else
+                    # Bound note: this keys on BOT_USER matching the identity the
+                    # token posts as — a repo-wide invariant DECLINED_ALREADY,
+                    # is_approve_request's self-skip and learn-from-replies all
+                    # already rely on. Unlike those, a mismatch here cannot spin:
+                    # the drop below watermarks unconditionally, so the notice can
+                    # re-post at most once per updatedAt change, never per tick.
+                    #
+                    # Keyed on OUR post, not a bare substring: the marker is an
+                    # HTML comment and renders invisible, so a substring test
+                    # would let any drive-by paste it and permanently mute the
+                    # author's only notification. Same shape as DECLINED_ALREADY.
+                    NOTICED_ALREADY=$(printf '%s' "${COMMENTS_JSON:-[]}" |
+                        jq --arg bot "$BOT_USER" --arg mark "$UNTRUSTED_NOTICE_MARKER" \
+                            '[.[] | select(.user.login == $bot and (.body | contains($mark)))] | length' 2>/dev/null)
+                    if [ "${NOTICED_ALREADY:-0}" -eq 0 ]; then
+                        # Capture stderr like the sibling decline POST: this path has
+                        # the same permanent-failure modes (archived/locked PR, lost
+                        # write scope, org comment restrictions, abuse-limit 403) and
+                        # the branch watermarks regardless, so a cause-free line would
+                        # leave an undeliverable notice undiagnosable.
+                        NOTICE_ERR=$(mktemp)
+                        gh api "repos/$REPO/issues/$PR_NUM/comments" --method POST \
+                            -f body="${BOT_AUTO_POST_MARKER}${UNTRUSTED_NOTICE_MARKER}
+Not reviewed — @${PR_AUTHOR} does not have push access to this repository, so this reviewer will not read or run the PR.
+
+A maintainer with push access can unblock it by posting \`/${BOT_CMD_PREFIX}-review\` as the **first line** of a comment (any framing after it is kept and shapes the review). The review then runs against the diff only; the PR's code is still never executed." >/dev/null 2>"$NOTICE_ERR" \
+                            || log "$PR_ID: could not post the no-push-access notice: $(tr '\n' ' ' < "$NOTICE_ERR" 2>/dev/null | head -c 400)"
+                        rm -f "$NOTICE_ERR"
+                    fi
+            fi
+            # Watermarked whether or not the POST landed — same policy as the
+            # sibling decline POST (scenario 7d): a permanent failure would
+            # otherwise re-POST every tick forever, feeding the rate limit this
+            # branch exists to stop.
+            if [ -n "$PR_UPDATED_AT" ]; then
+                mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
+                printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"
+            fi
+            continue
+        fi
+
         # Capture the trigger comment BODY into the spec (not a tmp file) so
         # any consuming container can materialize .codex-scratch/trigger-comment.md
         # locally at dispatch. The trust gate already cleared TRIGGER_BODY to ""
@@ -457,8 +624,10 @@ This request stays open and fires automatically on your next push. To force a wh
             --argjson force "$([ "$FORCE_WHOLE_PR" = true ] && echo true || echo false)" \
             --arg tuser "$TRIGGER_USER" --arg tbody "$TRIGGER_BODY" \
             --arg tick "$TICK_FETCHED_AT_ISO" \
+            --arg rlogin "$REQUESTER_LOGIN" \
             '{repo:$repo, pr_num:$pr_num, sha:$sha, branch:$branch, title:$title,
-              force_whole_pr:$force, trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
+              force_whole_pr:$force, requester_login:$rlogin,
+              trigger_user:$tuser, trigger_body:$tbody, tick_at:$tick}')
         specs+=("$spec")
     done < <(echo "$ALL_PRS" | jq -c '.[]')
 
@@ -496,6 +665,7 @@ consume_queue() {
         PR_SHA=$(jq -r '.sha' <<<"$spec");          PR_BRANCH=$(jq -r '.branch' <<<"$spec")
         PR_TITLE=$(jq -r '.title' <<<"$spec");      FORCE_WHOLE_PR=$(jq -r '.force_whole_pr' <<<"$spec")
         TRIGGER_USER=$(jq -r '.trigger_user' <<<"$spec"); TRIGGER_BODY=$(jq -r '.trigger_body' <<<"$spec")
+        REQUESTER_LOGIN=$(jq -r '.requester_login // empty' <<<"$spec")
         TICK_FETCHED_AT_ISO=$(jq -r '.tick_at' <<<"$spec"); TRIGGER_FILE=""
 
         # Throttle to MAX_CONCURRENT in-flight workers per tick.
@@ -548,7 +718,8 @@ consume_queue() {
         REVIEWER_LIB_DIR="$REVIEWER_LIB_DIR" \
         WORKER_DEADLINE_EPOCH="$(( $(date +%s) + worker_secs ))" \
             timeout -k "$WORKER_KILL_AFTER" "$WORKER_TIMEOUT" "$REVIEWER_LIB_DIR/review-one-pr.sh" \
-            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" &
+            "$REPO" "$PR_NUM" "$PR_SHA" "$PR_BRANCH" "$PR_TITLE" "$FORCE_WHOLE_PR" \
+            "$REQUESTER_LOGIN" &
         active=$((active + 1)); dispatched=$((dispatched + 1))
     done < <(jq -c '.[]' <<<"$specs")
 

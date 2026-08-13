@@ -39,8 +39,13 @@ CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
 # slash command (case-insensitive). The bot's own review footer mentions
 # this command but BOT_USER posts hit the LAST_OUR_TS branch above and
 # never reach this check, so the footer can't self-trigger.
+# `case`, not `printf | grep -qiF`: grep -q exits on first match while printf
+# may still be writing, and this file sets pipefail — the resulting SIGPIPE
+# (141) reads as "not a memorize request", silently dropping the lesson on a
+# long comment. Same trap as poll-pr-actions.sh's marker filter. Lowercased
+# rather than -i so the match stays case-insensitive.
 is_memorize_request() {
-    printf '%s' "$1" | grep -qiF "/${BOT_CMD_PREFIX}-memorize"
+    case "${1,,}" in *"/${BOT_CMD_PREFIX,,}-memorize"*) return 0 ;; *) return 1 ;; esac
 }
 
 # Honor the GitHub rate-limit pause, like review-loop.sh and poll-pr-actions.sh.
@@ -117,9 +122,7 @@ for REPO in "${REPOS[@]}"; do
                 # Defensive: trust gate below would catch most bots (no
                 # push access), but keep the explicit *[bot]/Copilot
                 # filter as a cheap pre-check before the API call.
-                case "$USER" in
-                    *"[bot]"|"Copilot"|"copilot") continue ;;
-                esac
+                is_bot_account "$USER" && continue
                 # Cheap body filter first — skip the trust API call for
                 # any reply that isn't an explicit memorize request.
                 if ! is_memorize_request "$BODY"; then

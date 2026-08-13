@@ -46,6 +46,31 @@ export STATE_FILE="$STATE_DIR/state.json"
 export LOG_FILE="$STATE_DIR/orchestrator.log"
 export COMMENT_FETCH_LOG="$STATE_DIR/comment-fetch.log"
 export COMMENT_POST_LOG="$STATE_DIR/comment-post.log"
+
+# Producer-side contract (lib/bootstrap.sh): every bot auto-post must LEAD with
+# the auto-post marker and must never lead with a slash command. With no
+# body-wide containment filter left, first-line anchoring is the entire
+# self-trigger defense, so this asserts it against what was actually POSTed.
+# The stub writes "POST <body>"; a multi-line body spills onto following lines,
+# so each `^POST ` line IS some post's first line.
+#
+# The literal, not an inherited env var: BOT_AUTO_POST_MARKER is not set in this
+# smoke's shell, so "POST $BOT_AUTO_POST_MARKER" would degrade to "POST " —
+# matching every post, filtering everything out, and passing unconditionally.
+# It did exactly that on first writing. Guarded so it cannot recur.
+SMOKE_AUTO_POST_MARKER="<!-- knightwatch-reviewer:auto-post -->"
+
+assert_posts_lead_with_marker() {
+    local scenario="$1" bad
+    [ -n "$SMOKE_AUTO_POST_MARKER" ] || { echo "FATAL: SMOKE_AUTO_POST_MARKER empty — this assertion would pass unconditionally"; exit 1; }
+    bad=$(grep '^POST ' "$COMMENT_POST_LOG" 2>/dev/null | grep -vF "POST $SMOKE_AUTO_POST_MARKER" || true)
+    if [ -n "$bad" ]; then
+        echo "FAIL $scenario: a bot post does not lead with the auto-post marker — first-line anchoring cannot filter it, so it can self-trigger"
+        printf '%s\n' "$bad" | cut -c1-120
+        exit 1
+    fi
+}
+export PERMISSION_CALL_LOG="$STATE_DIR/permission-call.log"
 export REPOS_DIR="$STATE_DIR/repos"
 export WORKDIRS_DIR="$STATE_DIR/workdirs"
 mkdir -p "$STATE_DIR" "$REPOS_DIR" "$WORKDIRS_DIR"
@@ -106,7 +131,8 @@ if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
         # are thus unaffected by the gate. The idle-skip scenarios override
         # MOCK_PR_UPDATED_AT to a fixed value to exercise the gate.
         upd="${MOCK_PR_UPDATED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ).$RANDOM}"
-        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\"}]"
+        auth="${MOCK_PR_AUTHOR:-${BOT_USER:-someuser}}"
+        echo "[{\"number\":1,\"title\":\"Test PR\",\"headRefName\":\"feat/test\",\"headRefOid\":\"abc123\",\"updatedAt\":\"$upd\",\"author\":{\"login\":\"$auth\"}}]"
     else
         echo '[]'
     fi
@@ -139,7 +165,10 @@ elif [ "$1" = "api" ]; then
             # since a failed POST is not retried this round (scenario 7d) — is
             # exercised rather than assumed.
             if [ -n "${MOCK_POST_RC:-}" ]; then
-                echo "gh: HTTP 403: simulated-abuse-limit" >&2
+                # Multi-line on purpose: gh's real errors wrap, and a caller that
+                # does not newline-normalize would break the one-line-per-event
+                # log format. A single-line stub makes that invisible.
+                printf 'gh: HTTP 403: simulated-abuse-limit\nsecond line of the error\n' >&2
                 exit "$MOCK_POST_RC"
             fi
             echo '{"id":1}'
@@ -175,12 +204,32 @@ elif [ "$1" = "api" ]; then
         # regression that leaks through doesn't hang on a missing stub.
         echo "2020-01-01T00:00:00Z"
     elif [[ "$url" == */collaborators/*/permission ]]; then
+        # Count permission lookups: an unreviewable PR's per-tick cost is one
+        # uncached core-API call, and asserting only on comment-fetches would
+        # leave that half invisible.
+        [ -n "${PERMISSION_CALL_LOG:-}" ] && echo "PERM $url" >> "$PERMISSION_CALL_LOG"
         # Opt-in: simulate a 403 rate-limit on the permission check → an
         # INDETERMINATE trust result (rc=2). Default unset → normal path below.
+        # The error TEXT is configurable because it decides a SECOND effect: a
+        # rate-limit message routes through gh_note_rate_limit and stamps the
+        # fleet-wide pause, which then blocks every later gh call this tick —
+        # including the comment fetch. A scenario testing the trust tri-state
+        # alone must use a non-rate-limit failure, or it silently tests the pause.
         if [ -n "${MOCK_PERMISSION_RC:-}" ]; then
-            echo "gh: HTTP 403: API rate limit exceeded (simulated)" >&2
+            echo "${MOCK_PERMISSION_ERR:-gh: HTTP 403: API rate limit exceeded (simulated)}" >&2
             exit "$MOCK_PERMISSION_RC"
         fi
+        user="${url##*/collaborators/}"
+        user="${user%/permission}"
+        # Per-user indeterminate. MOCK_PERMISSION_RC is all-or-nothing, which
+        # cannot isolate the vouch scan: a global failure makes the AUTHOR lookup
+        # indeterminate too and defers before any voucher is consulted.
+        for indet in ${MOCK_INDETERMINATE_USERS:-}; do
+            if [ "$user" = "$indet" ]; then
+                echo "gh: HTTP 418: unverifiable (simulated)" >&2
+                exit 1
+            fi
+        done
         # Extract the username segment between "collaborators/" and "/permission".
         user="${url##*/collaborators/}"
         user="${user%/permission}"
@@ -315,6 +364,7 @@ run_orchestrator() {
     : > "$LOG_FILE"   # reset
     : > "$COMMENT_FETCH_LOG"
     : > "$COMMENT_POST_LOG"
+    : > "$PERMISSION_CALL_LOG"
     # Each scenario models an independent tick, so stop-state must not leak
     # between them: a scenario whose stub 403s with rate-limit wording correctly
     # stamps the shared pause, which would then make every later scenario's
@@ -339,6 +389,7 @@ run_orchestrator() {
 assert_decline_posts() {
     local expected="$1" label="$2" n
     n=$(grep -c 'already-reviewed' "$COMMENT_POST_LOG" || true)
+    assert_posts_lead_with_marker "decline post"
     [ "$n" -eq "$expected" ] && return
     echo "FAIL $label: expected $expected decline POST(s), got $n"
     echo "--- posts ---"; cat "$COMMENT_POST_LOG"
@@ -457,9 +508,15 @@ fi
 # carries the auto-post marker → no dispatch. The bot's own posted review
 # comments prepend `<!-- knightwatch-reviewer:auto-post -->` to the body
 # AND the usage footer always names the slash commands literally; the
-# orchestrator excludes any comment containing that marker so a successful
-# review doesn't re-trigger itself on the next tick.
-echo "  scenario 4: same SHA + auto-post marker in body (self-trigger filter)..."
+# marker sits on the body's FIRST line, so first-line anchoring makes `asks`
+# false and a successful review cannot re-trigger itself on the next tick.
+#
+# There is no longer a body-wide `contains(marker)` exclusion backing this up,
+# and that removal is the point: it was redundant against every real producer
+# (all of them emit the marker first) while silently dropping genuine requests
+# whose author quoted a bot post below their command — #221. Anchoring alone
+# carries it, which is what this scenario now asserts.
+echo "  scenario 4: bot's own auto-post cannot self-trigger (marker on line 1)..."
 printf '[{"created_at":"%s","user":{"login":"%s"},"body":"<!-- knightwatch-reviewer:auto-post -->\\n/srosro-review"}]\n' "$NOW_ISO" "$BOT_USER" > "$MOCK_COMMENTS_FILE"
 run_orchestrator
 n=$(count_dispatches)
@@ -561,7 +618,11 @@ fi
 echo "  scenario 6b: same SHA + /srosro-review under indeterminate trust (403) → defer, no dispatch, no watermark..."
 rm -f "$STATE_DIR/seen-updated/cncorp_plow__1"   # clear any residue so the assertion is decisive
 printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-review"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-MOCK_PERMISSION_RC=1 run_orchestrator
+# HTTP 418, not the default 403: a 403 stamps the fleet pause, which blocks the
+# comment fetch and skips the PR before the trigger is read — the scenario would
+# pass on the wrong branch. It also dodges 5xx, which GH_API_TRANSIENT_RE
+# matches — gh_retry would retry that, burning the budget for no signal.
+MOCK_PERMISSION_RC=1 MOCK_PERMISSION_ERR="gh: HTTP 418: unverifiable (simulated)" run_orchestrator
 n=$(count_dispatches)
 if [ "$n" -ne 0 ]; then
     echo "FAIL scenario 6b: expected 0 dispatches under indeterminate trust (defer), got $n"
@@ -679,6 +740,15 @@ printf '[{"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-update-r
 MOCK_POST_RC=1 run_orchestrator
 if ! grep -q 'simulated-abuse-limit' "$LOG_FILE"; then
     echo "FAIL scenario 7d (opaque failure): the POST's stderr cause must reach the log, not /dev/null"
+    echo "--- log ---"; cat "$LOG_FILE"
+    exit 1
+fi
+# gh's real errors wrap, so the cause must be flattened onto ONE line — this is
+# what review.sh's `tr '\n' ' '` on DECLINE_ERR buys. The stub emits multi-line
+# stderr precisely so this is observable; without the assertion the tr is
+# unfenced and a stray newline splits one event across two log lines.
+if ! grep -q 'simulated-abuse-limit second line of the error' "$LOG_FILE"; then
+    echo "FAIL scenario 7d (multi-line cause): a wrapped gh error was not flattened onto one log line"
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
@@ -1228,5 +1298,346 @@ if [ "$n" -ne 1 ]; then
     echo "--- log ---"; cat "$LOG_FILE"
     exit 1
 fi
+
+# ===================== Requester trust (RT*) =====================
+# Requester trust is unconditional: REVIEW.md records the host reviewer as
+# retired (units deleted), so the containerized loop is the only review path and
+# a mode branch here would describe something that cannot run.
+
+# --- RT1: who counts as a trusted requester. All rows share one arrange/act —
+# seed a thread, run a tick against an UNTRUSTED author, read the spec — and
+# differ only in the thread and the verdict, so they are one table.
+#   trusted rows also assert author_trusted stays false: reading is unlocked,
+#     running never is.
+#   none rows also assert a watermark exists — "no spec" alone passes vacuously
+#     whenever enumeration breaks for an unrelated reason.
+# Fields: label | comments JSON | MOCK_TRUSTED_USERS | expect (trusted|none)
+VOUCH_MATRIX=(
+  "a maintainer's /srosro-review vouches for a read-only contributor|[{\"id\":7001,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\"}]|$BOT_USER someuser|trusted"
+
+  "an untrusted author cannot self-vouch — FORCE_REVIEW is never a trust signal|[{\"id\":7002,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"stranger\"},\"body\":\"/srosro-review\"}]|$BOT_USER|none"
+
+  "an untrusted reply cannot nullify a vouch — OR over requesters, not latest-wins|[{\"id\":7300,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\"},{\"id\":7301,\"created_at\":\"2026-08-10T03:05:00Z\",\"user\":{\"login\":\"stranger\"},\"body\":\"/srosro-review please?\"}]|$BOT_USER someuser|trusted"
+
+  "prose that merely NAMES the command does not vouch|[{\"id\":8100,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"Please do not use /srosro-review on this yet — the migration is unfinished.\"}]|$BOT_USER someuser|none"
+
+  "a CRLF-typed command still vouches — GitHub's web UI returns \\r\\n|[{\"id\":8200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\r\\n\\r\\nplease look at the auth path\"}]|$BOT_USER someuser|trusted"
+
+  "a fenced EXAMPLE from a push-access collaborator is not a vouch — documenting the command must not authorize a diff|[{\"id\":8500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"To unblock one of these, post:\\n\\n\\u0060\\u0060\\u0060\\n/srosro-review\\n\\u0060\\u0060\\u0060\"}]|$BOT_USER someuser|none"
+
+  "the bot's own notice cannot vouch for the PR it is about|[{\"id\":7200,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice -->\\nNot reviewed — no push access. A maintainer with push access can unblock it by posting /srosro-review as the first line of a comment.\"}]|$BOT_USER|none"
+
+  # The auto-TRIGGER marker exclusion IS load-bearing: unlike every auto-post
+  # producer, the re-request bridge emits the command FIRST and its marker
+  # after, so anchoring alone would read it as a vouch. Drop $trigmark from the
+  # voucher selector and this row goes red.
+  "the re-request bridge's auto-trigger is not a vouch — else a read-only author self-unblocks with one click|[{\"id\":7600,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"$BOT_USER\"},\"body\":\"/srosro-review\\n\\n<sub>auto-posted because a reviewer was re-requested.</sub><!-- knightwatch-reviewer:auto-trigger -->\"}]|$BOT_USER|none"
+
+  # The case the deleted marker guard was breaking (#221): a maintainer types
+  # the command, then quote-replies a bot review below it. The quoted text
+  # carries the auto-post marker, so the old body-wide filter dropped this
+  # silently. First-line anchoring still sees the command. Restore the
+  # `(.body | contains($mark) | not)` conjunct to the voucher selector and this
+  # row goes red — which is the whole argument for removing it.
+  "a vouch still counts when the maintainer quotes a bot review below it|[{\"id\":7700,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-review\\n\\n> <!-- knightwatch-reviewer:auto-post -->\\n> the previous review said this was fine\"}]|$BOT_USER someuser|trusted"
+
+  # Two different mechanisms, despite looking alike — measured, not assumed:
+  #   7800  body is TWO lines; the \v line survives the blank filter, so
+  #         firstline is "\u000b" and carries no command. Red iff the blank
+  #         class widens ([ \t] -> \s).
+  #   7900  body is ONE line; firstline is "\r/srosro-review", so blankness
+  #         never enters. The leading CR sits outside asks's [ \t]* prefix
+  #         class. Red iff that prefix widens to \s, or \r normalization
+  #         widens past \r\n.
+  "a vertical tab is NOT blank — it is the first line, so no vouch|[{\"id\":7800,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\u000b\\n/srosro-review\"}]|$BOT_USER someuser|none"
+
+  "a leading lone CR is not leading whitespace — only \\r\\n is normalized|[{\"id\":7900,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\r/srosro-review\"}]|$BOT_USER someuser|none"
+
+  # /<prefix>-update-review asks for ONE incremental pass; it is not a standing
+  # statement about the author, so it must not admit an untrusted author's PR.
+  # Drop the narrowing (restore `or asks(cmd + "-update-review")` to the voucher
+  # selector) and this row goes red. The incremental TRIGGER selectors still
+  # honor the command — scenario 2 covers that — so this fences trust only.
+  "/srosro-update-review from a maintainer is a trigger, not a vouch|[{\"id\":7500,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"/srosro-update-review\"}]|$BOT_USER someuser|none"
+
+  # Blank lines are skipped before the first line is taken (the filter lives in
+  # JQ_FIRSTLINE, lib/gh-comments.sh). GitHub's comment box produces this shape
+  # whenever someone hits return before typing.
+  "leading blank lines still vouch — first NON-BLANK line is the rule|[{\"id\":7400,\"created_at\":\"2026-08-10T03:00:00Z\",\"user\":{\"login\":\"someuser\"},\"body\":\"\\n\\n/srosro-review\"}]|$BOT_USER someuser|trusted"
+)
+echo "  scenario RT1: vouch matrix (${#VOUCH_MATRIX[@]} rows: who is a trusted requester)..."
+for row in "${VOUCH_MATRIX[@]}"; do
+    IFS='|' read -r vlabel vjson vtrusted vexpect <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+    printf '%s\n' "$vjson" > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T03:05:00Z" MOCK_TRUSTED_USERS="$vtrusted" \
+        MOCK_PR_AUTHOR="stranger" run_orchestrator
+    vspec=$(jq -c '.specs[0] // empty' "$STATE_DIR/queue.json" 2>/dev/null)
+    case "$vexpect" in
+      trusted)
+        [ -n "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was dropped — expected it to be reviewable"; cat "$LOG_FILE"; exit 1; }
+        # The spec carries WHO asked, not a boolean: the worker re-verifies that
+        # login at admission, because the queue can wait while access is revoked.
+        # WHICH login, not merely that one exists: the matrix arranges an
+        # untrusted author (stranger) with someuser as the voucher, so a spec
+        # naming the author would re-verify the wrong person and admit nothing.
+        vrl=$(jq -r '.requester_login // empty' <<<"$vspec")
+        [ -n "$vrl" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec carries no requester_login — the worker cannot re-verify who asked; spec=$vspec"; exit 1; }
+        [ "$vrl" != "stranger" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec names the untrusted AUTHOR as requester — the worker would re-verify the wrong person; spec=$vspec"; exit 1; }
+        # author_trusted is deliberately NOT in the spec: the worker recomputes
+        # it from the live author at execution time, because a queued spec can
+        # wait and permission can be revoked in that gap. RT5 fences the
+        # execution gates; RT8 fences the recomputation itself.
+        [ "$(jq -r 'has("author_trusted")' <<<"$vspec")" = "false" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec still serializes author_trusted — execution trust must be recomputed at run time; spec=$vspec"; exit 1; }
+        [ "$(jq -r 'has("requester_trusted")' <<<"$vspec")" = "false" ] \
+            || { echo "FAIL RT1 [$vlabel]: spec still serializes requester_trusted — admission must be re-verified from the login at run time; spec=$vspec"; exit 1; } ;;
+      none)
+        [ -z "$vspec" ] || { echo "FAIL RT1 [$vlabel]: PR was made reviewable by a requester that must not count; spec=$vspec"; exit 1; }
+        vwm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
+        [ "$vwm" -ge 1 ] \
+            || { echo "FAIL RT1 [$vlabel]: no spec AND no watermark — enumeration never reached the trust decision, so this fence is unproven"; exit 1; } ;;
+      *)
+        # Rows are |-delimited with raw JSON in field 2, so a stray | shifts every
+        # field and lands here. Without this arm the row would run its tick and
+        # assert NOTHING — silently green, on a security fence.
+        echo "FAIL RT1 [$vlabel]: unrecognized verdict '$vexpect' — row is mis-delimited, nothing was asserted"; exit 1 ;;
+    esac
+done
+
+# --- RT2: the loop dies, and costs nothing to stay dead. "Not queued" is not
+# "not evaluated": without the widened idle-skip an unreviewable PR is still
+# comment-fetched AND permission-looked-up every tick — the request stream that
+# tripped the secondary rate limit (#189).
+echo "  scenario RT2: unreviewable PR is watermarked, then costs nothing..."
+printf '[]\n' > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+FIXED_UPD="2026-08-10T00:00:00Z"
+MOCK_PR_UPDATED_AT="$FIXED_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+wm=$( { find "$STATE_DIR/seen-updated" -type f 2>/dev/null || true; } | wc -l)
+[ "$wm" -ge 1 ] || { echo "FAIL RT2: no watermark — the PR is re-evaluated every tick forever"; exit 1; }
+rm -f "$STATE_DIR/queue.json"
+MOCK_PR_UPDATED_AT="$FIXED_UPD" MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="stranger" run_orchestrator
+q=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q=${q:-0}
+[ "$q" -eq 0 ] || { echo "FAIL RT2: unreviewable PR re-queued on an unchanged tick (got $q) — the loop is still live"; exit 1; }
+f=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f=${f:-0}
+[ "$f" -eq 0 ] || { echo "FAIL RT2: comment-fetched again on an unchanged tick ($f) — the expensive half of the loop survives"; cat "$COMMENT_FETCH_LOG"; exit 1; }
+pc=$( { grep -c 'PERM' "$PERMISSION_CALL_LOG" 2>/dev/null || true; } | head -1); pc=${pc:-0}
+[ "$pc" -eq 0 ] || { echo "FAIL RT2: $pc permission lookup(s) on an unchanged tick — the trust check sits above the idle-skip, so half the loop is still live"; exit 1; }
+
+# --- RT3: suppression must not be a black hole. A vouch arrives as a comment,
+# which moves updatedAt — that is exactly what re-opens evaluation.
+echo "  scenario RT3: a later vouch re-opens the skipped PR..."
+printf '[{"id":7003,"created_at":"2026-08-10T01:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+rm -f "$STATE_DIR/queue.json"
+MOCK_PR_UPDATED_AT="2026-08-10T01:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+q3=$(jq '.specs | length' "$STATE_DIR/queue.json" 2>/dev/null || echo 0); q3=${q3:-0}
+[ "$q3" -eq 1 ] || { echo "FAIL RT3: a vouch after suppression did not re-open the PR (got $q3) — the watermark is a black hole"; cat "$LOG_FILE"; exit 1; }
+
+# --- RT4: the notice, as one table. All five cases share the arrange/act — seed
+# a thread, run a tick against an untrusted author, count posts, check the
+# watermark — and differ only in the thread, the author, and whether the POST
+# fails. Fields: label | comments JSON | author | MOCK_POST_RC | posts | watermark
+BOT_NOTICE='[{"id":7200,"created_at":"2026-08-10T02:30:00Z","user":{"login":"'"$BOT_USER"'"},"body":"<!-- knightwatch-reviewer:auto-post --><!-- knightwatch-reviewer:untrusted-requester-notice --> no push access"}]'
+SPOOFED='[{"id":7600,"created_at":"2026-08-10T07:30:00Z","user":{"login":"stranger"},"body":"hmm <!-- knightwatch-reviewer:untrusted-requester-notice -->"}]'
+NOTICE_MATRIX=(
+  "an untrusted author is told once|[]|stranger||1"
+  "our own prior notice mutes it|$BOT_NOTICE|stranger||0"
+  "a stranger echoing the marker canNOT mute it — it is invisible when rendered|$SPOOFED|stranger||1"
+  "never addressed to a bot — else every dependency-bump PR fleet-wide gets one|[]|dependabot[bot]||0"
+  "a failed POST still watermarks — else a permanent failure re-POSTs every tick|[]|stranger|1|1"
+)
+echo "  scenario RT4: notice matrix (${#NOTICE_MATRIX[@]} rows: told once, never to bots, unspoofable, bounded on failure)..."
+for row in "${NOTICE_MATRIX[@]}"; do
+    IFS='|' read -r nlabel njson nauthor nrc nposts <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated" "$STATE_DIR/runs"
+    printf '%s\n' "$njson" > "$MOCK_COMMENTS_FILE"
+    MOCK_POST_RC="$nrc" MOCK_PR_UPDATED_AT="2026-08-10T02:00:00Z" \
+        MOCK_TRUSTED_USERS="$BOT_USER" MOCK_PR_AUTHOR="$nauthor" run_orchestrator
+    got=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); got=${got:-0}
+    [ "$got" -eq "$nposts" ] \
+        || { echo "FAIL RT4 [$nlabel]: expected $nposts notice post(s), got $got"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+    # Watermarked on EVERY row, POST outcome included: without it a permanent
+    # failure re-POSTs every tick forever, feeding the rate limit this branch
+    # exists to stop. Same policy scenario 7d pins for the decline POST.
+    [ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+        || { echo "FAIL RT4 [$nlabel]: no watermark — the PR is re-evaluated every tick forever"; exit 1; }
+    assert_posts_lead_with_marker "RT4 [$nlabel]"
+    # Every drop logs: the notice is one-shot, so from the second tick an
+    # unreviewable PR would otherwise leave no answer on any surface.
+    grep -q "no trusted requester" "$LOG_FILE" \
+        || { echo "FAIL RT4 [$nlabel]: the drop logged nothing"; cat "$LOG_FILE"; exit 1; }
+    if [ -n "$nrc" ]; then
+        grep -q "could not post the no-push-access notice: .*simulated" "$LOG_FILE" \
+            || { echo "FAIL RT4 [$nlabel]: the POST failure logged no cause"; cat "$LOG_FILE"; exit 1; }
+        # gh's real errors wrap; the cause must be flattened onto ONE line.
+        grep -q "could not post the no-push-access notice: .*second line of the error" "$LOG_FILE" \
+            || { echo "FAIL RT4 [$nlabel]: a multi-line gh error was not flattened onto one log line"; cat "$LOG_FILE"; exit 1; }
+    fi
+done
+
+
+# --- RT7: an unverifiable VOUCHER defers; it must never read as "not vouched".
+# Worse than a plain miss, because the drop also watermarks: one 5xx would
+# suppress a genuinely-vouched PR until its next updatedAt event, silently, with
+# the notice already on the thread. Author is definitively untrusted; only the
+# voucher's lookup fails.
+echo "  scenario RT7: an unverifiable voucher defers instead of dropping+watermarking..."
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+# The vouch must PREDATE the review cutoff, or it is also a live trigger and the
+# trigger block's own defer fires first — masking the path under test.
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T070000000Z" "oldsha1" "COMMENT" "2026-08-10T07:00:00Z" >/dev/null
+printf '[{"id":7500,"created_at":"2026-08-10T06:00:00Z","user":{"login":"someuser"},"body":"/srosro-review"}]\n' > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T08:30:00Z" MOCK_TRUSTED_USERS="$BOT_USER" \
+    MOCK_INDETERMINATE_USERS="someuser" MOCK_PR_AUTHOR="stranger" run_orchestrator
+[ -f "$STATE_DIR/seen-updated/cncorp_plow__1" ] \
+    && { echo "FAIL RT7: watermarked on an unverifiable vouch — a real vouch is now suppressed until the next PR event, silently"; exit 1; }
+grep -q "vouch check deferred" "$LOG_FILE" \
+    || { echo "FAIL RT7: no deferral logged — an indeterminate vouch collapsed to 'not vouched'"; cat "$LOG_FILE"; exit 1; }
+n7=$( { grep -c 'untrusted-requester-notice' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); n7=${n7:-0}
+[ "$n7" -eq 0 ] || { echo "FAIL RT7: told the author they have no push access while trust was merely unverifiable"; exit 1; }
+clear_seeded_runs
+
+# --- RT6: ALL FOUR trigger selectors are anchored, not just the whole-PR one.
+# RT1's mid-prose row exercises the requester scan; these exercise the dispatch
+# side. Both commands, both directions: prose that merely names a command must
+# not start a review, and an anchored command must still work — the positive row
+# is what reaches the TRIGGER_JSON extractors, which are unreachable unless
+# FORCE_REVIEW is set. Already-reviewed PR at an unchanged head by a TRUSTED
+# author, so only a trigger can dispatch and the vouch scan is not consulted.
+# Fields: label | comment body | expected dispatches
+TRIGGER_ANCHOR_MATRIX=(
+  "prose naming the whole-PR command does not start a review|Please do not use /srosro-review on this yet — the migration is unfinished.|0"
+  "an anchored command still triggers|/srosro-review\\n\\nLooks ready.|1"
+)
+echo "  scenario RT6: trigger-selector anchoring (${#TRIGGER_ANCHOR_MATRIX[@]} rows: both commands, both directions)..."
+for row in "${TRIGGER_ANCHOR_MATRIX[@]}"; do
+    IFS='|' read -r tlabel tbody texpect <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+    clear_seeded_runs
+    seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+    printf '[{"id":8400,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"%s"}]\n' "$tbody" \
+        > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+        MOCK_PR_AUTHOR="someuser" run_orchestrator
+    tn=$(count_dispatches)
+    [ "$tn" -eq "$texpect" ] \
+        || { echo "FAIL RT6 [$tlabel]: expected $texpect dispatch(es), got $tn"; cat "$LOG_FILE"; exit 1; }
+    # On the positive row, assert the EXTRACTOR's output, not just that it ran:
+    # the dispatch must carry a staged trigger file. Reaching an extractor is not
+    # asserting on it — both extractors re-run the selector over the same
+    # fixture, so without this a regression in either is invisible.
+    if [ "$texpect" -gt 0 ]; then
+        grep -qF "trigger_file=$STATE_DIR/tmp/pr-review-trigger" "$LOG_FILE" \
+            || { echo "FAIL RT6 [$tlabel]: dispatched without a staged trigger file"; cat "$LOG_FILE"; exit 1; }
+    fi
+done
+
+# Both TRIGGER_JSON extractors need a fixture where the two predicates would
+# SELECT DIFFERENT comments — a single anchored comment is matched identically by
+# the anchored and substring forms, so `sort_by(.created_at) | last` returns the
+# same object and the staged file is byte-identical either way. Each row pairs an
+# older REAL request with a NEWER comment that merely names the command:
+# anchored, the extractor passes over the newer one; unanchored, `last` grabs it.
+#
+# The incremental branch is only reachable with FORCE_REVIEW set AND an
+# unreviewed head — on an unchanged head the nothing-to-diff path declines before
+# staging — so its row seeds an older reviewed sha.
+# Fields: label | reviewed sha | request body | mention body | staged marker | mention marker
+EXTRACTOR_MATRIX=(
+  "whole-PR|abc123|/srosro-review\\n\\nReady for another pass.|Also: do not use /srosro-review on the sibling PR yet.|Ready for another pass|sibling PR"
+  "incremental|oldsha6|/srosro-update-review\\n\\nPushed a fix.|Note: /srosro-update-review is the wrong command for the other PR.|Pushed a fix|the other PR"
+)
+echo "  scenario RT6b: extractor anchoring (${#EXTRACTOR_MATRIX[@]} rows: whole-PR + incremental)..."
+for row in "${EXTRACTOR_MATRIX[@]}"; do
+    IFS='|' read -r elabel esha ereq ementon emark ementmark <<<"$row"
+    rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+    rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+    clear_seeded_runs
+    seed_run "cncorp_plow" "1" "20260810T120000000Z" "$esha" "COMMENT" "2026-08-10T12:00:00Z" >/dev/null
+    printf '[{"id":8404,"created_at":"2026-08-10T12:30:00Z","user":{"login":"someuser"},"body":"%s"},{"id":8405,"created_at":"2026-08-10T12:45:00Z","user":{"login":"someuser"},"body":"%s"}]\n' \
+        "$ereq" "$ementon" > "$MOCK_COMMENTS_FILE"
+    MOCK_PR_UPDATED_AT="2026-08-10T12:45:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+        MOCK_PR_AUTHOR="someuser" run_orchestrator
+    # count_dispatches FIRST: the trigger_file= token is written by the DETACHED
+    # worker after the orchestrator exits, so a synchronous grep races it. This
+    # is the same reason count_dispatches exists at all.
+    ed=$(count_dispatches)
+    [ "$ed" -eq 1 ] \
+        || { echo "FAIL RT6b [$elabel]: expected 1 dispatch, got $ed"; cat "$LOG_FILE"; exit 1; }
+    etf=$( { grep -o 'trigger_file=[^ ]*' "$LOG_FILE" || true; } | tail -1 | cut -d= -f2)
+    [ -n "$etf" ] && [ -f "$etf" ] \
+        || { echo "FAIL RT6b [$elabel]: no trigger file staged for the anchored request"; cat "$LOG_FILE"; exit 1; }
+    grep -qF "$emark" "$etf" \
+        || { echo "FAIL RT6b [$elabel]: the extractor staged the wrong comment — it selected the newer mid-prose mention instead of the real request"; cat "$etf"; exit 1; }
+    grep -qF "$ementmark" "$etf" \
+        && { echo "FAIL RT6b [$elabel]: the extractor staged prose that merely NAMES the command — it is not anchored"; cat "$etf"; exit 1; }
+done
+clear_seeded_runs
+rm -f "$STATE_DIR/tmp/pr-review-trigger".*
+
+# INCREMENTAL_TRIGGER's COUNTER is a separate selector from the extractor above,
+# and needs its own discriminator: on an unchanged head an incremental trigger
+# produces 0 dispatches whether or not it matched, because the nothing-to-diff
+# path declines it either way. What it DOES produce is a decline POST — so prose
+# merely naming the command must produce none.
+rm -f "$STATE_DIR/queue.json"; rm -rf "$STATE_DIR/seen-updated"
+clear_seeded_runs
+seed_run "cncorp_plow" "1" "20260810T100000000Z" "abc123" "COMMENT" "2026-08-10T10:00:00Z" >/dev/null
+printf '[{"id":8401,"created_at":"2026-08-10T11:00:00Z","user":{"login":"someuser"},"body":"Reminder: /srosro-update-review is not needed here."}]\n' \
+    > "$MOCK_COMMENTS_FILE"
+MOCK_PR_UPDATED_AT="2026-08-10T11:00:00Z" MOCK_TRUSTED_USERS="$BOT_USER someuser" \
+    MOCK_PR_AUTHOR="someuser" run_orchestrator
+d6=$( { grep -c 'already-reviewed' "$COMMENT_POST_LOG" 2>/dev/null || true; } | head -1); d6=${d6:-0}
+[ "$d6" -eq 0 ] \
+    || { echo "FAIL RT6c: prose merely NAMING the incremental command fired the trigger (got $d6 decline post(s)) — INCREMENTAL_TRIGGER is not anchored"; cut -c1-90 "$COMMENT_POST_LOG"; exit 1; }
+# A zero alone passes vacuously if the tick never reached the trigger scan.
+f6=$( { grep -c 'FETCH' "$COMMENT_FETCH_LOG" 2>/dev/null || true; } | head -1); f6=${f6:-0}
+[ "$f6" -ge 1 ] \
+    || { echo "FAIL RT6c: the tick never fetched comments, so it never reached the trigger scan — the zero above proves nothing"; exit 1; }
+clear_seeded_runs
+
+# --- RT8: execution trust is recomputed at RUN time, not inherited. A queued
+# spec can wait behind other workers, and permission can be revoked in that gap;
+# a serialized boolean would still say "trusted" and hand repo secrets plus
+# `just test` execution to a contributor who no longer has push access. The
+# dispatcher owns "should we review?"; the worker owns "may this code run?".
+echo "  scenario RT8: the worker recomputes author trust rather than inheriting it..."
+w7="$PROJECT_ROOT/lib/review-one-pr.sh"
+grep -qE 'is_trusted_repo_author "\$REPO" "\$PR_AUTHOR"' "$w7" \
+    || { echo "FAIL RT8: the worker no longer recomputes author trust — a stale queued boolean would gate the .env mirror and just test"; exit 1; }
+grep -qE 'AUTHOR_TRUSTED_ARG' "$w7" \
+    && { echo "FAIL RT8: the worker still reads a serialized author-trust arg — execution trust must come from the live author"; exit 1; }
+# And the dispatcher must not put it back into the queue.
+grep -qF 'author_trusted:' "$PROJECT_ROOT/review.sh" \
+    && { echo "FAIL RT8: review.sh serializes author_trusted again — the queue can wait, so that boolean goes stale before it gates execution"; exit 1; }
+grep -qF 'requester_trusted:' "$PROJECT_ROOT/review.sh" \
+    && { echo "FAIL RT8: review.sh serializes requester_trusted again — admission must re-verify the requester's login, since reading is the boundary"; exit 1; }
+grep -qE 'is_trusted_repo_author "\$REPO" "\$REQUESTER_LOGIN"' "$w7" \
+    || { echo "FAIL RT8: the worker no longer re-verifies the requester at admission — a revoked voucher would still admit content to sandbox-bypassed codex"; exit 1; }
+
+# --- RT5: the execution gates must NEVER move to requester trust. A vouch says
+# "this diff is worth reading", not "run this author's code". Structural,
+# because the behavioral path needs the full worker harness — but falsifiable:
+# swapping either line fails this.
+echo "  scenario RT5: .env mirror and just test still gate on AUTHOR trust..."
+w="$PROJECT_ROOT/lib/review-one-pr.sh"
+grep -qE 'if \[ "\$IS_TRUSTED_AUTHOR" = true \]' "$w" \
+    || { echo "FAIL RT5: the .env mirror no longer gates on IS_TRUSTED_AUTHOR — a vouch would leak repo secrets to an untrusted PR"; exit 1; }
+grep -qE 'just_test_skip_reason "\$JUST_FILE" "\$IS_TRUSTED_AUTHOR"' "$w" \
+    || { echo "FAIL RT5: just_test_skip_reason no longer keys on IS_TRUSTED_AUTHOR — a vouch would execute the PR's code"; exit 1; }
+
+
+# NOTE: the HOST-PATH scenario that once occupied this slot was deleted here.
+# (It is unrelated to the RT6 above, which fences trigger-selector anchoring;
+# this tombstone predates that renumbering.)
+# REVIEW.md records the single-account systemd-timer reviewer as RETIRED with
+# its units deleted — the containerized loop is the only review path — so the
+# requester-trust flow is now unconditional and there is no host path left for
+# that scenario to describe. Deleted rather than left dormant: it can no longer
+# reach a branch that exists.
 
 echo "  PASS (27 scenarios: no-comments, bare-mention, /srosro-review, marker-self-filter, single-account, untrusted-trigger-comment, indeterminate-trigger-defer, /srosro-update-review-same-sha, decline-posted-once-per-round, decline-re-arms-after-a-review, failed-decline-watermarked-no-retry-storm, stale-enumerated-head-dispatches, /srosro-approve-not-a-review, slow-worker-fast-exit-and-liveness, lock-contention-on-shared-state-dir, missing-worker-fail-loud, worker-timeout-enforced, page-2-trigger-pagination-fence, post-load-tmpdir-placement-fence, runs/-sourced-skip, runs/-sourced-dispatch, slash-cutoff-from-runs, no-state-json-residue, dispatcher-tick-at-passthrough, idle-skip-unchanged-updatedat, idle-skip-changed-updatedat-fetches, inflight-not-double-enumerated)"

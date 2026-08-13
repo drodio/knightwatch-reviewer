@@ -1,7 +1,10 @@
 #!/bin/bash
 # Reviews one PR end-to-end. Invoked by review.sh as:
-#   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR
-# where FORCE_WHOLE_PR is "true" or "false". TRIGGER_COMMENT_FILE is
+#   TRIGGER_COMMENT_FILE=<path> lib/review-one-pr.sh REPO PR_NUM PR_SHA PR_BRANCH PR_TITLE FORCE_WHOLE_PR REQUESTER_LOGIN
+# where FORCE_WHOLE_PR is "true" or "false" and REQUESTER_LOGIN is REQUIRED
+# (fatal when absent) — the login of whoever asked for this review, re-verified
+# here at admission. Author trust is deliberately NOT an argument — see the
+# two-gates block below for why each is owned where it is. TRIGGER_COMMENT_FILE is
 # optional and points to a tmp file holding the body of the comment that
 # kicked off this review (when triggered by /review or @bot mention);
 # the worker slurps it and rm -fs the file early.
@@ -25,6 +28,12 @@ PR_BRANCH="$4"
 # (preserves visible structure) and avoids the empty-field hazard.
 PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
+# REQUESTER_LOGIN is who asked for this review; author trust is deliberately
+# NOT an argument. The two-gates block above the gate site explains why each
+# question is owned where it is asked.
+# REQUIRED, not defaulted: review.sh is the only caller (lib/replay.sh mirrors
+# the review logic rather than invoking this).
+REQUESTER_LOGIN="${7:-}"
 
 PR_ID="${REPO}#${PR_NUM}"
 PR_URL="https://github.com/$REPO/pull/$PR_NUM"
@@ -166,7 +175,7 @@ _LIB_DIR="${REVIEWER_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}"
 # (Also sources gh-comments.sh; multi-source is idempotent.)
 . "$_LIB_DIR/pr-comments.sh"
 
-# --- author trust + container-mode gate (BEFORE the per-run dir) ---------
+# --- requester gate + author trust (BEFORE the per-run dir) --------------
 # This must run before allocate_run_dir: a skipped/deferred review that
 # allocated a run dir first would leak runs/<id>/ on every ~30s poll of a
 # permanently-untrusted PR (issue #189). Resolving metadata + trust here and
@@ -187,49 +196,68 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
-# Author trust — computed once, before any placeholder/clone/codex. Container-
-# mode review gate: codex agents run sandbox-bypassed and share the privileged
-# dind daemon's netns, so reviewing an UNTRUSTED-author PR risks prompt-injection
-# → daemon → host root. Skip untrusted authors entirely here (no placeholder, no
-# pipeline) so untrusted content never reaches codex. Trusted (push-access)
-# authors review normally; the host (non-container) path is unaffected. Lifts
-# when the daemon is unprivileged. Reused below for the .env-mirror/just-test gate.
-# Tri-state trust (lib/auth.sh): 0=trusted, 1=definitively untrusted,
-# 2=indeterminate (403 rate-limit / 5xx / network — couldn't verify). An
-# indeterminate result must NEVER fall through to untrusted-and-skip: a
-# throttled lookup of a genuinely-trusted author (e.g. repo owner) would
-# silently drop their PR. Defer instead (exit 1, like the gh pr view guard
-# above) so the next tick re-checks once the throttle clears.
-is_trusted_repo_author "$REPO" "$PR_AUTHOR"; TRUST_RC=$?
-case "$TRUST_RC" in
-    0) IS_TRUSTED_AUTHOR=true ;;
-    *) IS_TRUSTED_AUTHOR=false ;;
-esac
-# The defer/skip is CONTAINER-MODE ONLY — that's the path where untrusted code
-# must never run (codex↔privileged-dind). On the host path an untrusted author
-# is reviewed anyway (just without the .env-mirror / just-test, gated on
-# IS_TRUSTED_AUTHOR below), so an indeterminate result there needs no defer —
-# scoping it here keeps host behavior unchanged.
-if [ -n "${REVIEWER_CONTAINER_MODE:-}" ] && [ "$IS_TRUSTED_AUTHOR" != true ]; then
-    if [ "$TRUST_RC" -eq 2 ]; then
-        # Indeterminate → defer (exit 1, like the gh pr view guard above)
-        # so the next tick re-checks once the throttle clears.
-        log "$PR_ID: trust check deferred — API error ($PR_AUTHOR); retrying next tick"
-        exit 1
-    fi
-    # Silent skip: no per-tick log line. This exit is now above the per-run
-    # run.log, so the only place a line could land is the shared, 5 MB-rotated
-    # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so
-    # logging here (deduped or not) is the wrong layer: it either floods the
-    # operator log or needs a per-PR marker that reintroduces the same
-    # unbounded-per-PR-artifact shape this branch just removed. An untrusted skip
-    # is stable POLICY, not a failure, and was already effectively invisible
-    # pre-change (buried in the leaked run.log). The operator-facing "why is this
-    # PR unreviewed?" signal belongs at the dispatcher, logged once when it
-    # decides coverage — tracked as the dispatcher-side gate follow-up on #189.
-    # (The indeterminate DEFER above still logs: it's transient and low-volume.)
+# Two gates, two owners, opposite failure directions — do not conflate them.
+#
+# WHETHER TO REVIEW AT ALL is REQUESTER trust, decided upstream in review.sh
+# (only it sees the comment thread). codex runs sandbox-bypassed beside the
+# privileged dind daemon, so merely READING an untrusted PR risks
+# prompt-injection → daemon → host root; that is what a push-access request
+# authorizes. Its indeterminate lookups DEFER, because guessing wrong drops a
+# trusted author's PR.
+#
+# WHETHER THIS AUTHOR'S CODE MAY RUN is decided below — see that block.
+if [ -z "$REQUESTER_LOGIN" ]; then
+    log "$PR_ID: FATAL — requester login arg missing; review.sh must pass it"
+    exit 1
+fi
+# Re-verify AT ADMISSION: the dispatcher identified who asked, but the spec can
+# wait behind other workers and push access can be revoked in that gap. Identify
+# upstream, verify at the point of use — same shape as the author check below.
+#
+# rc=1 (definitively no access) → skip, as if nobody had asked.
+# rc=2 (unverifiable)           → DEFER; this decision can drop a PR a
+#                                 maintainer legitimately requested.
+is_trusted_repo_author "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
+if [ "$REQUESTER_RC" -eq 2 ]; then
+    log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
+    exit 1
+fi
+if [ "$REQUESTER_RC" -ne 0 ]; then
+    # Silent skip, deliberately. This exit sits above the per-run run.log, so a
+    # line could only land in the shared orchestrator.log — and a permanently
+    # untrusted PR re-fires every ~30s, which would flood it. An untrusted skip
+    # is stable POLICY, not a failure; the operator-facing "why is this PR
+    # unreviewed?" signal is logged once by the dispatcher (#189).
     exit 0
 fi
+
+# Recomputed here, not inherited: this is the permission that gates EXECUTION,
+# and it must reflect the moment the code would run, not the moment the PR was
+# enumerated.
+#
+# Deliberately NOT tri-state, and that is not the contradiction it looks like.
+# Upstream, an indeterminate lookup must DEFER, because getting it wrong there
+# drops a trusted author's PR. Here it fails CLOSED, because this boolean only
+# ever grants capability — the .env mirror and `just test`.
+#
+# Nothing is lost by declining: the read was already authorized by the requester
+# gate above (a push-access human asked for this review), so it proceeds either
+# way. Deferring instead would stall a review someone explicitly requested, in
+# order to protect a capability we are declining to grant anyway.
+# Reuse the requester's answer when they ARE the author — the common case, set
+# unconditionally by the dispatcher when the author is trusted. Two identical
+# `collaborators/<login>/permission` calls per review is precisely the per-tick
+# API cost this branch exists to remove, reintroduced one screen apart.
+if [ "$REQUESTER_LOGIN" = "$PR_AUTHOR" ]; then
+    AUTHOR_RC="$REQUESTER_RC"
+else
+    is_trusted_repo_author "$REPO" "$PR_AUTHOR"; AUTHOR_RC=$?
+fi
+IS_TRUSTED_AUTHOR=false; [ "$AUTHOR_RC" -eq 0 ] && IS_TRUSTED_AUTHOR=true
+# Gates on the REQUESTER, not the author: "did someone with push access ask for
+# this review?" — opening the PR is the author's own implicit request, and a
+# maintainer's /<prefix>-review vouches for a read-only contributor's. Execution
+# stays gated on IS_TRUSTED_AUTHOR further below.
 
 # Repo visibility (public|private|internal), lowercased — feeds the security
 # threat model and portability bar into the specialist prompts. `gh repo view`
@@ -237,7 +265,7 @@ fi
 # Fail loud on an empty result — same contract as the BASE_REF/PR_AUTHOR guard
 # above: a metadata-lookup break must not silently downgrade a public repo to
 # the quieter private posture (under-calibrated security + portability review).
-# Resolved AFTER the container-mode gate on purpose: an untrusted-author skip
+# Resolved AFTER the requester gate on purpose: an unreviewable-PR skip
 # re-fires every ~30s per PR, so a `gh repo view` above the gate would burn an
 # API call per skip tick for a review that never runs. Only reviews that get
 # past the gate (and thus reach the prompt build that consumes it) pay for it.
@@ -684,9 +712,9 @@ fi
 # Trust gate: only mirror when PR_AUTHOR has push access to the repo.
 # Otherwise an untrusted contributor's `just test` recipe could
 # exfiltrate live API keys before the eager-delete runs.
-# IS_TRUSTED_AUTHOR was computed once right after PR_AUTHOR resolved (above),
-# where it also gates the container-mode review skip. Reused here for the .env
-# mirror + just-test skip gate (just_test_skip_reason, lib/auth.sh).
+# IS_TRUSTED_AUTHOR is recomputed from the LIVE author above — it gates
+# execution only, never whether the review happens (that is the requester
+# gate). Reused here and by just_test_skip_reason (lib/auth.sh).
 COPIED_ENV_FILES=()
 if [ "$IS_TRUSTED_AUTHOR" = true ]; then
     while IFS= read -r -d '' example_path; do

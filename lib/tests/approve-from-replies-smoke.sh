@@ -10,19 +10,21 @@
 #   2. Trusted user posts /srosro-approve as the whole comment → exactly
 #      one approve call with the bot marker in the body, seen state set.
 #   3. Same comment on a second tick → no second approve (already-seen).
-#   4. Bot's own auto-post that mentions /srosro-approve → no approve
-#      (BOT_AUTO_POST_MARKER filter).
+#   4. Bot's own auto-post that mentions /srosro-approve → no approve.
+#      Every producer puts the marker on line 1, so first-line anchoring
+#      rejects it; there is no body-wide marker filter to rely on.
 #   5. Untrusted user posts /srosro-approve → no approve, seen marked
 #      so the next tick doesn't re-log it.
 #   6. *[bot] commenter (e.g. copilot-swe-agent[bot]) → no approve,
 #      seen marked.
-#   7. Mid-sentence mention ("don't use /srosro-approve yet") from a
-#      trusted user → no approve. Regression test: the earlier
-#      `grep -qiF '/srosro-approve'` would have falsely triggered here.
-#   8. Trusted user posts a multi-line comment with /srosro-approve at
-#      the start of the second line → approve fires.
-#   9. Trusted user posts /srosro-approve followed by an arg ("LGTM") →
-#      approve fires.
+#   7-9. APPROVE_BODY_MATRIX — invocation vs. mention, from a trusted
+#      user in every row. /srosro-approve must be the comment's first
+#      non-blank line: bare/arg/indented/CRLF and framing-after all
+#      approve; mid-sentence, framing-BEFORE, a fenced example, and a
+#      quote-reply do not. Two regressions are fenced here — the original
+#      `grep -qiF '/srosro-approve'` substring match, and the later
+#      any-line anchoring that let a collaborator *documenting* the
+#      command approve whatever PR the comment sat on.
 
 set -euo pipefail
 
@@ -228,7 +230,12 @@ printf '[{"id":1001,"created_at":"%s","user":{"login":"someuser"},"body":"/srosr
 run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 2: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
-grep -qF "$BOT_AUTO_POST_MARKER" "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 2: approve body missing BOT_AUTO_POST_MARKER"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+# Marker must LEAD the body, not merely appear in it. With no body-wide
+# containment filter left, first-line anchoring is the whole self-trigger
+# defense, so "marker is line 1" is a producer-side contract this asserts
+# directly (lib/bootstrap.sh documents it). `tr` maps newlines to `|`, so
+# line 1 is everything up to the first `|`.
+grep -qF "body=${BOT_AUTO_POST_MARKER}" "$STUB_ACTIONS_LOG" || { echo "FAIL scenario 2: approve body does not LEAD with BOT_AUTO_POST_MARKER — a bot post whose first line is not the marker can self-trigger"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1001" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 2: seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
 # Scenario 3: same comment on a second tick — already-seen, no approve
@@ -244,6 +251,34 @@ printf '[{"id":1002,"created_at":"%s","user":{"login":"srosro"},"body":"%s\\nApp
 run_approve
 n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 4: expected 0 approves on bot post, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
+
+# Scenario 4b: a REAL approval on a body past the 64KiB pipe buffer.
+# is_approve_request feeds the whole body to `jq -Rse`, which slurps it — no
+# consumer closes the stream early. This is the one row whose body exceeds the
+# pipe buffer (it asserts its own byte count below), so it goes red if
+# the extractor is ever rebuilt on a streaming or early-exit shape (`| head -1`,
+# a `read`+break across a pipe, a non-slurping jq) under `set -o pipefail`,
+# where the producer takes SIGPIPE and 141 reads as "not an approval".
+#
+# That failure mode is not hypothetical here: it is exactly the traffic this bot
+# generates — its own reviews run past 64KiB once multi-byte characters are in
+# the body, and a quote-reply carries one back.
+#
+# Positive, not negative: an approval that must FIRE cannot be made vacuous by a
+# filter rejecting the body for some unrelated reason. Size is the test, so the
+# byte count is asserted rather than assumed.
+echo "  scenario 4b: >64KiB body with the command on line 1 — approve still fires..."
+echo '{}' > "$APPROVES_SEEN_FILE"
+: > "$STUB_ACTIONS_LOG"
+BIG_TAIL=$(printf '> quoted em—dash diff line %.0s' $(seq 1 4000))
+printf '[{"id":1008,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve\\n\\n%s"}]\n' \
+    "$NOW_ISO" "$BIG_TAIL" > "$MOCK_COMMENTS_FILE"
+jq -e . "$MOCK_COMMENTS_FILE" >/dev/null || { echo "FATAL: scenario 4b built invalid JSON"; exit 1; }
+body_bytes=$(jq -r '.[0].body' "$MOCK_COMMENTS_FILE" | wc -c)
+[ "$body_bytes" -gt 65536 ] || { echo "FATAL: scenario 4b body is only $body_bytes bytes — under the pipe buffer, so it cannot reproduce the bug"; exit 1; }
+run_approve
+n=$(count_approves)
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the extractor dropped a real approval on a long body — an early-closing consumer took SIGPIPE and pipefail read 141 as \"no approval\""; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 5: untrusted user — no approve, seen marked
 echo "  scenario 5: untrusted /srosro-approve — no approve, seen marked..."
@@ -263,29 +298,52 @@ n=$(count_approves)
 [ "$n" -eq 0 ] || { echo "FAIL scenario 6: expected 0 approves from [bot], got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
 [ -n "$(jq -r '."test-org/probe-repo#1#1004" // empty' "$APPROVES_SEEN_FILE")" ] || { echo "FAIL scenario 6: [bot] seen state not marked"; cat "$APPROVES_SEEN_FILE"; exit 1; }
 
-# Scenario 7: mid-sentence mention — no approve (regression for is_approve_request)
-echo "  scenario 7: mid-sentence /srosro-approve mention — no approve (regression)..."
-echo '{}' > "$APPROVES_SEEN_FILE"
-printf '[{"id":1005,"created_at":"%s","user":{"login":"someuser"},"body":"don'"'"'t use /srosro-approve yet, the smoke test is still red"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_approve
-n=$(count_approves)
-[ "$n" -eq 0 ] || { echo "FAIL scenario 7 (substring-match regression): expected 0 approves, got $n"; cat "$STUB_ACTIONS_LOG"; exit 1; }
-
-# Scenario 8: command on the second line of a multi-line comment — approve fires
-echo "  scenario 8: /srosro-approve at start of second line — approve fires..."
-echo '{}' > "$APPROVES_SEEN_FILE"
-printf '[{"id":1006,"created_at":"%s","user":{"login":"someuser"},"body":"LGTM all green\\n/srosro-approve"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_approve
-n=$(count_approves)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 8: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
-
-# Scenario 9: command followed by trailing arg — approve fires
-echo "  scenario 9: /srosro-approve with trailing arg — approve fires..."
-echo '{}' > "$APPROVES_SEEN_FILE"
-printf '[{"id":1007,"created_at":"%s","user":{"login":"someuser"},"body":"/srosro-approve LGTM"}]\n' "$NOW_ISO" > "$MOCK_COMMENTS_FILE"
-run_approve
-n=$(count_approves)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 9: expected 1 approve, got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+# Scenarios 7-9: does this comment body INVOKE /srosro-approve, or merely
+# mention it? One arrange/act (write body → run_approve → count), so the cases
+# are matrix rows rather than cloned scenarios.
+#
+# The rule is first-non-blank-line. The negative rows are the ones that matter:
+# an approval is durable and outward-facing (it can satisfy a required-approval
+# branch rule), and every negative row here is a body a *trusted* user plausibly
+# writes — trust is not the discriminator, invocation-vs-mention is.
+#
+# Rows: label|expected approves|JSON-escaped body
+APPROVE_BODY_MATRIX=(
+    'bare command|1|/srosro-approve'
+    'trailing arg|1|/srosro-approve LGTM'
+    'leading whitespace|1|   /srosro-approve'
+    'leading blank lines|1|\n\n/srosro-approve'
+    'CRLF line ending|1|/srosro-approve\r\nlooks good to me'
+    # A lone CR as the FINAL byte — the exact body round 7 flagged. \r\n is
+    # normalized, a lone \r is not, so the terminator class ([ \\t]|$) rejects it.
+    # Measured reach — it approves, i.e. this row goes red, under any of:
+    #   terminator class widened to \\s
+    #   \r normalization widened to gsub("\r"; "")
+    #   a re-derived bash extractor stripping \r as a line SUFFIX (what the
+    #     deleted twin actually did) or blanket (what it did before alignment)
+    # Paired with the CRLF row above so normalize-\r\n vs preserve-lone-\r
+    # reads in one place.
+    'lone CR as the final byte is not a terminator|0|/srosro-approve\r'
+    'framing AFTER the command|1|/srosro-approve\n\nship it, tests are green'
+    'mid-sentence mention|0|do not use /srosro-approve yet, the smoke is still red'
+    'framing BEFORE the command|0|LGTM all green\n/srosro-approve'
+    'fenced example in a doc comment|0|To approve, post:\n\n```\n/srosro-approve\n```'
+    'quoted runbook (GitHub quote-reply)|0|> /srosro-approve\n\nthat is the command you want'
+)
+mid=1005
+for row in "${APPROVE_BODY_MATRIX[@]}"; do
+    label="${row%%|*}"; rest="${row#*|}"; want="${rest%%|*}"; body="${rest#*|}"
+    echo "  scenario 7-9 [$label]: expect $want approve(s)..."
+    echo '{}' > "$APPROVES_SEEN_FILE"
+    : > "$STUB_ACTIONS_LOG"
+    printf '[{"id":%d,"created_at":"%s","user":{"login":"someuser"},"body":"%s"}]\n' \
+        "$mid" "$NOW_ISO" "$body" > "$MOCK_COMMENTS_FILE"
+    jq -e . "$MOCK_COMMENTS_FILE" >/dev/null || { echo "FATAL: row [$label] built invalid JSON"; cat "$MOCK_COMMENTS_FILE"; exit 1; }
+    run_approve
+    n=$(count_approves)
+    [ "$n" -eq "$want" ] || { echo "FAIL approve-body row [$label]: expected $want approve(s), got $n"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
+    mid=$((mid + 1))
+done
 
 # Scenario 10: gh pr review --approve fails (PR author self-approve rejected,
 # transient API error, etc.) → no successful approve, but the comment IS
@@ -419,4 +477,4 @@ MOCK_TRUSTED_USERS="someuser" run_approve
 n=$(count_approves)
 [ "$n" -eq 1 ] || { echo "FAIL scenario 14: expected 1 approve on recovery tick, got $n (dropped after transient failure)"; cat "$STUB_ACTIONS_LOG"; cat "$LOG_FILE"; exit 1; }
 
-echo "  PASS (16 scenarios: empty, trusted-approve, already-seen, bot-self-marker, untrusted-skip, [bot]-skip, mid-sentence-no-match, second-line-match, trailing-arg-match, gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"
+echo "  PASS (15 scenarios + ${#APPROVE_BODY_MATRIX[@]} body rows: empty, trusted-approve, already-seen, bot-self-marker, large-body-approve-fires, untrusted-skip, [bot]-skip, invocation-vs-mention matrix (first-non-blank-line), gh-failure-marked-seen, rate-limited-approve-deferred, successful-approve-retained-across-sibling-pause, REPOS-override-observed, page-2-paginated, gh-api-failure-fail-loud, indeterminate-trust-deferred-then-retried)"

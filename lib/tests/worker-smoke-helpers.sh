@@ -65,6 +65,45 @@ STUB
     chmod +x "$bindir/flock"
 }
 
+# gh_permission_stub_body — the collaborators/*/permission arm every generated
+# `gh` stub needs, emitted as text for interpolation into a stub heredoc.
+#
+# One owner because the worker now asks about TWO people per review — the
+# requester at admission and the author before executing — so a stub missing
+# this arm makes BOTH lookups fail, admission defers, and the scenario dies
+# somewhere far from the cause. Three stubs across two files grew this arm
+# independently, each time discovered by a different confusing failure.
+#
+#   GH_STUB_INDETERMINATE_USERS  space-separated logins → rc=2 (could not
+#                                verify). The wording dodges TWO patterns on
+#                                purpose: a 403 would stamp the fleet pause and
+#                                change what the rest of the tick does, and a 5xx
+#                                matches GH_API_TRANSIENT_RE so gh_retry would
+#                                retry it — burning the budget and slowing every
+#                                scenario that arranges an indeterminate.
+#   GH_STUB_TRUSTED_USERS        space-separated logins → push access.
+#   GH_STUB_PERMISSION_ROLE      blanket role for scenarios that do not care
+#                                which person is being asked about.
+#   anyone else                  → no push access.
+gh_permission_stub_body() {
+    cat <<'PERMSTUB'
+for _a in "$@"; do
+    case "$_a" in
+        */collaborators/*/permission)
+            _who="${_a##*/collaborators/}"; _who="${_who%/permission}"
+            for _i in ${GH_STUB_INDETERMINATE_USERS:-}; do
+                [ "$_who" = "$_i" ] && { echo "gh: HTTP 418: unverifiable (simulated)" >&2; exit 1; }
+            done
+            for _t in ${GH_STUB_TRUSTED_USERS:-}; do
+                [ "$_who" = "$_t" ] && { printf 'write\n'; exit 0; }
+            done
+            if [ -n "${GH_STUB_PERMISSION_ROLE:-}" ]; then printf '%s\n' "$GH_STUB_PERMISSION_ROLE"; exit 0; fi
+            printf 'none\n'; exit 0 ;;
+    esac
+done
+PERMSTUB
+}
+
 write_worker_timeout_stub_if_missing() {
     local bindir="$1"
     if command -v timeout >/dev/null 2>&1; then

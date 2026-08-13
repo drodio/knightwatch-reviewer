@@ -56,6 +56,8 @@ write_gh_stub() {
 #!/bin/bash
 echo "\$@" >> "$gh_call_log"
 
+$(gh_permission_stub_body)
+
 # gh pr view N --repo <repo> --json baseRefName,title,body,author,closingIssuesReferences
 if [ "\$1" = "pr" ] && [ "\$2" = "view" ]; then
     printf '{"baseRefName":"main","title":"Test PR","body":"","author":{"login":"test-user"},"closingIssuesReferences":{"nodes":[]}}\n'
@@ -157,9 +159,9 @@ run_scenario() {
 
     local worker_log="$scenario_dir/worker.log"
     set +e
-    TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
+    GH_STUB_TRUSTED_USERS="someuser" TRIGGER_COMMENT_FILE="" timeout 30 bash "$PROJECT_ROOT/lib/review-one-pr.sh" \
         "test-org/probe-repo" 99 "$pr_sha" \
-        "feat/test" "Test PR" "false" \
+        "feat/test" "Test PR" "false" "someuser" \
         > "$worker_log" 2>&1
     local worker_exit=$?
     set -e

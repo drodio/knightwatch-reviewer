@@ -26,6 +26,26 @@
 # shared seam: any future caller of this endpoint goes through this
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
+
+# The grammar for reading a slash command out of a comment body. Consumers,
+# all of which call these rather than re-deriving them:
+# review.sh (trigger + vouch selectors), lib/pr-comments.sh
+# (thread staging), specialist-bakeoff.sh (feedback scan), and
+# poll-pr-actions.sh (is_approve_request, via `jq -Rse`).
+#
+# A command counts only as the FIRST non-blank line, so a comment that merely
+# names one — a fenced example, a quoted runbook — cannot authorize anything.
+# CRLF-normalized because GitHub's web UI returns \r\n.
+#
+# It is one definition because it was three, and they drifted: a bash
+# re-implementation accepted a leading vertical tab and a trailing lone CR that
+# this grammar rejects, so the approve poller acted on input the admit selector
+# had refused. Add a consumer by calling these, never by re-deriving them.
+JQ_FIRSTLINE='def firstline: (gsub("\r\n"; "\n") | split("\n")
+                             | map(select(test("^[ \t]*$") | not)) | .[0] // "");
+def asks(cmd): (firstline | test("^[ \t]*/" + cmd + "([ \t]|$)"; "i"));
+def firstline_is(m): (firstline | sub("^[ \t]+"; "") | startswith(m));'
+
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"  # defines gh() — the rate-limit seam
 
 fetch_issue_comments() {

@@ -30,11 +30,23 @@ RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
 # (presence for approves, timestamp watermark for re-request), and seen_get
 # returns either shape — so no explicit init or per-store helper is needed.
 
-# Opt-in signal: comment body must START with /<prefix>-approve on a line
-# (optional leading whitespace, optional trailing args). A substring match would
-# treat "don't use /srosro-approve yet" as an approval — wrong for this side effect.
+# Opt-in signal: /<prefix>-approve must be the comment's FIRST non-blank line
+# (optional leading whitespace, optional trailing args). Anchoring to any line
+# would let a push-access collaborator who merely *documents* the command — a
+# fenced example, a quoted runbook — submit a real approval on whatever PR the
+# comment sits on. An approval is durable, outward-facing, and can satisfy a
+# required-approval branch rule, and the actor mentioning the command is
+# exactly the trusted one, so trust does not substitute for anchoring.
+#
+# Uses the SAME grammar as review.sh's admit path (JQ_FIRSTLINE, defined in
+# lib/gh-comments.sh) rather than a bash re-implementation. `jq -Rse` slurps
+# the whole body — no early-closing consumer, so the SIGPIPE-under-pipefail
+# trap that rules out `grep -v … | head -1` does not apply here (verified on a
+# ~1MB body). The previous hand-maintained twin had drifted from the jq
+# grammar three separate times; sharing one definition removes the class.
 is_approve_request() {
-    printf '%s' "$1" | grep -qiE "^[[:space:]]*/${BOT_CMD_PREFIX}-approve([[:space:]]|$)"
+    printf '%s' "$1" |
+        jq -Rse --arg cmd "${BOT_CMD_PREFIX}-approve" "$JQ_FIRSTLINE"'asks($cmd)' >/dev/null 2>&1
 }
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.
@@ -49,19 +61,25 @@ approve_check() {
     }
     while IFS= read -r COMMENT; do
         BODY=$(echo "$COMMENT" | jq -r '.body')
-        # Skip the bot's own auto-posts (footers/acks name /<prefix>-approve literally).
-        printf '%s' "$BODY" | grep -qF "$BOT_AUTO_POST_MARKER" && continue
+        # No body-wide auto-post-marker filter here. Every bot producer puts the
+        # marker on the body's FIRST line, so is_approve_request — anchored to
+        # the first non-blank line — already rejects the bot's own posts,
+        # footers and acks included (scenario 4 fences exactly that). A
+        # body-wide `contains(marker)` test adds nothing on top of it and costs
+        # real requests: a maintainer who types the command and then quote-
+        # replies a bot review carries the marker in the quoted text and would
+        # be silently dropped — the false negative in #221, and a direct
+        # contradiction of the documented "framing may follow" contract.
         is_approve_request "$BODY" || continue
         ID=$(echo "$COMMENT" | jq -r '.id')
         USER=$(echo "$COMMENT" | jq -r '.user.login')
         APPROVE_KEY="${REPO}#${PR_NUM}#${ID}"
         [ -n "$(seen_get "$APPROVES_SEEN_FILE" "$APPROVE_KEY")" ] && continue
         # Defensive bot filter (cheap pre-check before the trust API call).
-        case "$USER" in
-            *"[bot]"|"Copilot"|"copilot")
-                log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
-                seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue ;;
-        esac
+        if is_bot_account "$USER"; then
+            log "$APPROVE_KEY: /${BOT_CMD_PREFIX}-approve from bot @$USER ignored"
+            seen_set "$APPROVES_SEEN_FILE" "$APPROVE_KEY"; continue
+        fi
         # Trust gate: only push-access collaborators can trigger an approval.
         # rc 2 = the permission fetch itself failed (transient API error) — leave
         # the comment UNSEEN so a legitimate request is retried next tick rather

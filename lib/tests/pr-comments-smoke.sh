@@ -66,6 +66,28 @@ echo "$OUT" | grep -qF "bot's own review body" && { echo "FAIL: bot auto-post le
 echo "$OUT" | grep -qF "auto-posted by the review bot" && { echo "FAIL: auto-trigger attribution leaked through marker filter (must drop like auto-post)"; echo "$OUT"; exit 1; } || true
 echo "$OUT" | grep -qF "Operator decline markers" && { echo "FAIL: deleted '## Operator decline markers' section still emitted"; echo "$OUT"; exit 1; } || true
 
+# --- fixture 2b: a maintainer's quote-reply keeps its prose -------------------
+# The vouch path admits `/<prefix>-review` + framing even when the author then
+# quote-replies a bot review below it (the quoted text carries the auto-post
+# marker). The notice the bot posts to that maintainer promises "any framing
+# after it is kept and shapes the review" — so the comment must also survive
+# INTO the staged thread, not merely admit the PR. Body-wide marker
+# containment dropped it here and silently broke that promise (#221).
+echo "  fixture 2b: quote-reply keeps the human's framing (marker only in quoted text)..."
+SAMPLE=$(cat <<'JSON'
+[
+  {"user":{"login":"srosro"},"created_at":"2026-05-02T09:00:00Z","body":"/srosro-review\n\nFOCUS_ON_THE_AUTH_PATH — the diff below is what worries me.\n\n> <!-- knightwatch-reviewer:auto-post -->\n> ## Probes\n> 1. [blocking] QUOTED_BOT_PROBE"},
+  {"user":{"login":"srosro"},"created_at":"2026-05-02T09:05:00Z","body":"<!-- knightwatch-reviewer:auto-post -->\n## Probes\n1. [blocking] REAL_BOT_POST"}
+]
+JSON
+)
+OUT=$(_pr_comments_from_json "$SAMPLE" "$(printf 'srosro\n')")
+echo "$OUT" | grep -qF "FOCUS_ON_THE_AUTH_PATH" \
+    || { echo "FAIL fixture 2b: the maintainer's framing was dropped — the notice promises it shapes the review, and body-wide marker containment silently discards it"; echo "$OUT"; exit 1; }
+# The genuine bot post, which LEADS with the marker, still goes.
+echo "$OUT" | grep -qF "REAL_BOT_POST" \
+    && { echo "FAIL fixture 2b: a real bot auto-post leaked into the staged thread"; echo "$OUT"; exit 1; } || true
+
 # --- fixture 3: bodies emitted in full (no length cap) ---
 echo "  fixture 3: long body emitted verbatim (no truncation)..."
 LONGBODY="$(printf 'x%.0s' $(seq 1 650))TAILMARKER"
