@@ -70,6 +70,17 @@ if [ "\$1" = exec ]; then
     C="\$2"; shift 3   # drop: exec, <container>, the nested "docker"
     case "\$1 \${2:-}" in
         "ps -q")
+            # PS_FAIL_DIND's daemon refuses connections for its first
+            # PS_FAIL_TIMES polls (default: forever), which is what exercises
+            # nested_running's readiness retry and its give-up path.
+            if [ "\$C" = "\${PS_FAIL_DIND:-}" ]; then
+                n=\$(cat "$d/psfail.\$C" 2>/dev/null || echo 0); n=\$((n + 1))
+                echo "\$n" > "$d/psfail.\$C"
+                if [ "\$n" -le "\${PS_FAIL_TIMES:-999}" ]; then
+                    echo "Cannot connect to the Docker daemon at tcp://127.0.0.1:2375" >&2
+                    exit 1
+                fi
+            fi
             # BUSY_DIND is busy from the start. TURNS_BUSY_DIND is idle on the
             # FIRST poll and busy on every later one — that models a review
             # starting during the (minutes-long) image phase, which is the only
@@ -201,5 +212,35 @@ grep -q "WARNING -- 1 image timestamp" "$d/dind-prune.log" \
 grep -q "rmi" "$CALLS" && fail "(h) removed an image whose age could not be established"
 echo "  PASS"
 
+# --- (i) an unreachable nested daemon is given up on, loudly ----------------
+# nested_running guards BOTH the entry check and the pre-volume re-check, so a
+# give-up path that returned 0 would let rmi / image prune / builder prune /
+# volume prune -af all fire against a sandbox the script cannot see into.
+# NESTED_READY_SLEEP=0 keeps the suite from paying the real backoff.
+echo "  (i) permanently unreachable nested daemon is skipped, siblings still run..."
+rm -f "$d"/psfail.*
+PS_FAIL_DIND=knightwatch-reviewer-dind-1-1 NESTED_READY_TRIES=2 NESTED_READY_SLEEP=0 \
+    run_prune || fail "(i) run exited non-zero"
+grep -q "nested daemon unreachable" "$d/dind-prune.log" \
+    || fail "(i) unreachable daemon never surfaced in the log"
+for phase in rmi "image prune" "builder prune" "volume prune"; do
+    grep -q "exec knightwatch-reviewer-dind-1-1 docker $phase" "$CALLS" \
+        && fail "(i) ran '$phase' against a sandbox whose daemon never answered"
+done
+grep -q "exec knightwatch-reviewer-dind-2-1 docker rmi" "$CALLS" \
+    || fail "(i) one unreachable sandbox aborted the sweep for its siblings"
+echo "  PASS"
+
+# --- (j) a daemon that is merely slow to start is retried, not skipped ------
+# The boot catch-up case: the dind container is up but its dockerd needs a few
+# more seconds. Without the retry this sandbox is dropped until the next tick.
+echo "  (j) daemon that fails once then answers is processed normally..."
+rm -f "$d"/psfail.*
+PS_FAIL_DIND=knightwatch-reviewer-dind-1-1 PS_FAIL_TIMES=1 NESTED_READY_TRIES=2 NESTED_READY_SLEEP=0 \
+    run_prune || fail "(j) run exited non-zero"
+grep -q "exec knightwatch-reviewer-dind-1-1 docker rmi" "$CALLS" \
+    || fail "(j) a sandbox that answered on the second poll was skipped — retry not effective"
+echo "  PASS"
+
 echo ""
-echo "PASS (8 checks)"
+echo "PASS (10 checks)"

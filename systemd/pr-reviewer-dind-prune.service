@@ -5,10 +5,16 @@ Description=Plow PR reviewer — prune stale per-PR images inside the dind sandb
 # alone it lands before any dind container exists, finds nothing to prune, and
 # burns the catch-up tick it was scheduled for.
 After=docker.service knightwatch-reviewer.service
-# Wants= both: After= alone is a no-op when the named unit isn't already being
-# pulled into the same boot transaction. Ordering without the dependency edge
-# would silently degrade to no ordering at all.
-Wants=docker.service knightwatch-reviewer.service
+# knightwatch-reviewer.service is deliberately NOT in Wants=: ordering-if-present
+# is the intent. Wants= would queue a start job for it on every 6-hourly tick,
+# so a fleet an operator had deliberately stopped (disk-full triage — the very
+# scenario this script exists for — a deploy, a debugging window) would come
+# back up on its own, and After= would then block this unit behind that unit's
+# 15min TimeoutStartSec. The edge buys nothing at boot either: the reviewer unit
+# is WantedBy=multi-user.target, so it is already in the boot transaction and
+# After= is load-bearing without it. The container-up-but-dockerd-not-listening
+# gap is covered by nested_running's readiness retry, not by ordering.
+Wants=docker.service
 
 [Service]
 Type=oneshot
