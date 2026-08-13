@@ -33,37 +33,20 @@ RR_SEEN_FILE="${RR_SEEN_FILE:-$STATE_DIR/re-request-seen.json}"
 # Opt-in signal: /<prefix>-approve must be the comment's FIRST non-blank line
 # (optional leading whitespace, optional trailing args). Anchoring to any line
 # would let a push-access collaborator who merely *documents* the command — a
-# fenced example, a quoted runbook, "post this:" — submit a real approval on
-# whatever PR the comment sits on. Same rule as review.sh's `asks`, and for a
-# sharper reason: an approval is durable, outward-facing, and can satisfy a
-# required-approval branch rule. Trust does not substitute for it — the actor
-# mentioning the command is exactly the trusted one.
+# fenced example, a quoted runbook — submit a real approval on whatever PR the
+# comment sits on. An approval is durable, outward-facing, and can satisfy a
+# required-approval branch rule, and the actor mentioning the command is
+# exactly the trusted one, so trust does not substitute for anchoring.
 #
-# Extracted with a loop rather than `grep -v '^[[:space:]]*$' | head -1`: head
-# exits after one line, so on a body past the pipe buffer grep takes SIGPIPE,
-# and `set -o pipefail` (line 15) turns that 141 into the function's exit
-# status — reading as "not an approval" and silently dropping a real one.
-#
-# THE ONE CONSUMER THAT CANNOT SHARE lib/gh-comments.sh's JQ_FIRSTLINE, because
-# of that pipe-buffer constraint. It is therefore held semantically IDENTICAL to
-# it by hand, which is a real obligation: the two had already drifted apart in
-# two ways, and the drift was reachable.
-#   - blank line: `[ \t]` here, matching jq. `[[:space:]]` also matches \v, \f
-#     and lone \r, so a body whose first line was a vertical tab skipped that
-#     line here and approved, while `asks` took the \v AS the first line and
-#     read no request — the approve poller acting on what the admit selector
-#     had already declined.
-#   - carriage return: stripped per-line-suffix, matching jq's
-#     gsub("\r\n"; "\n"). Blanket "${1//$'\r'/}" also removed lone mid-line \r,
-#     which jq keeps.
-# APPROVE_BODY_MATRIX pins both cases; change one side and it goes red.
+# Uses the SAME grammar as review.sh's admit path (JQ_FIRSTLINE, defined in
+# lib/gh-comments.sh) rather than a bash re-implementation. `jq -Rse` slurps
+# the whole body — no early-closing consumer, so the SIGPIPE-under-pipefail
+# trap that rules out `grep -v … | head -1` does not apply here (verified on a
+# ~1MB body). The previous hand-maintained twin had drifted from the jq
+# grammar three separate times; sharing one definition removes the class.
 is_approve_request() {
-    local line first="" tab=$'\t'
-    while IFS= read -r line; do
-        line="${line%$'\r'}"
-        if [ -n "${line//[ $tab]/}" ]; then first="$line"; break; fi
-    done <<< "$1"
-    grep -qiE "^[ $tab]*/${BOT_CMD_PREFIX}-approve([ $tab]|$)" <<< "$first"
+    printf '%s' "$1" |
+        jq -Rse --arg cmd "${BOT_CMD_PREFIX}-approve" "$JQ_FIRSTLINE"'asks($cmd)' >/dev/null 2>&1
 }
 
 # Submit gh pr review --approve for any new trusted /<prefix>-approve on the PR.

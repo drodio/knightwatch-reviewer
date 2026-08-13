@@ -9,27 +9,23 @@
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
 BOT_USER="${BOT_USER:-srosro}"
 BOT_CMD_PREFIX="${BOT_CMD_PREFIX:-srosro}"
-# Marker prepended to every bot auto-post. PRODUCER-SIDE CONTRACT, two parts:
-# lead the body with this marker (never with a slash command), and post as
-# $BOT_USER. Both are load-bearing, for different consumers.
+# Marker prepended to every bot auto-post. PRODUCER-SIDE CONTRACT: lead the
+# body with this marker (never with a slash command), and post as $BOT_USER.
 #
-# Marker-first covers the REQUEST selectors — `asks` (review.sh: trigger and
-# vouch) and is_approve_request (poll-pr-actions.sh). Those read only the first
-# non-blank line, so a marker-first body cannot read as a request. They carry no
-# body-wide "contains this marker" test: it was redundant against every real
-# producer and silently dropped genuine requests whose author quoted a bot post
-# below their command (#221).
+# Marker-first is what keeps bot posts from self-triggering: every command
+# consumer reads only the first non-blank line (lib/gh-comments.sh), so a
+# marker-first body cannot contain a command as far as they are concerned.
+# There is no body-wide "contains this marker" test in any command selector —
+# it was redundant, and it dropped real requests that quoted a bot post (#221).
 #
-# $BOT_USER covers the one command consumer marker-first does NOT protect:
-# is_memorize_request (learn-from-replies.sh) matches body-wide and unanchored,
-# so a marker-first body CAN read as a memorize request there. What stops it is
-# that file's author filter plus its ACK defanging — not anchoring.
+# $BOT_USER covers the gap marker-first does not: is_memorize_request
+# (learn-from-replies.sh) matches body-wide and unanchored, so it relies on
+# that file's author filter and ACK defanging instead.
 #
-# Two body-wide marker consumers remain by design, so a grep hit is not drift:
-# lib/pr-comments.sh (staging: anchored for auto-post, body-wide for the
-# auto-trigger marker) and specialist-bakeoff.sh's SUBSTANTIVE_REVIEW_JQ, which
-# uses containment POSITIVELY to identify bot reviews. That file's pass-2
-# feedback scan is anchored like everything else — do not "fix" it back.
+# Body-wide marker tests that remain by design, so a grep hit is not drift:
+# lib/pr-comments.sh's auto-TRIGGER exclusion (that producer leads with the
+# command) and specialist-bakeoff.sh's SUBSTANTIVE_REVIEW_JQ, which uses
+# containment positively to identify bot reviews.
 #
 # Must match the literal in lib/review-one-pr.sh — a smoke scenario catches drift.
 BOT_AUTO_POST_MARKER="${BOT_AUTO_POST_MARKER:-<!-- knightwatch-reviewer:auto-post -->}"

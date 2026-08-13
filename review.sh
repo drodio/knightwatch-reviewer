@@ -79,7 +79,9 @@ UNTRUSTED_NOTICE_MARKER="<!-- knightwatch-reviewer:untrusted-requester-notice --
 # this rule (it cannot share the fragment — pipe-buffer SIGPIPE); it uses the
 # same [ \t] blank class and strips \r as a line suffix, so the two agree. See
 # lib/gh-comments.sh for the carve-out and APPROVE_BODY_MATRIX for its fences.
-JQ_ASKS="$JQ_FIRSTLINE"'def asks(cmd): (.body | firstline | test("^[ \t]*/" + cmd + "([ \t]|$)"; "i"));'
+# `asks` itself lives in JQ_FIRSTLINE (lib/gh-comments.sh); it takes a string,
+# so the selectors below pipe .body into it.
+JQ_ASKS="$JQ_FIRSTLINE"'def asks_body(cmd): (.body | asks(cmd));'
 
 # Rotate the orchestrator log when it exceeds 5MB. Per-run logs under
 # runs/<id>/ aren't rotated — they're already bounded by run.
@@ -258,46 +260,27 @@ refresh_queue() {
                 log "$PR_ID: comments fetch failed — skipping this PR for this tick"
                 continue
             }
-            # The bot's own auto-posts (review ack, final review,
-            # learn-from-replies acks, and the usage footer that appears on
-            # every review and itself names the slash commands) are excluded
-            # by FIRST-LINE ANCHORING, not by a marker test. Every producer
-            # leads with the auto-post marker — the producer-side contract at
-            # lib/bootstrap.sh — so `asks`, which reads only the first
-            # non-blank line, cannot see a command in any of them.
+            # The bot's own auto-posts can't self-trigger: every producer
+            # leads with BOT_AUTO_POST_MARKER (the contract in
+            # lib/bootstrap.sh) and `asks` reads only the first non-blank line.
             #
-            # Do NOT "restore" a body-wide `contains($mark)` conjunct here. It
-            # was removed deliberately: it was redundant against every real
-            # producer and it dropped genuine requests whose author quoted a
-            # bot review below their command (#221). VOUCH_MATRIX row 7700
-            # goes red if it comes back.
+            # Do NOT add a body-wide `contains($mark)` conjunct. It was removed
+            # deliberately — redundant against every real producer, and it
+            # dropped genuine requests whose author quoted a bot review below
+            # their command (#221). VOUCH_MATRIX row 7700 catches its return.
+            # No author filter either: BOT_USER is the operator's own identity
+            # in a single-account deploy, so filtering it drops their real
+            # commands (the `.user.login != $user` filter e1d91a0 removed).
             #
-            # No author filter either. The earlier `.user.login != $user`
-            # (e1d91a0) over-excluded: in single-account deployments BOT_USER
-            # is the human's own GH identity, so user-based filtering also
-            # drops legitimate slash-command comments the human posts.
-            #
-            # The only surviving $BOT_AUTO_POST_MARKER test in a COMMAND
-            # selector is the auto-TRIGGER exclusion in the vouch scan below —
-            # that producer leads with the command instead of its marker, so
-            # anchoring cannot filter it. (`grep contains($mark)` also hits
-            # NOTICED_ALREADY further down; that one tests a different marker
-            # to dedupe the no-push-access notice, not to exclude a command.
-            # Deleting it re-posts that notice on every updatedAt change, to
-            # the one author who cannot act on it.)
-            #
-            # Two slash commands, disjoint by construction: `asks` evaluates a
-            # single line and its terminator class ([ \t]|$) rejects the `-` in
-            # /<prefix>-update-review, so the whole-PR predicate cannot match
-            # the incremental command. No exclusion clause needed — the one
-            # case it used to disambiguate (both commands on different lines of
-            # one comment) stopped being expressible under first-line anchoring.
+            # /<prefix>-review and /<prefix>-update-review are disjoint by
+            # construction: one line is evaluated and the terminator class
+            # rejects the `-`, so no exclusion clause is needed.
             WHOLE_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-review"))] | length')
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-review"))] | length')
             INCREMENTAL_TRIGGER=$(printf '%s' "$COMMENTS_JSON" |
                 jq --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-update-review"))] | length')
+                    "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-update-review"))] | length')
             if [ "${WHOLE_TRIGGER:-0}" -gt 0 ]; then
                 FORCE_REVIEW=true
                 FORCE_WHOLE_PR=true
@@ -313,11 +296,11 @@ refresh_queue() {
                 if [ "$FORCE_WHOLE_PR" = "true" ]; then
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 else
                     TRIGGER_JSON=$(printf '%s' "$COMMENTS_JSON" |
                         jq -c --arg since "$REVIEWED_AT_ISO" --arg cmd_prefix "$BOT_CMD_PREFIX" \
-                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
+                            "$JQ_ASKS"'[.[] | select(.created_at > $since and asks_body($cmd_prefix + "-update-review"))] | sort_by(.created_at) | last // empty' 2>/dev/null)
                 fi
                 if [ -n "$TRIGGER_JSON" ]; then
                     TRIGGER_USER=$(printf '%s' "$TRIGGER_JSON" | jq -r '.user.login // ""')
@@ -510,36 +493,29 @@ This request stays open and fires automatically on your next push. To force a wh
             fi
         fi
 
-        # Requester trust — ONE value decides whether this PR is reviewed at all.
-        # Opening the PR is the author's implicit request; a /<prefix>-review from
-        # a push-access user is an additional one.
+        # Requester trust — ONE value decides whether this PR is reviewed at
+        # all. Opening the PR is the author's implicit request; a
+        # /<prefix>-review from a push-access user is an additional one.
         #
-        # /<prefix>-update-review is deliberately NOT a vouch, matching what
-        # README documents. It asks for one incremental pass against the prior
-        # reviewed SHA; reading it as a standing statement about the author would
-        # let a one-time "check what changed" admit that author's later heads to
-        # Codex forever. Vouching is the broader grant, so it takes the explicit
-        # command. (The incremental-trigger selectors still honor it — this
-        # narrowing is about trust, not about firing a review.)
+        # OR over that set, never "latest wins": an untrusted drive-by must not
+        # suppress a trusted author's review, nor nullify a maintainer's vouch.
         #
-        # OR over that set, never
-        # "latest requester wins": an untrusted drive-by must not suppress a
-        # review of a trusted author's PR, and an untrusted reply must not
-        # nullify a maintainer's vouch.
+        # Scanned over the WHOLE thread rather than post-cutoff comments. A
+        # trigger is one-shot, consumed by the review it causes; a vouch is a
+        # standing statement about the AUTHOR (the operator's ruling on #222),
+        # so it covers later heads too. Execution stays keyed to author trust —
+        # a vouch unlocks reading, never running.
         #
-        # Scanned over the WHOLE thread, not post-cutoff comments: a trigger is a
-        # one-shot "re-review now" consumed by the review it causes, but a vouch
-        # is a standing statement about the AUTHOR — the operator's ruling on
-        # #222 — and finishing a review does not make it untrue. It therefore
-        # covers later heads too; execution stays keyed to author trust, so a
-        # vouch unlocks reading, never running.
+        # /<prefix>-update-review is NOT a vouch (README says so): it asks for
+        # one incremental pass, and treating it as standing would let a
+        # one-time "check what changed" admit that author's later heads
+        # forever. The incremental TRIGGER selectors still honor it.
         #
-        # FORCE_REVIEW is deliberately NOT consulted: it is set from comment-text
-        # matching with no permission check, so gating on it would let an
-        # untrusted author self-vouch.
+        # FORCE_REVIEW is NOT consulted: it comes from comment text with no
+        # permission check, so gating on it would let an author self-vouch.
         #
-        # Only asked when it can change the answer: a trusted author is already a
-        # trusted requester.
+        # Only asked when it can change the answer — a trusted author is
+        # already a trusted requester.
         REQUESTER_TRUSTED="$AUTHOR_TRUSTED"
         # WHO asked, not merely that someone did — the worker re-verifies this
         # login at admission, because the queue can wait and push access can be
@@ -580,7 +556,7 @@ This request stays open and fires automatically on your next push. To force a wh
                 jq -r --arg trigmark "$BOT_AUTO_TRIGGER_MARKER" \
                       --arg cmd_prefix "$BOT_CMD_PREFIX" \
                     "$JQ_ASKS"'[.[] | select((.body | contains($trigmark) | not)
-                                   and asks($cmd_prefix + "-review"))]
+                                   and asks_body($cmd_prefix + "-review"))]
                      | [.[].user.login] | unique | .[]' 2>/dev/null)
             if [ "$REQUESTER_TRUSTED" != true ] && [ "$VOUCH_INDETERMINATE" = true ]; then
                 log "$PR_ID: vouch check deferred — API error; retrying next tick"

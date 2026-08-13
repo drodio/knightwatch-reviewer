@@ -27,39 +27,22 @@
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
 
-# The shared definition of "the comment's first non-blank line". CRLF-normalized
-# because GitHub's web UI returns \r\n, which would otherwise leave a \r before
-# the terminator on every line but the last.
+# The one grammar for reading a slash command out of a comment body, shared by
+# every consumer: review.sh (trigger + vouch selectors), lib/pr-comments.sh
+# (thread staging), specialist-bakeoff.sh (feedback scan), and
+# poll-pr-actions.sh (is_approve_request, via `jq -Rse`).
 #
-# jq consumers, all three built on this — never re-implementing it:
-#   review.sh            `asks` (trigger + vouch selectors)
-#   lib/pr-comments.sh   thread-staging filter
-#   specialist-bakeoff.sh  pass-2 feedback scan
+# A command counts only as the FIRST non-blank line, so a comment that merely
+# names one — a fenced example, a quoted runbook — cannot authorize anything.
+# CRLF-normalized because GitHub's web UI returns \r\n.
 #
-# ONE anchoring consumer deliberately does NOT share it: is_approve_request in
-# poll-pr-actions.sh. It must extract the first line with a bash loop, because
-# the pipeline form takes SIGPIPE on bodies past the pipe buffer and
-# `set -o pipefail` turns that into "no approval". It is instead held
-# semantically identical by hand, and that obligation is real — the two had
-# already drifted on the blank-line class ([[:space:]] there vs [ \t] here,
-# which made a leading vertical tab approve what this fragment read as
-# no-request) and on \r handling. Both are aligned now.
-#
-# Fences, stated narrowly because per-edit attribution here has been wrong
-# twice: `firstline` is exercised through `asks` by VOUCH_MATRIX (row 7800 — a
-# \v first line — covers the blank class; row 7900 — a leading lone CR —
-# covers \r normalization) and through is_approve_request by
-# APPROVE_BODY_MATRIX's mirrors of the same two. `firstline_is`'s own
-# `sub("^[ \t]+"; "")` is NOT covered by either: no staging or bake-off fixture
-# has a \v/\f/lone-CR first line, so widening that class alone leaves both
-# matrices green. Held by hand; widen it and nothing will tell you.
-#
-# Whatever you change here, change the bash twin too.
-#
-# Lives in this file because it is the common ancestor every jq consumer already
-# sources.
+# It is one definition because it was three, and they drifted: a bash
+# re-implementation accepted a leading vertical tab and a trailing lone CR that
+# this grammar rejects, so the approve poller acted on input the admit selector
+# had refused. Add a consumer by calling these, never by re-deriving them.
 JQ_FIRSTLINE='def firstline: (gsub("\r\n"; "\n") | split("\n")
                              | map(select(test("^[ \t]*$") | not)) | .[0] // "");
+def asks(cmd): (firstline | test("^[ \t]*/" + cmd + "([ \t]|$)"; "i"));
 def firstline_is(m): (firstline | sub("^[ \t]+"; "") | startswith(m));'
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-retry.sh"  # defines gh() — the rate-limit seam

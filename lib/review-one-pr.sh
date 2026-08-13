@@ -28,14 +28,9 @@ PR_BRANCH="$4"
 # (preserves visible structure) and avoids the empty-field hazard.
 PR_TITLE=$(printf '%s' "$5" | tr '\000-\037\177' ' ')
 FORCE_WHOLE_PR="${6:-false}"
-# Two trust questions, each owned where it is ASKED:
-#   "should this PR be reviewed at all?" — the dispatcher decides, because only
-#     it can see the comment thread that carries a maintainer's vouch. Passed in.
-#   "may this author's CODE RUN?" (.env mirror, just test) — decided HERE, from
-#     the live PR_AUTHOR resolved below, because a queued spec can wait behind
-#     other workers and permission can be revoked in that gap. A serialized
-#     boolean would still say "trusted" and hand secrets plus test execution to
-#     a contributor who no longer has push access.
+# REQUESTER_LOGIN is who asked for this review; author trust is deliberately
+# NOT an argument. The two-gates block above the gate site explains why each
+# question is owned where it is asked.
 # REQUIRED, not defaulted: review.sh is the only caller (lib/replay.sh mirrors
 # the review logic rather than invoking this).
 REQUESTER_LOGIN="${7:-}"
@@ -201,49 +196,38 @@ if [ -z "$BASE_REF" ] || [ -z "$PR_AUTHOR" ]; then
     exit 1
 fi
 
-# Two gates, two owners, two different questions — do not conflate them.
+# Two gates, two owners, opposite failure directions — do not conflate them.
 #
-# WHETHER TO REVIEW AT ALL is decided by REQUESTER trust, upstream in review.sh.
-# codex agents run sandbox-bypassed and share the privileged dind daemon's netns,
-# so merely READING an untrusted PR risks prompt-injection → daemon → host root.
-# That is why the dispatcher refuses a PR nobody with push access asked for, and
-# why its indeterminate lookups DEFER rather than decide: getting that one wrong
-# drops a trusted author's PR. By the time control reaches here, someone with
-# push access has asked for this review — that is what authorizes the read.
+# WHETHER TO REVIEW AT ALL is REQUESTER trust, decided upstream in review.sh
+# (only it sees the comment thread). codex runs sandbox-bypassed beside the
+# privileged dind daemon, so merely READING an untrusted PR risks
+# prompt-injection → daemon → host root; that is what a push-access request
+# authorizes. Its indeterminate lookups DEFER, because guessing wrong drops a
+# trusted author's PR.
 #
-# WHETHER THIS AUTHOR'S CODE MAY RUN is decided below, and it is a separate
-# question with the opposite failure direction. See the block beneath.
+# WHETHER THIS AUTHOR'S CODE MAY RUN is decided below — see that block.
 if [ -z "$REQUESTER_LOGIN" ]; then
     log "$PR_ID: FATAL — requester login arg missing; review.sh must pass it"
     exit 1
 fi
-# Re-verify the requester AT ADMISSION. The dispatcher identified who asked —
-# only it can see the comment thread — but the spec can wait behind other
-# workers, and push access can be revoked in that gap. Reading is the boundary
-# here (codex runs sandbox-bypassed beside a privileged dind daemon), so a stale
-# "someone vouched" boolean would admit attacker-controlled content on authority
-# that no longer exists. Same shape as the author check below: identify
-# upstream, verify at the point of use.
+# Re-verify AT ADMISSION: the dispatcher identified who asked, but the spec can
+# wait behind other workers and push access can be revoked in that gap. Identify
+# upstream, verify at the point of use — same shape as the author check below.
 #
-# rc=1 (definitively no push access) → skip, exactly as if nobody had asked.
-# rc=2 (could not verify) → DEFER, not skip: this decision can DROP a PR a
-# maintainer legitimately requested, so an unverifiable lookup must retry.
+# rc=1 (definitively no access) → skip, as if nobody had asked.
+# rc=2 (unverifiable)           → DEFER; this decision can drop a PR a
+#                                 maintainer legitimately requested.
 is_trusted_repo_author "$REPO" "$REQUESTER_LOGIN"; REQUESTER_RC=$?
 if [ "$REQUESTER_RC" -eq 2 ]; then
     log "$PR_ID: requester re-check deferred — API error (@$REQUESTER_LOGIN); retrying next tick"
     exit 1
 fi
 if [ "$REQUESTER_RC" -ne 0 ]; then
-    # Silent skip: no per-tick log line. This exit is now above the per-run
-    # run.log, so the only place a line could land is the shared, 5 MB-rotated
-    # orchestrator.log — and a permanently-untrusted PR re-fires every ~30s, so
-    # logging here (deduped or not) is the wrong layer: it either floods the
-    # operator log or needs a per-PR marker that reintroduces the same
-    # unbounded-per-PR-artifact shape this branch just removed. An untrusted skip
-    # is stable POLICY, not a failure, and was already effectively invisible
-    # pre-change (buried in the leaked run.log). The operator-facing "why is this
-    # PR unreviewed?" signal belongs at the dispatcher, which now logs it once
-    # when it decides coverage — the follow-up this comment tracked on #189.
+    # Silent skip, deliberately. This exit sits above the per-run run.log, so a
+    # line could only land in the shared orchestrator.log — and a permanently
+    # untrusted PR re-fires every ~30s, which would flood it. An untrusted skip
+    # is stable POLICY, not a failure; the operator-facing "why is this PR
+    # unreviewed?" signal is logged once by the dispatcher (#189).
     exit 0
 fi
 
