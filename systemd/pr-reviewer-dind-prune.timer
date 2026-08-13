@@ -12,6 +12,14 @@ OnCalendar=*-*-* 00,06,12,18:20:00
 # Persistent=true: unlike the hourly siblings, a missed tick matters — the box
 # went to 100% full because this class of cleanup never ran at all. Catch up on
 # the next boot rather than waiting for the next window.
+#
+# Caveat worth knowing at the boot catch-up specifically: the sandboxes' nested
+# dockerds may still be initializing when this fires (see the ordering note in
+# the .service), so that run can skip sandboxes and reclaim nothing. The next
+# scheduled tick is at most 6h away and collects them; this is a deliberate
+# trade against carrying a readiness-retry loop. Persistent=true still earns
+# its place for the case it was added for — a box that was off through one or
+# more windows entirely.
 Persistent=true
 AccuracySec=1min
 Unit=pr-reviewer-dind-prune.service

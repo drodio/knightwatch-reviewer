@@ -12,8 +12,17 @@ After=docker.service knightwatch-reviewer.service
 # back up on its own, and After= would then block this unit behind that unit's
 # 15min TimeoutStartSec. The edge buys nothing at boot either: the reviewer unit
 # is WantedBy=multi-user.target, so it is already in the boot transaction and
-# After= is load-bearing without it. The container-up-but-dockerd-not-listening
-# gap is covered by nested_running's readiness retry, not by ordering.
+# After= is load-bearing without it.
+#
+# Ordering is all this gets: `docker compose up -d` returns once the dind
+# CONTAINERS have started, not once the dockerd inside each is accepting
+# connections. A boot catch-up run can therefore still find sandboxes mid
+# storage-init, log `nested daemon unreachable -- skipping` for them, and
+# reclaim nothing. That is accepted, not covered: the script takes one attempt
+# per sandbox and the next 6-hourly tick collects whatever was unready. Against
+# a seven-week accumulation horizon one skipped tick costs nothing, and the
+# retry loop that used to close the gap cost two tunables, a stateful test
+# fixture and a smoke case to buy it back.
 Wants=docker.service
 
 [Service]
@@ -49,8 +58,8 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 ProtectHome=read-only
-# Narrower than the sibling units: this script writes only its own log and lock
-# under the bot state dir. It needs no cache/config aperture because it shells
+# Narrower than the sibling units: this script writes only its own log under
+# the bot state dir. It needs no cache/config aperture because it shells
 # out to `docker` (a static binary in /usr/bin) rather than an npm- or
 # uv-managed tool. See pr-reviewer-bakeoff.service for the rationale on
 # excluding /home/odio/.local (writable-PATH attack vector).

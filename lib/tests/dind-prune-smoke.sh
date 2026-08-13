@@ -77,6 +77,14 @@ if [ "\$1" = exec ]; then
         "images --format")
             [ -n "\${IMAGES_FAIL:-}" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
             cat "\${IMAGES_FIXTURE:-$d/images}"; exit 0 ;;
+        "rmi "*)
+            # RMI_FAIL: every tag conflicts (stopped containers pin them all) —
+            # the permanent zero-reclaim shape. Default: all tags untag.
+            if [ -n "\${RMI_FAIL:-}" ]; then
+                echo "conflict: unable to remove repository reference: container 9f2 is using it" >&2
+                exit 1
+            fi
+            shift; for t in "\$@"; do echo "Untagged: \$t"; done; exit 0 ;;
         "image prune")
             [ -n "\${PRUNE_FAIL:-}" ] && { echo "Error response from daemon: prune failed" >&2; exit 1; }
             echo "Total reclaimed space: 1.5GB"; exit 0 ;;
@@ -197,5 +205,16 @@ PRUNE_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(h) exited 0 despite a faile
 grep -q "'docker image' failed" "$d/dind-prune.log" || fail "(h) prune failure never logged"
 echo "  PASS"
 
+# --- (i) selected tags but none removed is a failure, not a clean tick ------
+# lib/run-dir.sh reaps a sandbox's leftover containers at the START of its next
+# review and nothing cleans up when one ends, so a sandbox that stops claiming
+# PRs sits on stopped containers pinning its own images — reclaiming nothing on
+# every tick, forever, while the journal shows a one-line error and exit 0.
+echo "  (i) tags selected but none untagged is reported as failure..."
+: > "$CALLS"; : > "$d/dind-prune.log"
+RMI_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(i) exited 0 when every selected tag failed to remove"
+grep -q "none untagged" "$d/dind-prune.log" || fail "(i) the zero-reclaim case was not surfaced"
+echo "  PASS"
+
 echo ""
-echo "PASS (8 checks)"
+echo "PASS (9 checks)"

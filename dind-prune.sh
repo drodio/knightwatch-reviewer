@@ -163,16 +163,25 @@ for C in "${DINDS[@]}"; do
         || log "$C: WARNING -- $UNPARSED image timestamp(s) unparseable, those images were not considered"
 
     if [ "${#STALE[@]}" -ne 0 ]; then
-        # No -f: an image still referenced by a container must survive. A
-        # nonzero status here is the benign mid-run race (a review started
-        # since the idle check, so one tag is now in use) — surfaced in the log
-        # but deliberately not raising FAILED, unlike a whole-phase prune
-        # failure below.
+        # No -f: an image still referenced by a container must survive.
         RMI=$(docker exec "$C" docker rmi "${STALE[@]}" 2>&1)
         UNTAGGED=$(printf '%s\n' "$RMI" | grep -c '^Untagged:')
         log "$C: ${#STALE[@]} stale per-PR tag(s) selected, $UNTAGGED untagged"
-        ERRS=$(printf '%s\n' "$RMI" | grep -i '^error' | tail -1)
-        [ -z "$ERRS" ] || log "$C: rmi reported errors -- $ERRS"
+        ERRS=$(printf '%s\n' "$RMI" | grep -i '^error\|^conflict' | tail -1)
+        if [ "$UNTAGGED" -eq 0 ]; then
+            # Selected work, removed none. A genuine mid-run race (a review
+            # started since the idle check) conflicts on the one tag it just
+            # claimed and untags the rest, so it never lands here. Zero untagged
+            # is the persistent shape instead: lib/run-dir.sh reaps a sandbox's
+            # leftover containers at the START of its next review and nothing
+            # cleans up when one ends, so a sandbox that stops claiming PRs sits
+            # on stopped containers pinning its own images and reclaims nothing
+            # on every tick, forever. Raise it rather than let that read green.
+            log "$C: FAILED -- ${#STALE[@]} tag(s) selected but none untagged${ERRS:+ -- $ERRS}"
+            FAILED=1
+        elif [ -n "$ERRS" ]; then
+            log "$C: rmi reported errors -- $ERRS"
+        fi
     else
         log "$C: no per-PR images older than ${PRUNE_HOURS}h"
     fi
