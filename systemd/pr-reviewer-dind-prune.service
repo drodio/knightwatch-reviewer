@@ -1,0 +1,47 @@
+[Unit]
+Description=Plow PR reviewer — prune stale per-PR images inside the dind sandboxes
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=odio
+Group=odio
+# The nested daemons are reached over the host docker socket, so this unit needs
+# the docker group. Setting Group=odio above replaces only the PRIMARY group —
+# supplementary groups still come from the user database — but state it
+# explicitly: a sibling attempt at this prune as a systemd --user unit failed
+# precisely because a non-root user unit cannot add a supplementary group, and
+# an implicit dependency on initgroups is what made that failure hard to read.
+SupplementaryGroups=docker
+WorkingDirectory=/home/odio/.pr-reviewer
+Environment=HOME=/home/odio
+# PATH: system dirs FIRST (see pr-reviewer-bakeoff.service for rationale —
+# defense-in-depth on top of the ~/.local-not-in-ReadWritePaths fix).
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/odio/.nvm/versions/node/v24.15.0/bin:/home/odio/.local/bin
+ExecStart=/home/odio/.pr-reviewer/dind-prune.sh
+# Budget for the bootstrap run. Steady-state ticks are seconds-to-minutes
+# because a week's worth of images is a few dozen, but the FIRST run against a
+# sandbox that has never been pruned deletes hundreds of layers — the 434 GB
+# sandbox measured on 2026-08-13 took ~10min on its own, and the unit walks the
+# whole fleet serially. Fail-slow once, fast forever after.
+TimeoutStartSec=2h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pr-reviewer-dind-prune
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHome=read-only
+# Narrower than the sibling units: this script writes only its own log and lock
+# under the bot state dir. It needs no cache/config aperture because it shells
+# out to `docker` (a static binary in /usr/bin) rather than an npm- or
+# uv-managed tool. See pr-reviewer-bakeoff.service for the rationale on
+# excluding /home/odio/.local (writable-PATH attack vector).
+ReadWritePaths=/home/odio/.pr-reviewer
+
+[Install]
+WantedBy=multi-user.target

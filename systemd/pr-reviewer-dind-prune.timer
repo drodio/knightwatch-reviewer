@@ -1,0 +1,17 @@
+[Unit]
+Description=Plow PR reviewer dind image prune (daily at 04:20)
+
+[Timer]
+# 04:20 keeps it clear of the operator's 13:00–13:30 host-level docker prune
+# crontab block and lands in the quietest review window, so the idle check
+# skips the fewest sandboxes.
+OnCalendar=*-*-* 04:20:00
+# Persistent=true: unlike the hourly siblings, a missed daily tick matters —
+# the box went to 100% full because this class of cleanup never ran. Catch up
+# on the next boot rather than waiting another day.
+Persistent=true
+AccuracySec=1min
+Unit=pr-reviewer-dind-prune.service
+
+[Install]
+WantedBy=timers.target
