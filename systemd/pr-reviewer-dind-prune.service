@@ -1,6 +1,10 @@
 [Unit]
 Description=Plow PR reviewer — prune stale per-PR images inside the dind sandboxes
-After=docker.service
+# knightwatch-reviewer.service brings the sandbox fleet up. Ordering against it
+# matters for the Persistent=true boot catch-up run: fired on docker.service
+# alone it lands before any dind container exists, finds nothing to prune, and
+# burns the catch-up tick it was scheduled for.
+After=docker.service knightwatch-reviewer.service
 Wants=docker.service
 
 [Service]

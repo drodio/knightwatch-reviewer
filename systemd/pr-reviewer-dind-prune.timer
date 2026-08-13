@@ -1,14 +1,17 @@
 [Unit]
-Description=Plow PR reviewer dind image prune (daily at 04:20)
+Description=Plow PR reviewer dind image prune (every 6h at :20)
 
 [Timer]
-# 04:20 keeps it clear of the operator's 13:00–13:30 host-level docker prune
-# crontab block and lands in the quietest review window, so the idle check
-# skips the fewest sandboxes.
-OnCalendar=*-*-* 04:20:00
-# Persistent=true: unlike the hourly siblings, a missed daily tick matters —
-# the box went to 100% full because this class of cleanup never ran. Catch up
-# on the next boot rather than waiting another day.
+# Every 6h rather than daily. The prune skips any sandbox with a review in
+# flight, and the sandbox filling fastest is the one most likely to be busy at
+# any sampled instant — on a daily tick that sandbox is dropped for a full day.
+# Re-sampling four times a day is a cheaper fix than a retry loop, since a run
+# against an already-pruned sandbox costs seconds. :20 keeps every tick clear
+# of the operator's 13:00–13:30 host-level docker prune crontab block.
+OnCalendar=*-*-* 00,06,12,18:20:00
+# Persistent=true: unlike the hourly siblings, a missed tick matters — the box
+# went to 100% full because this class of cleanup never ran at all. Catch up on
+# the next boot rather than waiting for the next window.
 Persistent=true
 AccuracySec=1min
 Unit=pr-reviewer-dind-prune.service

@@ -268,6 +268,10 @@ test:
     bash lib/tests/reeval-marker-smoke.sh
 
     echo ""
+    echo "=== dind-prune smoke test ==="
+    bash lib/tests/dind-prune-smoke.sh
+
+    echo ""
     echo "all checks passed"
 
 # Render docker-compose.yml from docker/secrets/fleet.conf.
