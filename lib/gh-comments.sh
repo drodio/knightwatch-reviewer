@@ -27,8 +27,9 @@
 # helper and gets correct pagination — and a uniform failure contract —
 # by construction.
 
-# The one grammar for reading a slash command out of a comment body, shared by
-# every consumer: review.sh (trigger + vouch selectors), lib/pr-comments.sh
+# The grammar for reading a slash command out of a comment body. Consumers,
+# all of which call these rather than re-deriving them:
+# review.sh (trigger + vouch selectors), lib/pr-comments.sh
 # (thread staging), specialist-bakeoff.sh (feedback scan), and
 # poll-pr-actions.sh (is_approve_request, via `jq -Rse`).
 #

@@ -278,7 +278,7 @@ body_bytes=$(jq -r '.[0].body' "$MOCK_COMMENTS_FILE" | wc -c)
 [ "$body_bytes" -gt 65536 ] || { echo "FATAL: scenario 4b body is only $body_bytes bytes — under the pipe buffer, so it cannot reproduce the bug"; exit 1; }
 run_approve
 n=$(count_approves)
-[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the extractor dropped a real approval on a long body — an early-closing consumer took SIGPIPE and pipefail read 141 as "no approval""; cat "$LOG_FILE"; exit 1; }
+[ "$n" -eq 1 ] || { echo "FAIL scenario 4b: expected 1 approve on a >64KiB body, got $n — the extractor dropped a real approval on a long body — an early-closing consumer took SIGPIPE and pipefail read 141 as \"no approval\""; cat "$LOG_FILE"; exit 1; }
 
 # Scenario 5: untrusted user — no approve, seen marked
 echo "  scenario 5: untrusted /srosro-approve — no approve, seen marked..."
@@ -314,6 +314,12 @@ APPROVE_BODY_MATRIX=(
     'leading whitespace|1|   /srosro-approve'
     'leading blank lines|1|\n\n/srosro-approve'
     'CRLF line ending|1|/srosro-approve\r\nlooks good to me'
+    # A lone CR as the FINAL byte — the exact body round 7 flagged. \r\n is
+    # normalized, a lone \r is not, so the terminator class ([ \\t]|$) rejects
+    # this. It approved under the deleted bash twin, which stripped every \r;
+    # re-derive a parser that does, and this goes red. Paired with the row
+    # above so the normalize/preserve split is visible in one place.
+    'lone CR as the final byte is not a terminator|0|/srosro-approve\r'
     'framing AFTER the command|1|/srosro-approve\n\nship it, tests are green'
     'mid-sentence mention|0|do not use /srosro-approve yet, the smoke is still red'
     'framing BEFORE the command|0|LGTM all green\n/srosro-approve'
