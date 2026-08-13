@@ -315,10 +315,14 @@ APPROVE_BODY_MATRIX=(
     'leading blank lines|1|\n\n/srosro-approve'
     'CRLF line ending|1|/srosro-approve\r\nlooks good to me'
     # A lone CR as the FINAL byte — the exact body round 7 flagged. \r\n is
-    # normalized, a lone \r is not, so the terminator class ([ \\t]|$) rejects
-    # this. It approved under the deleted bash twin, which stripped every \r;
-    # re-derive a parser that does, and this goes red. Paired with the row
-    # above so the normalize/preserve split is visible in one place.
+    # normalized, a lone \r is not, so the terminator class ([ \\t]|$) rejects it.
+    # Measured reach — it approves, i.e. this row goes red, under any of:
+    #   terminator class widened to \\s
+    #   \r normalization widened to gsub("\r"; "")
+    #   a re-derived bash extractor stripping \r as a line SUFFIX (what the
+    #     deleted twin actually did) or blanket (what it did before alignment)
+    # Paired with the CRLF row above so normalize-\r\n vs preserve-lone-\r
+    # reads in one place.
     'lone CR as the final byte is not a terminator|0|/srosro-approve\r'
     'framing AFTER the command|1|/srosro-approve\n\nship it, tests are green'
     'mid-sentence mention|0|do not use /srosro-approve yet, the smoke is still red'
