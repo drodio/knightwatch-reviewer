@@ -93,7 +93,7 @@ uv tool install 'vulture==2.16' >/dev/null
 #      operator hasn't edited yet (e.g., re-ran install.sh on a fresh
 #      clone, or a tool raw-cp'd the template). Reject the same way; the
 #      operator hitting "already configured" silently is the bug.
-info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, poll [merged /srosro-approve + re-request], kid-refresh). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
+info "NOTE: this installs the auxiliary host timers (bake-off, org-sync, learn, poll [merged /srosro-approve + re-request], kid-refresh, dind-prune). The review loop itself runs in the containerized multi-account fleet — see README.md § Containerized (multi-account) deployment and docker-compose.yml."
 
 if [[ ! -f "$REPO_DIR/repos.conf" ]]; then
     [[ -f "$REPO_DIR/repos.conf.example" ]] || fail "neither repos.conf nor repos.conf.example present at $REPO_DIR"

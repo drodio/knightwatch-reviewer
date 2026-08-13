@@ -70,31 +70,17 @@ if [ "\$1" = exec ]; then
     C="\$2"; shift 3   # drop: exec, <container>, the nested "docker"
     case "\$1 \${2:-}" in
         "ps -q")
-            # PS_FAIL_DIND's daemon refuses connections for its first
-            # PS_FAIL_TIMES polls (default: forever), which is what exercises
-            # nested_running's readiness retry and its give-up path.
-            if [ "\$C" = "\${PS_FAIL_DIND:-}" ]; then
-                n=\$(cat "$d/psfail.\$C" 2>/dev/null || echo 0); n=\$((n + 1))
-                echo "\$n" > "$d/psfail.\$C"
-                if [ "\$n" -le "\${PS_FAIL_TIMES:-999}" ]; then
-                    echo "Cannot connect to the Docker daemon at tcp://127.0.0.1:2375" >&2
-                    exit 1
-                fi
-            fi
-            # BUSY_DIND is busy from the start. TURNS_BUSY_DIND is idle on the
-            # FIRST poll and busy on every later one — that models a review
-            # starting during the (minutes-long) image phase, which is the only
-            # way to exercise the re-check guarding the volume sweep.
-            [ "\$C" = "\${BUSY_DIND:-}" ] && { echo deadbeefcafe; exit 0; }
-            if [ "\$C" = "\${TURNS_BUSY_DIND:-}" ]; then
-                n=\$(cat "$d/psq.\$C" 2>/dev/null || echo 0); n=\$((n + 1))
-                echo "\$n" > "$d/psq.\$C"
-                [ "\$n" -gt 1 ] && echo deadbeefcafe
-            fi
+            [ "\$C" = "\${PS_FAIL_DIND:-}" ] && {
+                echo "Cannot connect to the Docker daemon at tcp://127.0.0.1:2375" >&2; exit 1; }
+            [ "\$C" = "\${BUSY_DIND:-}" ] && echo deadbeefcafe
             exit 0 ;;
         "images --format")
             [ -n "\${IMAGES_FAIL:-}" ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
             cat "\${IMAGES_FIXTURE:-$d/images}"; exit 0 ;;
+        "image prune")
+            [ -n "\${PRUNE_FAIL:-}" ] && { echo "Error response from daemon: prune failed" >&2; exit 1; }
+            echo "Total reclaimed space: 1.5GB"; exit 0 ;;
+        "builder prune") echo "Total reclaimed space: 2GB"; exit 0 ;;
     esac
     exit 0
 fi
@@ -129,16 +115,16 @@ grep -qE "image prune.*-a|image prune.*--all" "$CALLS" \
     && fail "(a) 'docker image prune -a' reintroduced — it deletes base images by upstream Created date"
 grep -q "image prune -f" "$CALLS" || fail "(a) dangling-layer prune never ran"
 
-# Volumes DO need -a: compose names the per-PR scenario volumes, so the
-# unqualified form reclaims nothing.
-grep -q "volume prune -af" "$CALLS" || fail "(a) volume prune did not use -a (named volumes would be missed)"
-grep -q "builder prune" "$CALLS"    || fail "(a) BuildKit cache never pruned"
+# Named volumes are a fixed working set reused across PRs (~17 GB fleet-wide vs
+# 1.29 TB of images), and lib/run-dir.sh already reaps anonymous ones per review.
+# Pruning them here would delete the set the next review reuses.
+grep -q "volume prune" "$CALLS" && fail "(a) volume prune reintroduced — deletes the reused working set for no reclaim"
+grep -q "builder prune" "$CALLS" || fail "(a) BuildKit cache never pruned"
 
 # Every reclaim phase must report into the journal — a muted phase turns a
 # failed prune into a green tick.
 grep -q "dangling --"    "$d/dind-prune.log" || fail "(a) dangling prune result never logged"
 grep -q "build cache --" "$d/dind-prune.log" || fail "(a) builder prune result never logged"
-grep -q "volumes --"     "$d/dind-prune.log" || fail "(a) volume prune result never logged"
 echo "  PASS"
 
 # --- (b) only ^dind services are targeted -----------------------------------
@@ -152,8 +138,6 @@ echo "  (c) sandbox with a review in flight is skipped..."
 BUSY_DIND=knightwatch-reviewer-dind-2-1 run_prune || fail "(c) run exited non-zero"
 grep -q "exec knightwatch-reviewer-dind-2-1 docker rmi" "$CALLS" \
     && fail "(c) removed images from a sandbox with a running container"
-grep -q "exec knightwatch-reviewer-dind-2-1 docker volume prune" "$CALLS" \
-    && fail "(c) volume-pruned a sandbox with a running container — this destroys live scenario state"
 grep -q "exec knightwatch-reviewer-dind-1-1 docker rmi" "$CALLS" \
     || fail "(c) idle sibling sandbox was skipped too"
 echo "  PASS"
@@ -169,78 +153,49 @@ grep -q "no dind sandboxes running" "$d/dind-prune.log" \
     && fail "(d) reported a false all-clear instead of surfacing the daemon failure"
 echo "  PASS"
 
-# --- (e) a concurrent run backs off on the lock -----------------------------
-echo "  (e) second concurrent invocation exits on the lock..."
+# --- (e) a failing image list is not a clean all-clear ----------------------
+echo "  (e) unlistable images skip the sandbox loudly..."
 : > "$CALLS"; : > "$d/dind-prune.log"
-exec 8>"$d/dind-prune.lock"
-flock -n 8 || fail "(e) could not take the lock to build the contention fixture"
-STATE_DIR="$d" bash "$SCRIPT" || fail "(e) lock-contended run should exit 0, not error"
-grep -q "another prune holds" "$d/dind-prune.log" || fail "(e) contended run did not log the back-off"
-[ ! -s "$CALLS" ] || fail "(e) contended run still shelled out to docker"
-exec 8>&-
-echo "  PASS"
-
-# --- (f) TOCTOU: idle at entry, busy by the time the volume sweep runs ------
-# The volume sweep is the destructive phase (-a reaches named volumes, and
-# there is no until= filter to soften it), and the image phase in front of it
-# runs for minutes on a backlogged sandbox. Sampling idle once at the top of
-# the iteration is therefore not enough; this pins the re-check.
-echo "  (f) sandbox that turns busy during the image phase skips the volume sweep..."
-rm -f "$d"/psq.*
-TURNS_BUSY_DIND=knightwatch-reviewer-dind-1-1 run_prune || fail "(f) run exited non-zero"
-grep -q "exec knightwatch-reviewer-dind-1-1 docker rmi" "$CALLS" \
-    || fail "(f) image phase never ran on a sandbox that was idle at entry"
-grep -q "exec knightwatch-reviewer-dind-1-1 docker volume prune" "$CALLS" \
-    && fail "(f) volume-pruned a sandbox that turned busy mid-run — the TOCTOU re-check is missing"
-echo "  PASS"
-
-# --- (g) a failing image list is not a clean all-clear ----------------------
-echo "  (g) unlistable images skip the sandbox loudly..."
-IMAGES_FAIL=1 run_prune || fail "(g) run exited non-zero"
-grep -q "cannot list images" "$d/dind-prune.log" || fail "(g) image-list failure never surfaced"
+IMAGES_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(e) exited 0 despite being unable to list images"
+grep -q "cannot list images" "$d/dind-prune.log" || fail "(e) image-list failure never surfaced"
 grep -q "no per-PR images older than" "$d/dind-prune.log" \
-    && fail "(g) reported a clean all-clear despite being unable to list images"
-grep -q "docker rmi" "$CALLS" && fail "(g) attempted removals from an unlistable sandbox"
-grep -q "volume prune" "$CALLS" && fail "(g) volume-pruned a sandbox it could not list"
+    && fail "(e) reported a clean all-clear despite being unable to list images"
+grep -q "docker rmi" "$CALLS" && fail "(e) attempted removals from an unlistable sandbox"
 echo "  PASS"
 
-# --- (h) unparseable timestamps are counted, not swallowed ------------------
-echo "  (h) unparseable image timestamps are surfaced..."
-IMAGES_FIXTURE="$d/images-badtime" run_prune || fail "(h) run exited non-zero"
+# --- (f) unparseable timestamps are counted, not swallowed ------------------
+echo "  (f) unparseable image timestamps are surfaced..."
+IMAGES_FIXTURE="$d/images-badtime" run_prune || fail "(f) run exited non-zero"
 grep -q "WARNING -- 1 image timestamp" "$d/dind-prune.log" \
-    || fail "(h) unparseable timestamp was silently dropped"
-grep -q "rmi" "$CALLS" && fail "(h) removed an image whose age could not be established"
+    || fail "(f) unparseable timestamp was silently dropped"
+grep -q "rmi" "$CALLS" && fail "(f) removed an image whose age could not be established"
 echo "  PASS"
 
-# --- (i) an unreachable nested daemon is given up on, loudly ----------------
-# nested_running guards BOTH the entry check and the pre-volume re-check, so a
-# give-up path that returned 0 would let rmi / image prune / builder prune /
-# volume prune -af all fire against a sandbox the script cannot see into.
-# NESTED_READY_SLEEP=0 keeps the suite from paying the real backoff.
-echo "  (i) permanently unreachable nested daemon is skipped, siblings still run..."
-rm -f "$d"/psfail.*
-PS_FAIL_DIND=knightwatch-reviewer-dind-1-1 NESTED_READY_TRIES=2 NESTED_READY_SLEEP=0 \
-    run_prune || fail "(i) run exited non-zero"
+# --- (g) an unreachable nested daemon is skipped, siblings still run --------
+# A give-up path that returned 0 would let rmi / image prune / builder prune
+# all fire against a sandbox the script cannot see into. Not a hard failure:
+# a dockerd still starting is an expected state the next 6-hourly tick handles.
+echo "  (g) unreachable nested daemon is skipped, siblings still run..."
+PS_FAIL_DIND=knightwatch-reviewer-dind-1-1 run_prune \
+    || fail "(g) a not-yet-ready sandbox should not fail the whole run"
 grep -q "nested daemon unreachable" "$d/dind-prune.log" \
-    || fail "(i) unreachable daemon never surfaced in the log"
-for phase in rmi "image prune" "builder prune" "volume prune"; do
+    || fail "(g) unreachable daemon never surfaced in the log"
+for phase in rmi "image prune" "builder prune"; do
     grep -q "exec knightwatch-reviewer-dind-1-1 docker $phase" "$CALLS" \
-        && fail "(i) ran '$phase' against a sandbox whose daemon never answered"
+        && fail "(g) ran '$phase' against a sandbox whose daemon never answered"
 done
 grep -q "exec knightwatch-reviewer-dind-2-1 docker rmi" "$CALLS" \
-    || fail "(i) one unreachable sandbox aborted the sweep for its siblings"
+    || fail "(g) one unreachable sandbox aborted the sweep for its siblings"
 echo "  PASS"
 
-# --- (j) a daemon that is merely slow to start is retried, not skipped ------
-# The boot catch-up case: the dind container is up but its dockerd needs a few
-# more seconds. Without the retry this sandbox is dropped until the next tick.
-echo "  (j) daemon that fails once then answers is processed normally..."
-rm -f "$d"/psfail.*
-PS_FAIL_DIND=knightwatch-reviewer-dind-1-1 PS_FAIL_TIMES=1 NESTED_READY_TRIES=2 NESTED_READY_SLEEP=0 \
-    run_prune || fail "(j) run exited non-zero"
-grep -q "exec knightwatch-reviewer-dind-1-1 docker rmi" "$CALLS" \
-    || fail "(j) a sandbox that answered on the second poll was skipped — retry not effective"
+# --- (h) a failed prune phase exits nonzero --------------------------------
+# `docker exec … | tail -1` hands the pipeline tail's status, so a failed prune
+# would otherwise read as a clean tick while storage stayed put.
+echo "  (h) a failed reclaim phase surfaces and exits nonzero..."
+: > "$CALLS"; : > "$d/dind-prune.log"
+PRUNE_FAIL=1 STATE_DIR="$d" bash "$SCRIPT" && fail "(h) exited 0 despite a failed prune phase"
+grep -q "'docker image' failed" "$d/dind-prune.log" || fail "(h) prune failure never logged"
 echo "  PASS"
 
 echo ""
-echo "PASS (10 checks)"
+echo "PASS (8 checks)"

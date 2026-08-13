@@ -13,14 +13,22 @@
 # What accumulates: `just test` builds per-PR scenario images — roughly 5
 # images / ~3.9 GB per PR. Once that PR's review rounds finish they are dead
 # weight that nothing will ever hit again.
+#
+# What deliberately is NOT collected: named volumes. Measured on the same
+# fleet, every sandbox carries the same three (plow_db-data, plow_minio-data,
+# plow_test-db-data) — a fixed working set reused across PRs, ~17 GB fleet-wide
+# against 1.29 TB of images, and NOT growing with PR count. Anonymous volumes
+# are already reaped per-review by `docker rm -fv` in lib/run-dir.sh. A
+# `volume prune -af` here would delete the working set the next review reuses
+# (forcing a database re-seed) to reclaim storage that was no part of the
+# incident.
 
 set -u
 # PATH inherited from systemd unit (system dirs first; writable user dirs
 # trailing). See review.sh for the writable-PATH security context.
 
 STATE_DIR="${STATE_DIR:-$HOME/.pr-reviewer}"
-LOG="${LOG:-$STATE_DIR/dind-prune.log}"
-LOCK="${LOCK:-$STATE_DIR/dind-prune.lock}"
+LOG="$STATE_DIR/dind-prune.log"
 
 # How old a per-PR image must be before it is collectable. A /babysit-pr loop
 # re-reviews the same PR across days and does reuse that PR's images, so this
@@ -55,13 +63,43 @@ PR_IMAGE_RE='__[0-9]+-'
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 
-# Serialize against a manual `systemctl start` landing on top of a timer run.
-# flock releases on process death, so a killed run leaves nothing to clean up.
-exec 9>"$LOCK"
-if ! flock -n 9; then
-    log "another prune holds $LOCK -- skipping"
-    exit 0
-fi
+# Raised by any nested prune that fails, so the run exits nonzero instead of
+# letting systemd report a clean tick over storage that was never reclaimed.
+# A sandbox that is merely busy or not yet up does NOT raise it: those are
+# expected states the next tick handles, and a chronically red unit is one the
+# operator learns to ignore.
+FAILED=0
+
+# Run a nested docker command; echo its last output line, return its status.
+# Piping `docker exec` straight into `tail` would hand the pipeline tail's exit
+# status and mask the error entirely, which is the whole point of this helper.
+#
+# It logs but does NOT set FAILED: every call site is a `$(...)` command
+# substitution, which runs in a subshell, so an assignment here would be
+# discarded while the log write (a file append) survived — a failure that
+# reports in the journal yet still exits 0. Callers raise FAILED themselves.
+nested() {
+    local c="$1"; shift
+    local out
+    if out=$(docker exec "$c" docker "$@" 2>&1); then
+        printf '%s\n' "$out" | tail -1
+        return 0
+    fi
+    log "$c: 'docker $1' failed -- $(printf '%s\n' "$out" | tail -1)"
+    return 1
+}
+
+# Count containers running inside a sandbox's nested daemon. Fails loudly
+# rather than reporting 0: an unreachable daemon read as "idle" would let the
+# destructive phases below fire against a sandbox we cannot actually see into.
+# One attempt, no retry — at a 6-hourly cadence against a 7-week accumulation
+# horizon, a sandbox whose dockerd is still starting is simply collected on the
+# next tick.
+nested_running() {
+    local out
+    out=$(docker exec "$1" docker ps -q 2>&1) || { printf '%s' "$out"; return 1; }
+    printf '%s\n' "$out" | sed '/^$/d' | wc -l
+}
 
 # Enumerate sandboxes by compose service label rather than by hardcoded
 # container names: lib/render-compose.sh renders the fleet to N units and the
@@ -81,31 +119,6 @@ if [ "${#DINDS[@]}" -eq 0 ]; then
     exit 0
 fi
 
-# Bounded readiness poll. knightwatch-reviewer.service is Type=oneshot around
-# `docker compose up -d`, which returns once the dind CONTAINER has started —
-# not once the dockerd inside it accepts connections, which takes seconds more
-# for storage init. Ordering After= that unit is therefore not sufficient on
-# the Persistent=true boot catch-up run: without a retry every sandbox reads
-# "unreachable" and the tick this timer exists to catch is burned again.
-NESTED_READY_TRIES="${NESTED_READY_TRIES:-6}"
-NESTED_READY_SLEEP="${NESTED_READY_SLEEP:-5}"
-
-# Count containers running inside a sandbox's nested daemon. Fails loudly
-# rather than reporting 0: an unreachable daemon read as "idle" would let the
-# destructive phases below fire against a sandbox we cannot actually see into.
-nested_running() {
-    local out="" i
-    for ((i = 1; i <= NESTED_READY_TRIES; i++)); do
-        if out=$(docker exec "$1" docker ps -q 2>&1); then
-            printf '%s\n' "$out" | sed '/^$/d' | wc -l
-            return 0
-        fi
-        [ "$i" -lt "$NESTED_READY_TRIES" ] && sleep "$NESTED_READY_SLEEP"
-    done
-    printf '%s' "$out"
-    return 1
-}
-
 CUTOFF=$(date -d "$PRUNE_HOURS hours ago" +%s)
 
 for C in "${DINDS[@]}"; do
@@ -122,6 +135,7 @@ for C in "${DINDS[@]}"; do
     # read as "no images" would log a clean green tick while the sandbox refills.
     if ! IMAGES=$(docker exec "$C" docker images --format '{{.Repository}}:{{.Tag}}	{{.CreatedAt}}' 2>&1); then
         log "$C: cannot list images -- skipping ($(printf '%s' "$IMAGES" | tail -1))"
+        FAILED=1
         continue
     fi
 
@@ -149,11 +163,12 @@ for C in "${DINDS[@]}"; do
         || log "$C: WARNING -- $UNPARSED image timestamp(s) unparseable, those images were not considered"
 
     if [ "${#STALE[@]}" -ne 0 ]; then
-        # No -f: an image still referenced by a container must survive. rmi
-        # reports per-tag errors and removes the rest, which is exactly the
-        # behavior wanted if a review started since the idle check above.
+        # No -f: an image still referenced by a container must survive. A
+        # nonzero status here is the benign mid-run race (a review started
+        # since the idle check, so one tag is now in use) — surfaced in the log
+        # but deliberately not raising FAILED, unlike a whole-phase prune
+        # failure below.
         RMI=$(docker exec "$C" docker rmi "${STALE[@]}" 2>&1)
-        # Report what actually went, not what was attempted.
         UNTAGGED=$(printf '%s\n' "$RMI" | grep -c '^Untagged:')
         log "$C: ${#STALE[@]} stale per-PR tag(s) selected, $UNTAGGED untagged"
         ERRS=$(printf '%s\n' "$RMI" | grep -i '^error' | tail -1)
@@ -163,26 +178,12 @@ for C in "${DINDS[@]}"; do
     fi
 
     # Dangling layers only — deliberately NOT `-a`, per the header note.
-    DANGLING=$(docker exec "$C" docker image prune -f 2>&1 | tail -1)
+    DANGLING=$(nested "$C" image prune -f) || { DANGLING="FAILED"; FAILED=1; }
     # BuildKit's until= DOES key off last use, unlike the image filter, so the
     # age window means what it says here. Build cache is a first-class consumer
-    # in a sandbox that rebuilds ~4 GB of scenario stacks per PR, so its
-    # reclaimed total belongs in the journal rather than /dev/null.
-    BUILDER=$(docker exec "$C" docker builder prune -f --filter "until=${PRUNE_HOURS}h" 2>&1 | tail -1)
+    # in a sandbox that rebuilds ~4 GB of scenario stacks per PR.
+    BUILDER=$(nested "$C" builder prune -f --filter "until=${PRUNE_HOURS}h") || { BUILDER="FAILED"; FAILED=1; }
     log "$C: dangling -- ${DANGLING:-no output}; build cache -- ${BUILDER:-no output}"
-
-    # Re-check idle immediately before the volume sweep. The image work above
-    # runs for minutes on a backlogged sandbox and review-loop.sh polls
-    # continuously, so the check at the top of this iteration is stale by now.
-    # This phase is the one that can destroy a live scenario's state: `docker
-    # volume prune` accepts no until= filter, and -a is required to reach NAMED
-    # volumes (compose names the per-PR scenario stacks' volumes, so without -a
-    # this reclaims nothing) — which also means -a will take a running
-    # scenario's database volume if the sandbox turned busy.
-    if ! RUNNING=$(nested_running "$C") || [ "$RUNNING" -ne 0 ]; then
-        log "$C: busy or unreachable after image phase -- skipping volume prune"
-        continue
-    fi
-    VOL=$(docker exec "$C" docker volume prune -af 2>&1 | tail -1)
-    log "$C: volumes -- ${VOL:-no output}"
 done
+
+exit "$FAILED"
