@@ -223,6 +223,48 @@ format_review_scope() {
     esac
 }
 
+# Untag the per-PR scenario images prior reviews left in this sandbox. `just
+# test` builds ~5 images / ~3.9 GB per PR and nothing collected them: a host
+# prune cannot see inside a dind volume, and six sandboxes reached 1.35 TB over
+# ~7 weeks with the root filesystem at 100%. Done here rather than on a host
+# timer because the sandbox is ours at this point — the reap above just emptied
+# it — which removes any need for a busy check, fleet enumeration or host->dind
+# routing. A sandbox that stops claiming PRs keeps its last batch; bounded.
+#
+# Keyed on the PR number from repo_dir's basename. Two traps, both of which
+# reap THIS review's images right before the build that reuses them:
+#   - NOT the compose project name: compose strips characters outside
+#     [a-z0-9_-], so `cncorp_plow.co__950` becomes `cncorp_plowco__950` and a
+#     dotted repo name silently stops matching. `__<digits>` survives that.
+#   - NOT an image timestamp: Created is when the layer was FIRST built, so a
+#     cache-hit re-tag inherits a weeks-old stamp and any age window reaps a tag
+#     applied minutes ago. (BuildKit's `until` below is different — it measures
+#     last use.) Docker exposes no last-used stamp for images.
+# Sharing a number across repos spares rather than reaps — the safe direction.
+# Requires repo_dir to end in `__<PR#>`; review-one-pr.sh:411 is the sole caller
+# and builds it that way. Untags by tag, not id: a cache-hit twin carries two
+# tags and `docker rmi <id>` refuses a multi-repository image.
+#
+# Never fatal: reclaiming disk must not fail a review.
+SCENARIO_BUILD_CACHE_MAX_AGE_H=168
+prune_stale_scenario_images() {
+    local repo_dir="$1" pr_num tag stale=()
+    pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
+    while IFS= read -r tag; do
+        [[ "$tag" =~ __[0-9]+- ]] || continue                 # a per-PR scenario image
+        [[ "$tag" == *"__${pr_num}-"* ]] && continue          # this review's own
+        stale+=("$tag")
+    done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+
+    if [ "${#stale[@]}" -gt 0 ]; then
+        docker rmi "${stale[@]}" >/dev/null 2>&1 || true      # no -f: a held image survives
+        log "$PR_ID: reclaiming ${#stale[@]} scenario image tag(s) from prior reviews"
+    fi
+    docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
+    docker builder prune -f --filter "until=${SCENARIO_BUILD_CACHE_MAX_AGE_H}h" >/dev/null 2>&1 \
+        || log "$PR_ID: build cache prune failed (non-fatal)"
+}
+
 # run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
 #
 # Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
@@ -280,6 +322,7 @@ run_just_test() {
         orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
             && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
+        prune_stale_scenario_images "$repo_dir"
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override

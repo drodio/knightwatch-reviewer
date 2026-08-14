@@ -34,12 +34,30 @@ export SCENARIO_SHARED_DIR="$d/sshared"
 # The stub records argv and answers `ps -aq` with ORPHAN_ID when set, so BOTH
 # reap paths are asserted for real: the common clean-dind run (no orphans →
 # no docker rm, prunes still fire) and the orphan run (found → rm -f'd).
+# Re-installable: later sections overwrite $d/bin/docker with narrower stubs to
+# drive failure branches, so the full one has to be restorable rather than
+# written once.
+install_docker_stub() {
 cat > "$d/bin/docker" <<STUB
 #!/bin/bash
 echo "docker \$*" >> "$d/docker.calls"
 [ "\$1" = ps ] && [ -n "\${ORPHAN_ID:-}" ] && echo "\$ORPHAN_ID"
+# Image inventory for the scenario-image reclaim. __950 is the review under
+# test (its workdir basename is the compose project), __951 belongs to another
+# PR, python is a pulled base image.
+if [ "\$1" = images ]; then
+    echo "cncorp_plow__950-scenarios-plow-api:latest"
+    echo "cncorp_plow__951-scenarios-plow-api:latest"
+    # A repo whose name carries a dot: compose strips it from the project, so
+    # the tag does NOT contain the workdir basename verbatim.
+    echo "cncorp_plowco__950-scenarios-plow-api:latest"
+    echo "python:3.12-slim"
+fi
 exit 0
 STUB
+chmod +x "$d/bin/docker"
+}
+install_docker_stub
 # log()/PR_ID are the worker's context (state-io.sh); the FATAL branches
 # asserted below need both to exist here.
 log() { echo "$*"; }
@@ -109,5 +127,53 @@ printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # r
 unset REVIEWER_TEST_USER
 run_just_test /dev/null "$d/repo" "$d/log2" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpectedly scrubbed the env (should be container-only)"
+
+# --- scenario image reclaim -------------------------------------------------
+# Runs in the same preflight as the reap above, on a sandbox this run owns.
+# The selection contract is stated once, at prune_stale_scenario_images in
+# lib/run-dir.sh; these cases pin its consequences.
+export REVIEWER_TEST_USER=reviewer-test
+install_docker_stub                          # earlier sections narrowed it
+mkdir -p "$d/cncorp_plow__950"               # workdir basename == compose project
+: > "$d/docker.calls"
+run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-prune" 30s 5s
+grep -q "rmi.*__951" "$d/docker.calls" || fail "another PR's scenario image was not reclaimed"
+grep -q "rmi.*__950" "$d/docker.calls" && fail "reclaimed THIS review's own images — forces a rebuild of what it is about to use"
+grep -q "rmi.*python" "$d/docker.calls" && fail "reclaimed a pulled base image"
+grep -qE "image prune.*-a|image prune.*--all" "$d/docker.calls" \
+    && fail "'image prune -a' used — deletes base images by upstream Created date"
+grep -q "image prune -f" "$d/docker.calls"   || fail "dangling layers never pruned"
+grep -q "builder prune" "$d/docker.calls"    || fail "BuildKit cache never pruned"
+# Reclaim must precede the build it makes room for.
+awk '/docker rmi/{p=1} /docker (image|builder) prune/{if(!p) exit 1}' "$d/docker.calls" \
+    || fail "prune phases ran before the tag removal"
+
+# A repo whose GitHub name carries a dot. Compose strips characters outside
+# [a-z0-9_-] when deriving the project, so the workdir basename
+# (cncorp_plow.co__950) is NOT a prefix of the resulting tags
+# (cncorp_plowco__950-…). Matching on the whole project name would classify
+# this review's own images as another PR's and reap them right before the build
+# that reuses them — silently, every round, for that repo. Verified against
+# docker compose, not assumed.
+mkdir -p "$d/cncorp_plow.co__950"
+: > "$d/docker.calls"
+run_just_test /dev/null "$d/cncorp_plow.co__950" "$d/log-dotted" 30s 5s
+grep -q "rmi.*cncorp_plowco__950" "$d/docker.calls" \
+    && fail "reclaimed this review's own images for a dotted repo name (compose-normalization mismatch)"
+grep -q "rmi.*__951" "$d/docker.calls" \
+    || fail "dotted-repo run stopped reclaiming other PRs' images"
+
+# Reclaiming is best-effort: a docker that fails outright must not fail the
+# review. Called WITHOUT `|| fail` — bash suppresses errexit for any command
+# whose status is tested, and that suppression reaches inside the function (and
+# inside a subshell), so `run_just_test … || fail` could not observe an abort at
+# all. Untested, the script's own `set -e` makes one loud, and the log assertion
+# catches the silent-skip shape errexit wouldn't.
+printf '#!/bin/bash\ncase "$1" in ps) exit 0;; *) exit 1;; esac\n' > "$d/bin/docker"
+run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-prune-fail" 30s 5s
+grep -q "GH_TOKEN_VISIBLE" "$d/log-prune-fail" \
+    || fail "the review did not proceed past a failed reclaim"
+
+install_docker_stub                                                          # restore
 
 echo "PASS: run-just-test-isolation-smoke"
