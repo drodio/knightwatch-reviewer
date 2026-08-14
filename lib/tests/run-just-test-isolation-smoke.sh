@@ -42,16 +42,14 @@ cat > "$d/bin/docker" <<STUB
 #!/bin/bash
 echo "docker \$*" >> "$d/docker.calls"
 [ "\$1" = ps ] && [ -n "\${ORPHAN_ID:-}" ] && echo "\$ORPHAN_ID"
-# Image inventory for the stale-scenario-image reclaim. Dates are relative so a
-# fixture can never drift across the age window as real time passes.
+# Image inventory for the scenario-image reclaim. __950 is the review under
+# test (its workdir basename is the compose project), __951 belongs to another
+# PR, python is a pulled base image.
 if [ "\$1" = images ]; then
-    old=\$(date -u -d '30 days ago' '+%Y-%m-%d %H:%M:%S +0000 UTC')
-    new=\$(date -u -d '1 hour ago'  '+%Y-%m-%d %H:%M:%S +0000 UTC')
-    printf '%s\t%s\n' "cncorp_plow__950-scenarios-plow-api:latest" "\$old"
-    printf '%s\t%s\n' "cncorp_plow__962-scenarios-plow-api:latest" "\$new"
-    printf '%s\t%s\n' "python:3.12-slim" "\$old"
+    echo "cncorp_plow__950-scenarios-plow-api:latest"
+    echo "cncorp_plow__951-scenarios-plow-api:latest"
+    echo "python:3.12-slim"
 fi
-[ "\$1" = rmi ] && { shift; for t in "\$@"; do echo "Untagged: \$t"; done; }
 exit 0
 STUB
 chmod +x "$d/bin/docker"
@@ -127,59 +125,39 @@ unset REVIEWER_TEST_USER
 run_just_test /dev/null "$d/repo" "$d/log2" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpectedly scrubbed the env (should be container-only)"
 
-# --- stale per-PR scenario image reclaim ------------------------------------
-# Runs in the same preflight as the reap above, on a sandbox this run owns. The
-# selection is the load-bearing part: `image prune -a --filter until=` keys off
-# Created, which for a PULLED base image is the upstream build date, so a
-# blanket sweep would delete python:/ubuntu: (re-pulled anonymously against
-# Docker Hub's per-IP budget, shared by six sandboxes) and keep the fresh per-PR
-# images it was meant to collect — exactly inverted.
+# --- scenario image reclaim -------------------------------------------------
+# Runs in the same preflight as the reap above, on a sandbox this run owns.
+# Ownership, not age, is the selection: the workdir basename IS the compose
+# project docker tags the images with, so this review's own images are exactly
+# identifiable and every other PR's are collectable. No timestamp is consulted —
+# a cache-hit build re-tags an unchanged image, inheriting a weeks-old Created,
+# so any age window would reap a tag applied minutes ago.
 export REVIEWER_TEST_USER=reviewer-test
 install_docker_stub                          # earlier sections narrowed it
+mkdir -p "$d/cncorp_plow__950"               # workdir basename == compose project
 : > "$d/docker.calls"
-run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s
-grep -q "rmi.*__950" "$d/docker.calls" || fail "stale per-PR scenario image was not reclaimed"
-grep -q "rmi.*__962" "$d/docker.calls" && fail "reclaimed a per-PR image still inside the age window"
-grep -q "rmi.*python" "$d/docker.calls" && fail "reclaimed a base image — the Created-vs-pulled inversion"
+run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-prune" 30s 5s
+grep -q "rmi.*__951" "$d/docker.calls" || fail "another PR's scenario image was not reclaimed"
+grep -q "rmi.*__950" "$d/docker.calls" && fail "reclaimed THIS review's own images — forces a rebuild of what it is about to use"
+grep -q "rmi.*python" "$d/docker.calls" && fail "reclaimed a pulled base image"
 grep -qE "image prune.*-a|image prune.*--all" "$d/docker.calls" \
     && fail "'image prune -a' used — deletes base images by upstream Created date"
 grep -q "image prune -f" "$d/docker.calls"   || fail "dangling layers never pruned"
 grep -q "builder prune" "$d/docker.calls"    || fail "BuildKit cache never pruned"
 # Reclaim must precede the build it makes room for.
 awk '/docker rmi/{p=1} /docker (image|builder) prune/{if(!p) exit 1}' "$d/docker.calls" \
-    || fail "prune phases ran before the stale-tag removal"
+    || fail "prune phases ran before the tag removal"
 
-# A prune failure must never fail the review — disk reclamation is best-effort.
-# Two distinct stubs, because they exercise different code: an images listing
-# that fails short-circuits before rmi is ever reached, leaving the reclaim
-# path's own non-fatal contract unasserted.
+# Reclaiming is best-effort: a docker that fails outright must not fail the
+# review. Called WITHOUT `|| fail` — bash suppresses errexit for any command
+# whose status is tested, and that suppression reaches inside the function (and
+# inside a subshell), so `run_just_test … || fail` could not observe an abort at
+# all. Untested, the script's own `set -e` makes one loud, and the log assertion
+# catches the silent-skip shape errexit wouldn't.
 printf '#!/bin/bash\ncase "$1" in ps) exit 0;; *) exit 1;; esac\n' > "$d/bin/docker"
-run_just_test /dev/null "$d/repo" "$d/log-list-fail" 30s 5s \
-    || fail "a failed image listing aborted the review"
-
-# rmi reached, but it removes nothing and reports failure. This is where
-# `grep -c` returns 1 on a zero count: under the `set -euo pipefail` this smoke
-# runs with, an unguarded count assignment kills the review outright.
-install_docker_stub
-cat > "$d/bin/docker" <<STUB
-#!/bin/bash
-echo "docker \$*" >> "$d/docker.calls"
-if [ "\$1" = images ]; then
-    printf '%s\t%s\n' "cncorp_plow__950-scenarios-plow-api:latest" \
-        "\$(date -u -d '30 days ago' '+%Y-%m-%d %H:%M:%S +0000 UTC')"
-fi
-[ "\$1" = rmi ] && { echo "Error response from daemon: conflict: in use" >&2; exit 1; }
-exit 0
-STUB
-chmod +x "$d/bin/docker"
-# Called WITHOUT `|| fail`: bash suppresses errexit for any command whose status
-# is tested, and that suppression reaches inside the function (and inside a
-# subshell), so `run_just_test … || fail` cannot observe an aborted assignment
-# at all. Untested, the script's own `set -e` turns it into a loud failure — and
-# the log assertion below catches the silent-skip shape that errexit wouldn't.
-run_just_test /dev/null "$d/repo" "$d/log-rmi-fail" 30s 5s
-grep -q "GH_TOKEN_VISIBLE" "$d/log-rmi-fail" \
-    || fail "the review did not proceed past an rmi that untagged nothing"
+run_just_test /dev/null "$d/cncorp_plow__950" "$d/log-prune-fail" 30s 5s
+grep -q "GH_TOKEN_VISIBLE" "$d/log-prune-fail" \
+    || fail "the review did not proceed past a failed reclaim"
 
 install_docker_stub                                                          # restore
 

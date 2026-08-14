@@ -223,15 +223,14 @@ format_review_scope() {
     esac
 }
 
-# How old a per-PR scenario image must be before this sandbox collects it. A
-# /babysit-pr loop re-reviews one PR across days and reuses its images whenever
-# it lands on this sandbox again, so "every PR but the current one" would force
-# a ~4 GB rebuild mid-loop.
-SCENARIO_IMAGE_MAX_AGE_H=168
+# Build cache is pruned by age, not by project: layers are shared across PRs, so
+# there is no "belongs to this review" to key on. BuildKit's `until` genuinely
+# measures time since last USE, so the window means what it says here.
+SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 
 # Reclaim the per-PR scenario images this sandbox's PREVIOUS reviews left behind.
 # `just test` builds ~5 images / ~3.9 GB per PR, tagged for the compose project
-# docker derives from the workdir basename review.sh creates
+# docker derives from the workdir basename review-one-pr.sh creates
 # (<owner>_<repo>__<PR#>), so `__<digits>-` identifies them and nothing else
 # does. Nothing collected them before: a host-level prune cannot see inside a
 # dind sidecar's volume, and the six sandboxes reached 1.35 TB over ~7 weeks
@@ -244,39 +243,38 @@ SCENARIO_IMAGE_MAX_AGE_H=168
 # the daemon. The seam's one cost is that a sandbox which stops claiming PRs
 # keeps its last batch; that is bounded, and nothing accumulates behind it.
 #
-# Selection matches the TAG and tests age only afterwards. `image prune -a
-# --filter until=` keys off Created, which for a PULLED image is the UPSTREAM
-# build date — python:3.12-slim reads two months old on this fleet — so a
-# blanket sweep deletes the base layers most worth keeping and spares the fresh
-# per-PR ones it was meant to collect. Tags rather than image ids because two
-# PRs with identical build context share one image under both tags, and
-# `docker rmi <id>` refuses a multi-repository image ("must be forced").
+# Keep THIS review's project, reclaim every other PR's. Being at the producer is
+# what makes that possible, and it is why there is no timestamp anywhere in
+# here: image Created is the time the layer was FIRST built, so a cache-hit
+# build that re-tags an unchanged image today inherits a weeks-old stamp and any
+# age window reaps it as stale while the loop reusing it is still running.
+# Docker exposes no last-used stamp for images to fix that with. Ownership is
+# exact where age was a proxy — and a PR whose next round lands on a different
+# sandbox rebuilds there regardless, so the window was buying little.
+#
+# Tags rather than image ids: two PRs with identical build context share one
+# image under both tags, and `docker rmi <id>` refuses a multi-repository image
+# ("must be forced"). Untagging touches only what matched.
 #
 # Never fatal: reclaiming disk must not fail a review.
 prune_stale_scenario_images() {
-    local cutoff tag created built removed stale=()
-    cutoff=$(date -d "$SCENARIO_IMAGE_MAX_AGE_H hours ago" +%s) || return 0
-    while IFS=$'\t' read -r tag created; do
-        [[ "$tag" =~ __[0-9]+- ]] || continue
-        # CreatedAt is "<date> <time> <offset> <zone-name>"; take the first three
-        # fields — the zone NAME varies with the daemon's TZ and date(1) cannot
-        # parse it, while the numeric offset is unambiguous.
-        built=$(date -d "$(printf '%s' "$created" | awk '{print $1, $2, $3}')" +%s 2>/dev/null) || continue
-        [ "$built" -lt "$cutoff" ] && stale+=("$tag")
-    done < <(docker images --format '{{.Repository}}:{{.Tag}}	{{.CreatedAt}}' 2>/dev/null)
+    local repo_dir="$1" project tag stale=()
+    project=$(basename "$repo_dir"); project="${project,,}"   # compose lowercases
+    while IFS= read -r tag; do
+        [[ "$tag" =~ __[0-9]+- ]] || continue                 # a per-PR scenario image
+        [[ "${tag,,}" == "$project-"* ]] && continue          # this review's own
+        stale+=("$tag")
+    done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 
     if [ "${#stale[@]}" -gt 0 ]; then
-        # No -f: an image a container still references must survive.
-        # `|| true` is load-bearing twice over: grep -c exits 1 when the count
-        # is 0 (nothing left to untag — a repeat sweep, or every removal
-        # refused), and under pipefail a partially-failing rmi would sink the
-        # assignment even where grep did match. Either would abort the review
-        # this function promises never to fail.
-        removed=$(docker rmi "${stale[@]}" 2>&1 | grep -c '^Untagged:' || true)
-        log "$PR_ID: reclaimed ${removed}/${#stale[@]} stale scenario image tag(s)"
+        # Best-effort and silent: no -f, so an image a container still holds
+        # survives, and the outcome that matters is reclaimed disk plus a review
+        # that keeps running — neither of which a per-tag success count changes.
+        docker rmi "${stale[@]}" >/dev/null 2>&1 || true
+        log "$PR_ID: reclaiming ${#stale[@]} scenario image tag(s) from prior reviews"
     fi
     docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
-    docker builder prune -f --filter "until=${SCENARIO_IMAGE_MAX_AGE_H}h" >/dev/null 2>&1 \
+    docker builder prune -f --filter "until=${SCENARIO_BUILD_CACHE_MAX_AGE_H}h" >/dev/null 2>&1 \
         || log "$PR_ID: build cache prune failed (non-fatal)"
 }
 
@@ -337,7 +335,7 @@ run_just_test() {
         orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
             && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
             || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
-        prune_stale_scenario_images
+        prune_stale_scenario_images "$repo_dir"
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
