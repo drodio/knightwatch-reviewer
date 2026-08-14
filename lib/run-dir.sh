@@ -242,12 +242,6 @@ SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 # the daemon. The seam's one cost is that a sandbox which stops claiming PRs
 # keeps its last batch; that is bounded, and nothing accumulates behind it.
 #
-# The key is the PR NUMBER taken from the workdir basename — see the inline note
-# at the guard for why it is not the project name, and why it is not a
-# timestamp. Trade-off, by design: a different repo's PR that happens to share
-# this number is spared too. That costs a little disk on one sandbox, and it is
-# the direction worth failing in.
-#
 # Tags rather than image ids: two PRs with identical build context share one
 # image under both tags, and `docker rmi <id>` refuses a multi-repository image
 # ("must be forced"). Untagging touches only what matched.
@@ -255,17 +249,29 @@ SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 # Never fatal: reclaiming disk must not fail a review.
 prune_stale_scenario_images() {
     local repo_dir="$1" pr_num tag stale=()
-    # Key on the PR number, not the whole project name. Compose derives the
-    # project from this basename by lowercasing AND stripping every character
-    # outside [a-z0-9_-] — verified against docker compose: `cncorp_plow.co__950`
-    # becomes `cncorp_plowco__950`. GitHub repo names legally contain dots and
-    # reach the workdir untouched through REPO_SLUG, so a whole-name comparison
-    # would miss for such a repo — and a prefix match fails toward DELETION,
-    # reaping this review's own images immediately before the build that reuses
-    # them, silently, every round. `__<digits>` survives normalization intact
-    # (both `_` and digits are in the allowed set), so match on that instead.
-    # It also fails the safe way: another repo's PR that happens to share this
-    # number is spared rather than reaped, costing a little disk on one sandbox.
+    # The key is the PR NUMBER from the workdir basename. Two rejected
+    # alternatives, both of which reap THIS review's images right before the
+    # build that reuses them — silently, every round:
+    #
+    #   Not the project name. Compose derives it from this basename by
+    #   lowercasing AND stripping every character outside [a-z0-9_-] — verified
+    #   against docker compose: `cncorp_plow.co__950` becomes
+    #   `cncorp_plowco__950`. GitHub repo names legally contain dots and reach
+    #   the workdir untouched through REPO_SLUG, so a whole-name comparison
+    #   misses for such a repo, and a prefix match that skips on hit falls
+    #   through to deletion on any divergence.
+    #
+    #   Not a timestamp. An image's Created is when the layer was FIRST built,
+    #   so a cache-hit build that re-tags an unchanged image today inherits a
+    #   weeks-old stamp — any age window reaps a tag applied minutes ago while
+    #   the loop reusing it is still running. Docker exposes no last-used stamp
+    #   for images to key on instead. (SCENARIO_BUILD_CACHE_MAX_AGE_H above is
+    #   not the same case: BuildKit's `until` does measure last use.)
+    #
+    # `__<digits>` survives compose normalization intact — both `_` and digits
+    # are inside the allowed set — and it fails the safe way: another repo's PR
+    # that happens to share this number is spared rather than reaped, costing a
+    # little disk on one sandbox.
     pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
     # Only the ownership-keyed untagging needs a recognizable layout. An
     # unrecognized basename means we cannot tell this review's images from
