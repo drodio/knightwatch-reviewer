@@ -34,12 +34,29 @@ export SCENARIO_SHARED_DIR="$d/sshared"
 # The stub records argv and answers `ps -aq` with ORPHAN_ID when set, so BOTH
 # reap paths are asserted for real: the common clean-dind run (no orphans →
 # no docker rm, prunes still fire) and the orphan run (found → rm -f'd).
+# Re-installable: later sections overwrite $d/bin/docker with narrower stubs to
+# drive failure branches, so the full one has to be restorable rather than
+# written once.
+install_docker_stub() {
 cat > "$d/bin/docker" <<STUB
 #!/bin/bash
 echo "docker \$*" >> "$d/docker.calls"
 [ "\$1" = ps ] && [ -n "\${ORPHAN_ID:-}" ] && echo "\$ORPHAN_ID"
+# Image inventory for the stale-scenario-image reclaim. Dates are relative so a
+# fixture can never drift across the age window as real time passes.
+if [ "\$1" = images ]; then
+    old=\$(date -u -d '30 days ago' '+%Y-%m-%d %H:%M:%S +0000 UTC')
+    new=\$(date -u -d '1 hour ago'  '+%Y-%m-%d %H:%M:%S +0000 UTC')
+    printf '%s\t%s\n' "cncorp_plow__950-scenarios-plow-api:latest" "\$old"
+    printf '%s\t%s\n' "cncorp_plow__962-scenarios-plow-api:latest" "\$new"
+    printf '%s\t%s\n' "python:3.12-slim" "\$old"
+fi
+[ "\$1" = rmi ] && { shift; for t in "\$@"; do echo "Untagged: \$t"; done; }
 exit 0
 STUB
+chmod +x "$d/bin/docker"
+}
+install_docker_stub
 # log()/PR_ID are the worker's context (state-io.sh); the FATAL branches
 # asserted below need both to exist here.
 log() { echo "$*"; }
@@ -109,5 +126,33 @@ printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # r
 unset REVIEWER_TEST_USER
 run_just_test /dev/null "$d/repo" "$d/log2" 30s 5s
 grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpectedly scrubbed the env (should be container-only)"
+
+# --- stale per-PR scenario image reclaim ------------------------------------
+# Runs in the same preflight as the reap above, on a sandbox this run owns. The
+# selection is the load-bearing part: `image prune -a --filter until=` keys off
+# Created, which for a PULLED base image is the upstream build date, so a
+# blanket sweep would delete python:/ubuntu: (re-pulled anonymously against
+# Docker Hub's per-IP budget, shared by six sandboxes) and keep the fresh per-PR
+# images it was meant to collect — exactly inverted.
+export REVIEWER_TEST_USER=reviewer-test
+install_docker_stub                          # earlier sections narrowed it
+: > "$d/docker.calls"
+run_just_test /dev/null "$d/repo" "$d/log-prune" 30s 5s
+grep -q "rmi.*__950" "$d/docker.calls" || fail "stale per-PR scenario image was not reclaimed"
+grep -q "rmi.*__962" "$d/docker.calls" && fail "reclaimed a per-PR image still inside the age window"
+grep -q "rmi.*python" "$d/docker.calls" && fail "reclaimed a base image — the Created-vs-pulled inversion"
+grep -qE "image prune.*-a|image prune.*--all" "$d/docker.calls" \
+    && fail "'image prune -a' used — deletes base images by upstream Created date"
+grep -q "image prune -f" "$d/docker.calls"   || fail "dangling layers never pruned"
+grep -q "builder prune" "$d/docker.calls"    || fail "BuildKit cache never pruned"
+# Reclaim must precede the build it makes room for.
+awk '/docker rmi/{p=1} /docker (image|builder) prune/{if(!p) exit 1}' "$d/docker.calls" \
+    || fail "prune phases ran before the stale-tag removal"
+
+# A prune failure must never fail the review — disk reclamation is best-effort.
+printf '#!/bin/bash\ncase "$1" in ps) exit 0;; images) exit 1;; *) exit 1;; esac\n' > "$d/bin/docker"
+run_just_test /dev/null "$d/repo" "$d/log-prune-fail" 30s 5s \
+    || fail "a failed reclaim aborted the review"
+printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
 
 echo "PASS: run-just-test-isolation-smoke"
