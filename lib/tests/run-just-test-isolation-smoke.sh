@@ -150,9 +150,37 @@ awk '/docker rmi/{p=1} /docker (image|builder) prune/{if(!p) exit 1}' "$d/docker
     || fail "prune phases ran before the stale-tag removal"
 
 # A prune failure must never fail the review — disk reclamation is best-effort.
-printf '#!/bin/bash\ncase "$1" in ps) exit 0;; images) exit 1;; *) exit 1;; esac\n' > "$d/bin/docker"
-run_just_test /dev/null "$d/repo" "$d/log-prune-fail" 30s 5s \
-    || fail "a failed reclaim aborted the review"
-printf '#!/bin/bash\nexit 0\n' > "$d/bin/docker"                             # restore
+# Two distinct stubs, because they exercise different code: an images listing
+# that fails short-circuits before rmi is ever reached, leaving the reclaim
+# path's own non-fatal contract unasserted.
+printf '#!/bin/bash\ncase "$1" in ps) exit 0;; *) exit 1;; esac\n' > "$d/bin/docker"
+run_just_test /dev/null "$d/repo" "$d/log-list-fail" 30s 5s \
+    || fail "a failed image listing aborted the review"
+
+# rmi reached, but it removes nothing and reports failure. This is where
+# `grep -c` returns 1 on a zero count: under the `set -euo pipefail` this smoke
+# runs with, an unguarded count assignment kills the review outright.
+install_docker_stub
+cat > "$d/bin/docker" <<STUB
+#!/bin/bash
+echo "docker \$*" >> "$d/docker.calls"
+if [ "\$1" = images ]; then
+    printf '%s\t%s\n' "cncorp_plow__950-scenarios-plow-api:latest" \
+        "\$(date -u -d '30 days ago' '+%Y-%m-%d %H:%M:%S +0000 UTC')"
+fi
+[ "\$1" = rmi ] && { echo "Error response from daemon: conflict: in use" >&2; exit 1; }
+exit 0
+STUB
+chmod +x "$d/bin/docker"
+# Called WITHOUT `|| fail`: bash suppresses errexit for any command whose status
+# is tested, and that suppression reaches inside the function (and inside a
+# subshell), so `run_just_test … || fail` cannot observe an aborted assignment
+# at all. Untested, the script's own `set -e` turns it into a loud failure — and
+# the log assertion below catches the silent-skip shape that errexit wouldn't.
+run_just_test /dev/null "$d/repo" "$d/log-rmi-fail" 30s 5s
+grep -q "GH_TOKEN_VISIBLE" "$d/log-rmi-fail" \
+    || fail "the review did not proceed past an rmi that untagged nothing"
+
+install_docker_stub                                                          # restore
 
 echo "PASS: run-just-test-isolation-smoke"

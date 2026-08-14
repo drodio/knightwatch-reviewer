@@ -223,18 +223,6 @@ format_review_scope() {
     esac
 }
 
-# run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
-#
-# Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
-# SIGTERM-ignoring test (the chat-postgres/pytest deadlock that motivated this)
-# dies at the deadline instead of accumulating. Output → TEST_LOG. Returns
-# `just`'s exit: 124 if it died on the timeout SIGTERM, 137 if `timeout -k` had
-# to escalate to SIGKILL — classify_just_test_outcome maps both to TIMED OUT.
-#
-# `env -u LOG_FILE` scrubs LOG_FILE from the test subprocess: this repo's own
-# lib/tests/test_pipeline.py calls pipeline.run_pipeline() under unittest
-# discover and would otherwise inherit LOG_FILE and tee fixture chatter into
-# the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
 # How old a per-PR scenario image must be before this sandbox collects it. A
 # /babysit-pr loop re-reviews one PR across days and reuses its images whenever
 # it lands on this sandbox again, so "every PR but the current one" would force
@@ -279,7 +267,12 @@ prune_stale_scenario_images() {
 
     if [ "${#stale[@]}" -gt 0 ]; then
         # No -f: an image a container still references must survive.
-        removed=$(docker rmi "${stale[@]}" 2>&1 | grep -c '^Untagged:')
+        # `|| true` is load-bearing twice over: grep -c exits 1 when the count
+        # is 0 (nothing left to untag — a repeat sweep, or every removal
+        # refused), and under pipefail a partially-failing rmi would sink the
+        # assignment even where grep did match. Either would abort the review
+        # this function promises never to fail.
+        removed=$(docker rmi "${stale[@]}" 2>&1 | grep -c '^Untagged:' || true)
         log "$PR_ID: reclaimed ${removed}/${#stale[@]} stale scenario image tag(s)"
     fi
     docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
@@ -287,6 +280,18 @@ prune_stale_scenario_images() {
         || log "$PR_ID: build cache prune failed (non-fatal)"
 }
 
+# run_just_test JUST_FILE REPO_DIR TEST_LOG TEST_TIMEOUT TEST_KILL_AFTER
+#
+# Runs `just test` under a timeout that escalates to SIGKILL, so a wedged or
+# SIGTERM-ignoring test (the chat-postgres/pytest deadlock that motivated this)
+# dies at the deadline instead of accumulating. Output → TEST_LOG. Returns
+# `just`'s exit: 124 if it died on the timeout SIGTERM, 137 if `timeout -k` had
+# to escalate to SIGKILL — classify_just_test_outcome maps both to TIMED OUT.
+#
+# `env -u LOG_FILE` scrubs LOG_FILE from the test subprocess: this repo's own
+# lib/tests/test_pipeline.py calls pipeline.run_pipeline() under unittest
+# discover and would otherwise inherit LOG_FILE and tee fixture chatter into
+# the production orchestrator log. Cosmetic, but keeps post-mortem greps clean.
 run_just_test() {
     local just_file="$1" repo_dir="$2" test_log="$3" test_timeout="$4" test_kill_after="$5"
     # Containerized deployment sets REVIEWER_TEST_USER to an unprivileged
