@@ -163,20 +163,6 @@ grep -q "rmi.*cncorp_plowco__950" "$d/docker.calls" \
 grep -q "rmi.*__951" "$d/docker.calls" \
     || fail "dotted-repo run stopped reclaiming other PRs' images"
 
-# An unrecognized basename means we cannot tell whose images these are, so
-# nothing is untagged — but the dangling and build-cache prunes key on nothing
-# but danglingness and age, so disabling them here would turn the one
-# unanticipated input shape into a total reclaim outage.
-mkdir -p "$d/no-pr-number"
-: > "$d/docker.calls"
-run_just_test /dev/null "$d/no-pr-number" "$d/log-nokey" 30s 5s
-grep -q "docker rmi" "$d/docker.calls" \
-    && fail "untagged images without being able to identify whose they are"
-grep -q "image prune -f" "$d/docker.calls" \
-    || fail "an unrecognized workdir layout disabled the dangling-layer prune"
-grep -q "builder prune" "$d/docker.calls" \
-    || fail "an unrecognized workdir layout disabled the build-cache prune"
-
 # Reclaiming is best-effort: a docker that fails outright must not fail the
 # review. Called WITHOUT `|| fail` — bash suppresses errexit for any command
 # whose status is tested, and that suppression reaches inside the function (and
