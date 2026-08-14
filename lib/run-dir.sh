@@ -223,60 +223,32 @@ format_review_scope() {
     esac
 }
 
-# Build cache is pruned by age, not by project: layers are shared across PRs, so
-# there is no "belongs to this review" to key on. BuildKit's `until` genuinely
-# measures time since last USE, so the window means what it says here.
-SCENARIO_BUILD_CACHE_MAX_AGE_H=168
-
-# Reclaim the per-PR scenario images this sandbox's PREVIOUS reviews left behind.
-# `just test` builds ~5 images / ~3.9 GB per PR under a compose project derived
-# from the workdir basename, so `__<digits>-` identifies them and nothing else
-# does. Nothing collected them before: a host-level prune cannot see inside a
-# dind sidecar's volume, and the six sandboxes reached 1.35 TB over ~7 weeks
-# with the root filesystem at 100% (12 G free on 1.8 T).
+# Untag the per-PR scenario images prior reviews left in this sandbox. `just
+# test` builds ~5 images / ~3.9 GB per PR and nothing collected them: a host
+# prune cannot see inside a dind volume, and six sandboxes reached 1.35 TB over
+# ~7 weeks with the root filesystem at 100%. Done here rather than on a host
+# timer because the sandbox is ours at this point — the reap above just emptied
+# it — which removes any need for a busy check, fleet enumeration or host->dind
+# routing. A sandbox that stops claiming PRs keeps its last batch; bounded.
 #
-# Collected HERE, at the only producer, rather than by a host timer: at this
-# point the sandbox is definitionally ours — the reap above just emptied it — so
-# there is no busy check, no TOCTOU window, no fleet enumeration and no
-# host->dind routing to get wrong, and the DOCKER_HOST pin above already fenced
-# the daemon. The seam's one cost is that a sandbox which stops claiming PRs
-# keeps its last batch; that is bounded, and nothing accumulates behind it.
-#
-# Tags rather than image ids: two PRs with identical build context share one
-# image under both tags, and `docker rmi <id>` refuses a multi-repository image
-# ("must be forced"). Untagging touches only what matched.
+# Keyed on the PR number from repo_dir's basename. Two traps, both of which
+# reap THIS review's images right before the build that reuses them:
+#   - NOT the compose project name: compose strips characters outside
+#     [a-z0-9_-], so `cncorp_plow.co__950` becomes `cncorp_plowco__950` and a
+#     dotted repo name silently stops matching. `__<digits>` survives that.
+#   - NOT an image timestamp: Created is when the layer was FIRST built, so a
+#     cache-hit re-tag inherits a weeks-old stamp and any age window reaps a tag
+#     applied minutes ago. (BuildKit's `until` below is different — it measures
+#     last use.) Docker exposes no last-used stamp for images.
+# Sharing a number across repos spares rather than reaps — the safe direction.
+# Requires repo_dir to end in `__<PR#>`; review-one-pr.sh:411 is the sole caller
+# and builds it that way. Untags by tag, not id: a cache-hit twin carries two
+# tags and `docker rmi <id>` refuses a multi-repository image.
 #
 # Never fatal: reclaiming disk must not fail a review.
+SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 prune_stale_scenario_images() {
     local repo_dir="$1" pr_num tag stale=()
-    # The key is the PR NUMBER from the workdir basename. Two rejected
-    # alternatives, both of which reap THIS review's images right before the
-    # build that reuses them — silently, every round:
-    #
-    #   Not the project name. Compose derives it from this basename by
-    #   lowercasing AND stripping every character outside [a-z0-9_-] — verified
-    #   against docker compose: `cncorp_plow.co__950` becomes
-    #   `cncorp_plowco__950`. GitHub repo names legally contain dots and reach
-    #   the workdir untouched through REPO_SLUG, so a whole-name comparison
-    #   misses for such a repo, and a prefix match that skips on hit falls
-    #   through to deletion on any divergence.
-    #
-    #   Not a timestamp. An image's Created is when the layer was FIRST built,
-    #   so a cache-hit build that re-tags an unchanged image today inherits a
-    #   weeks-old stamp — any age window reaps a tag applied minutes ago while
-    #   the loop reusing it is still running. Docker exposes no last-used stamp
-    #   for images to key on instead. (SCENARIO_BUILD_CACHE_MAX_AGE_H above is
-    #   not the same case: BuildKit's `until` does measure last use.)
-    #
-    # `__<digits>` survives compose normalization intact — both `_` and digits
-    # are inside the allowed set — and it fails the safe way: another repo's PR
-    # that happens to share this number is spared rather than reaped, costing a
-    # little disk on one sandbox.
-    # Requires repo_dir to end in `__<PR#>` — review-one-pr.sh:411 is the sole
-    # caller and builds it that way. A caller passing another shape spares
-    # nothing and reclaims every per-PR tag including its own; that costs one
-    # rebuild and needs an in-repo code change to reach, so it is left as a
-    # coupling to know about rather than a branch to carry.
     pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
     while IFS= read -r tag; do
         [[ "$tag" =~ __[0-9]+- ]] || continue                 # a per-PR scenario image
@@ -285,10 +257,7 @@ prune_stale_scenario_images() {
     done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 
     if [ "${#stale[@]}" -gt 0 ]; then
-        # Best-effort and silent: no -f, so an image a container still holds
-        # survives, and the outcome that matters is reclaimed disk plus a review
-        # that keeps running — neither of which a per-tag success count changes.
-        docker rmi "${stale[@]}" >/dev/null 2>&1 || true
+        docker rmi "${stale[@]}" >/dev/null 2>&1 || true      # no -f: a held image survives
         log "$PR_ID: reclaiming ${#stale[@]} scenario image tag(s) from prior reviews"
     fi
     docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
