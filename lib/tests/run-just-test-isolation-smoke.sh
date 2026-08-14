@@ -48,6 +48,9 @@ echo "docker \$*" >> "$d/docker.calls"
 if [ "\$1" = images ]; then
     echo "cncorp_plow__950-scenarios-plow-api:latest"
     echo "cncorp_plow__951-scenarios-plow-api:latest"
+    # A repo whose name carries a dot: compose strips it from the project, so
+    # the tag does NOT contain the workdir basename verbatim.
+    echo "cncorp_plowco__950-scenarios-plow-api:latest"
     echo "python:3.12-slim"
 fi
 exit 0
@@ -147,6 +150,21 @@ grep -q "builder prune" "$d/docker.calls"    || fail "BuildKit cache never prune
 # Reclaim must precede the build it makes room for.
 awk '/docker rmi/{p=1} /docker (image|builder) prune/{if(!p) exit 1}' "$d/docker.calls" \
     || fail "prune phases ran before the tag removal"
+
+# A repo whose GitHub name carries a dot. Compose strips characters outside
+# [a-z0-9_-] when deriving the project, so the workdir basename
+# (cncorp_plow.co__950) is NOT a prefix of the resulting tags
+# (cncorp_plowco__950-…). Matching on the whole project name would classify
+# this review's own images as another PR's and reap them right before the build
+# that reuses them — silently, every round, for that repo. Verified against
+# docker compose, not assumed.
+mkdir -p "$d/cncorp_plow.co__950"
+: > "$d/docker.calls"
+run_just_test /dev/null "$d/cncorp_plow.co__950" "$d/log-dotted" 30s 5s
+grep -q "rmi.*cncorp_plowco__950" "$d/docker.calls" \
+    && fail "reclaimed this review's own images for a dotted repo name (compose-normalization mismatch)"
+grep -q "rmi.*__951" "$d/docker.calls" \
+    || fail "dotted-repo run stopped reclaiming other PRs' images"
 
 # Reclaiming is best-effort: a docker that fails outright must not fail the
 # review. Called WITHOUT `|| fail` — bash suppresses errexit for any command

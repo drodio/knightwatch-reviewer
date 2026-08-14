@@ -258,11 +258,23 @@ SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 #
 # Never fatal: reclaiming disk must not fail a review.
 prune_stale_scenario_images() {
-    local repo_dir="$1" project tag stale=()
-    project=$(basename "$repo_dir"); project="${project,,}"   # compose lowercases
+    local repo_dir="$1" pr_num tag stale=()
+    # Key on the PR number, not the whole project name. Compose derives the
+    # project from this basename by lowercasing AND stripping every character
+    # outside [a-z0-9_-] — verified against docker compose: `cncorp_plow.co__950`
+    # becomes `cncorp_plowco__950`. GitHub repo names legally contain dots and
+    # reach the workdir untouched through REPO_SLUG, so a whole-name comparison
+    # would miss for such a repo — and a prefix match fails toward DELETION,
+    # reaping this review's own images immediately before the build that reuses
+    # them, silently, every round. `__<digits>` survives normalization intact
+    # (both `_` and digits are in the allowed set), so match on that instead.
+    # It also fails the safe way: another repo's PR that happens to share this
+    # number is spared rather than reaped, costing a little disk on one sandbox.
+    pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
+    [[ "$pr_num" =~ ^[0-9]+$ ]] || return 0                   # unrecognized layout: reclaim nothing
     while IFS= read -r tag; do
         [[ "$tag" =~ __[0-9]+- ]] || continue                 # a per-PR scenario image
-        [[ "${tag,,}" == "$project-"* ]] && continue          # this review's own
+        [[ "$tag" == *"__${pr_num}-"* ]] && continue          # this review's own
         stale+=("$tag")
     done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 
