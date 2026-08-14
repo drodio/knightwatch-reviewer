@@ -130,11 +130,8 @@ grep -q "GH_TOKEN_VISIBLE=secret-xyz" "$d/log2"        || fail "host path unexpe
 
 # --- scenario image reclaim -------------------------------------------------
 # Runs in the same preflight as the reap above, on a sandbox this run owns.
-# Ownership, not age, is the selection: the workdir basename IS the compose
-# project docker tags the images with, so this review's own images are exactly
-# identifiable and every other PR's are collectable. No timestamp is consulted —
-# a cache-hit build re-tags an unchanged image, inheriting a weeks-old Created,
-# so any age window would reap a tag applied minutes ago.
+# The selection contract is stated once, at prune_stale_scenario_images in
+# lib/run-dir.sh; these cases pin its consequences.
 export REVIEWER_TEST_USER=reviewer-test
 install_docker_stub                          # earlier sections narrowed it
 mkdir -p "$d/cncorp_plow__950"               # workdir basename == compose project
@@ -165,6 +162,20 @@ grep -q "rmi.*cncorp_plowco__950" "$d/docker.calls" \
     && fail "reclaimed this review's own images for a dotted repo name (compose-normalization mismatch)"
 grep -q "rmi.*__951" "$d/docker.calls" \
     || fail "dotted-repo run stopped reclaiming other PRs' images"
+
+# An unrecognized basename means we cannot tell whose images these are, so
+# nothing is untagged — but the dangling and build-cache prunes key on nothing
+# but danglingness and age, so disabling them here would turn the one
+# unanticipated input shape into a total reclaim outage.
+mkdir -p "$d/no-pr-number"
+: > "$d/docker.calls"
+run_just_test /dev/null "$d/no-pr-number" "$d/log-nokey" 30s 5s
+grep -q "docker rmi" "$d/docker.calls" \
+    && fail "untagged images without being able to identify whose they are"
+grep -q "image prune -f" "$d/docker.calls" \
+    || fail "an unrecognized workdir layout disabled the dangling-layer prune"
+grep -q "builder prune" "$d/docker.calls" \
+    || fail "an unrecognized workdir layout disabled the build-cache prune"
 
 # Reclaiming is best-effort: a docker that fails outright must not fail the
 # review. Called WITHOUT `|| fail` — bash suppresses errexit for any command

@@ -229,9 +229,8 @@ format_review_scope() {
 SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 
 # Reclaim the per-PR scenario images this sandbox's PREVIOUS reviews left behind.
-# `just test` builds ~5 images / ~3.9 GB per PR, tagged for the compose project
-# docker derives from the workdir basename review-one-pr.sh creates
-# (<owner>_<repo>__<PR#>), so `__<digits>-` identifies them and nothing else
+# `just test` builds ~5 images / ~3.9 GB per PR under a compose project derived
+# from the workdir basename, so `__<digits>-` identifies them and nothing else
 # does. Nothing collected them before: a host-level prune cannot see inside a
 # dind sidecar's volume, and the six sandboxes reached 1.35 TB over ~7 weeks
 # with the root filesystem at 100% (12 G free on 1.8 T).
@@ -243,14 +242,11 @@ SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 # the daemon. The seam's one cost is that a sandbox which stops claiming PRs
 # keeps its last batch; that is bounded, and nothing accumulates behind it.
 #
-# Keep THIS review's project, reclaim every other PR's. Being at the producer is
-# what makes that possible, and it is why there is no timestamp anywhere in
-# here: image Created is the time the layer was FIRST built, so a cache-hit
-# build that re-tags an unchanged image today inherits a weeks-old stamp and any
-# age window reaps it as stale while the loop reusing it is still running.
-# Docker exposes no last-used stamp for images to fix that with. Ownership is
-# exact where age was a proxy — and a PR whose next round lands on a different
-# sandbox rebuilds there regardless, so the window was buying little.
+# The key is the PR NUMBER taken from the workdir basename — see the inline note
+# at the guard for why it is not the project name, and why it is not a
+# timestamp. Trade-off, by design: a different repo's PR that happens to share
+# this number is spared too. That costs a little disk on one sandbox, and it is
+# the direction worth failing in.
 #
 # Tags rather than image ids: two PRs with identical build context share one
 # image under both tags, and `docker rmi <id>` refuses a multi-repository image
@@ -271,19 +267,26 @@ prune_stale_scenario_images() {
     # It also fails the safe way: another repo's PR that happens to share this
     # number is spared rather than reaped, costing a little disk on one sandbox.
     pr_num=$(basename "$repo_dir"); pr_num="${pr_num##*__}"
-    [[ "$pr_num" =~ ^[0-9]+$ ]] || return 0                   # unrecognized layout: reclaim nothing
-    while IFS= read -r tag; do
-        [[ "$tag" =~ __[0-9]+- ]] || continue                 # a per-PR scenario image
-        [[ "$tag" == *"__${pr_num}-"* ]] && continue          # this review's own
-        stale+=("$tag")
-    done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+    # Only the ownership-keyed untagging needs a recognizable layout. An
+    # unrecognized basename means we cannot tell this review's images from
+    # another's, so we untag nothing — but the two prunes below key on nothing
+    # but danglingness and age, so they still run. Returning here instead would
+    # disable all reclamation on the one input shape nobody anticipated.
+    if [[ "$pr_num" =~ ^[0-9]+$ ]]; then
+        while IFS= read -r tag; do
+            [[ "$tag" =~ __[0-9]+- ]] || continue             # a per-PR scenario image
+            [[ "$tag" == *"__${pr_num}-"* ]] && continue      # this review's own
+            stale+=("$tag")
+        done < <(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
 
-    if [ "${#stale[@]}" -gt 0 ]; then
-        # Best-effort and silent: no -f, so an image a container still holds
-        # survives, and the outcome that matters is reclaimed disk plus a review
-        # that keeps running — neither of which a per-tag success count changes.
-        docker rmi "${stale[@]}" >/dev/null 2>&1 || true
-        log "$PR_ID: reclaiming ${#stale[@]} scenario image tag(s) from prior reviews"
+        if [ "${#stale[@]}" -gt 0 ]; then
+            # Best-effort and silent: no -f, so an image a container still holds
+            # survives, and the outcome that matters is reclaimed disk plus a
+            # review that keeps running — neither of which a per-tag success
+            # count changes.
+            docker rmi "${stale[@]}" >/dev/null 2>&1 || true
+            log "$PR_ID: reclaiming ${#stale[@]} scenario image tag(s) from prior reviews"
+        fi
     fi
     docker image prune -f >/dev/null 2>&1 || log "$PR_ID: dangling image prune failed (non-fatal)"
     docker builder prune -f --filter "until=${SCENARIO_BUILD_CACHE_MAX_AGE_H}h" >/dev/null 2>&1 \
