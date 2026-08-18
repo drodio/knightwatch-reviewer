@@ -48,9 +48,9 @@ render "1  codex-account-a
 4  codex-account-d" || fail "2-unit render exited non-zero: $(cat "$SANDBOX/render.log")"
 valid "rendered compose is not a valid compose project"
 # One pair inspected end to end — unit 4, the one a renumbering bug would call 2.
-for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
-             'WORKER_ID: "4"' 'network_mode: "service:dind-4"' "depends_on: [dind-4]" \
-             "claims:/shared" "reviewer4-local:/local" "dind4-lib:/var/lib/docker" \
+for token in "  reviewer-1:" "  reviewer-4:" \
+             'WORKER_ID: "4"' \
+             "claims:/shared" "reviewer4-local:/local" \
              "./secrets/codex-account-d:/root/.codex" \
              "./secrets/manifest:/shared/manifest:ro" \
              "./secrets/config.env:/root/.kwr/config.env:ro" \
@@ -63,9 +63,49 @@ for token in "  dind-1:" "  reviewer-1:" "  dind-4:" "  reviewer-4:" \
     grep -qF "$token" "$SANDBOX/out.yml" || fail "render is missing: $token"
 done
 grep -qF codex-account-c "$SANDBOX/out.yml" && fail "a commented fleet.conf row was rendered"
-# Same path on BOTH sides of the pair (PR #161).
-[ "$(count 'scenario-shared4:/scenario-shared')" = 2 ] \
-    || fail "scenario-shared4 is not bridged on both dind-4 and reviewer-4"
+# Upstream bridged this volume across the reviewer/dind PAIR (PR #161); with the
+# sidecar gone it is the reviewer's own scratch dir, so exactly ONE mount.
+[ "$(count 'scenario-shared4:/scenario-shared')" = 1 ] \
+    || fail "scenario-shared4 should be mounted once (reviewer-4), got $(count 'scenario-shared4:/scenario-shared')"
+
+# --- 1b. THE SECURITY ASSERTION — no privileged container, no dind ----------
+#
+# This is the whole point of the Sparkle fork patch (bead sparkle-akpqb7).
+# Upstream ships a PRIVILEGED docker:dind sidecar whose network namespace the
+# sandbox-bypassed codex agents share, so a prompt injection in a reviewed PR
+# could drive that daemon to HOST ROOT. We delete the sidecar; upstream keeps it
+# and we rebase on upstream weekly. The realistic way the hole returns is a
+# `git pull` resolving in upstream's favour, and a test that only checked the
+# tokens we DO emit would stay green through exactly that.
+#
+# Asserted against `docker compose config` — the PARSED project — not the raw
+# file. Grepping the text was tried first and was wrong in the expensive
+# direction: it matched this very explanation when the prose lived in the
+# generated header, i.e. it reported a privileged container that did not exist.
+# The parse drops comments and resolves the `<<:` merges, so it answers the
+# question actually being asked — what would `docker compose up` CREATE.
+echo "  1b: no privileged container, no dind sidecar..."
+render "1  codex-account-a
+2  codex-account-b" || fail "render for the privilege audit exited non-zero"
+docker compose -f "$SANDBOX/out.yml" config >"$SANDBOX/parsed.yml" 2>/dev/null \
+    || fail "could not parse the rendered project for the privilege audit"
+
+grep -qiE '^[[:space:]]*privileged:[[:space:]]*true' "$SANDBOX/parsed.yml" \
+    && fail "SECURITY: a service in the rendered project is privileged — the sparkle-akpqb7 residual is back"
+grep -qiE '^[[:space:]]*(dind[^:]*|[^:]*-dind):' "$SANDBOX/parsed.yml" \
+    && fail "SECURITY: the rendered project still declares a dind service"
+grep -qE 'DOCKER_HOST' "$SANDBOX/parsed.yml" \
+    && fail "SECURITY: the rendered project still hands a reviewer a DOCKER_HOST"
+grep -qE 'network_mode' "$SANDBOX/parsed.yml" \
+    && fail "SECURITY: a reviewer still joins another container's network namespace"
+
+# Prove the four greps above can actually FAIL rather than passing because the
+# parse was empty or the file moved. Without this the whole block is vacuous:
+# every assertion is a NEGATIVE, and negatives all pass against an empty file.
+grep -qE '^[[:space:]]+reviewer-2:' "$SANDBOX/parsed.yml" \
+    || fail "the privilege audit ran against a parse with no reviewer unit in it"
+grep -qE '^[[:space:]]+privileged:' "$SANDBOX/parsed.yml" \
+    && fail "unexpected: a privileged key is present at all"
 
 # --- 2. kid wiring is conditional on KID_ROOT -------------------------------
 echo "  2: kid wiring conditional..."

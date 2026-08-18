@@ -44,14 +44,12 @@ export REVIEWER_CONTAINER_MODE=1
 # see run_just_test in lib/run-dir.sh.
 export REVIEWER_TEST_USER="${REVIEWER_TEST_USER:-reviewer-test}"
 
-# Block until the dind daemon answers, so the first `just test` doesn't
-# race the sidecar's startup. Fail loud if it never comes up.
-for i in $(seq 1 60); do
-    docker info >/dev/null 2>&1 && break
-    [ "$i" -eq 60 ] && { log "[review-loop] FATAL: dind daemon (${DOCKER_HOST:-default}) never became ready"; exit 1; }
-    sleep 2
-done
-log "[review-loop] dind ready at ${DOCKER_HOST:-default}; polling every ${POLL_SECS}s"
+# SPARKLE FORK: no dind sidecar, so there is no daemon to wait for. Upstream
+# blocks here on `docker info` for up to 120s and exits 1 if it never answers —
+# which is why the sidecar cannot simply be dropped from the compose file. That
+# FATAL would fire on every container start. See lib/render-compose.sh's header
+# for why the sidecar is gone (bead sparkle-akpqb7).
+log "[review-loop] no dind sidecar (Sparkle fork); polling every ${POLL_SECS}s"
 
 # An UNPROVISIONED account (compose bind-mounts a codex-account-N dir that was
 # never logged in — docker silently auto-creates it empty) has no auth.json.

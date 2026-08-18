@@ -246,6 +246,32 @@ format_review_scope() {
 # tags and `docker rmi <id>` refuses a multi-repository image.
 #
 # Never fatal: reclaiming disk must not fail a review.
+# dind_reap_mode DOCKER_HOST -> skip | reap | refuse
+#
+# SPARKLE FORK. Upstream pins the reap to one endpoint and treats everything
+# else — including UNSET — as fatal. That pin exists for a real reason and is
+# kept: the reap is `docker ps -aq` + `docker rm -fv`, so pointing it at a HOST
+# daemon would delete that host's containers. What upstream had no case for is
+# the configuration this fork ships: no dind sidecar at all, hence no
+# DOCKER_HOST, hence nothing to reap. Under upstream's logic that FATALs on
+# every review that reaches the test lane.
+#
+# So exactly one case moves — unset, from refuse to skip. Any NON-EMPTY value
+# other than the dind endpoint still refuses, which is the property worth
+# protecting; "unset" cannot be reached by misconfiguring a host socket, since
+# that would be a non-empty value like unix:///var/run/docker.sock.
+#
+# Split out as a pure function purely so it can be tested: the smoke that
+# covers the surrounding code (run-just-test-isolation-smoke.sh) needs Linux,
+# so on a macOS workstation the branch below would otherwise ship unverified.
+dind_reap_mode() {
+    case "${1:-}" in
+        "")                     printf 'skip\n' ;;
+        "tcp://127.0.0.1:2375") printf 'reap\n' ;;
+        *)                      printf 'refuse\n' ;;
+    esac
+}
+
 SCENARIO_BUILD_CACHE_MAX_AGE_H=168
 prune_stale_scenario_images() {
     local repo_dir="$1" pr_num tag stale=()
@@ -314,15 +340,22 @@ run_just_test() {
         # run (this code executed with a host daemon reachable, e.g. an
         # unstubbed test harness) refuse instead of rm -f'ing the wrong
         # daemon. Fail LOUD: the caller runs without `set -e`/`pipefail`.
-        case "${DOCKER_HOST:-}" in "tcp://127.0.0.1:2375") ;; *)
-            log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint (docker-compose.yml)"; exit 1;;
+        case "$(dind_reap_mode "${DOCKER_HOST:-}")" in
+            skip) ;;
+            reap)
+                local orphans
+                # shellcheck disable=SC2086 — one container id per line, word-split intended
+                orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
+                    || { log "$PR_ID: FATAL — dind reap failed"; exit 1; }
+                prune_stale_scenario_images "$repo_dir" ;;
+            *)
+                log "$PR_ID: FATAL — refusing dind reap: DOCKER_HOST='${DOCKER_HOST:-}' is not the dedicated dind endpoint (docker-compose.yml)"; exit 1;;
         esac
-        local orphans
-        # shellcheck disable=SC2086 — one container id per line, word-split intended
-        orphans=$(docker ps -aq) && { [ -z "$orphans" ] || docker rm -fv $orphans >/dev/null; } \
-            && mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
-            || { log "$PR_ID: FATAL — scenario-shared bridge reset failed (dind reap or bridge prep)"; exit 1; }
-        prune_stale_scenario_images "$repo_dir"
+        # The bridge reset runs either way: XDG_CACHE_HOME still points here, and
+        # a stale root-owned nested dir is what turned later runs' mktemp into
+        # EACCES (issue #172) — that hazard is independent of the daemon.
+        mkdir -p "$scenario_shared" && find "$scenario_shared" -mindepth 1 -delete && chmod 1777 "$scenario_shared" \
+            || { log "$PR_ID: FATAL — scenario-shared bridge prep failed"; exit 1; }
         local rc=0
         # Keep the uv/pip package caches OFF the dind-shared volume: point them at the
         # test user's own HOME via UV_CACHE_DIR/PIP_CACHE_DIR (both override
@@ -334,7 +367,7 @@ run_just_test() {
         # created fresh, test-user-owned, on a path dind can't touch — no repair needed.
         timeout -k "$test_kill_after" "$test_timeout" \
             runuser -u "$REVIEWER_TEST_USER" -- \
-            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="$DOCKER_HOST" \
+            env -i PATH="$PATH" HOME="/home/$REVIEWER_TEST_USER" DOCKER_HOST="${DOCKER_HOST:-}" \
                 XDG_CACHE_HOME="$scenario_shared" \
                 UV_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/uv" \
                 PIP_CACHE_DIR="/home/$REVIEWER_TEST_USER/.cache/pip" \

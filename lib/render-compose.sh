@@ -127,6 +127,30 @@ case "$SECRETS_ABS" in
 esac
 
 # --- render (temp file; only moved into place once fully written) -----------
+# ─────────────────────────────────────────────────────────────────────────────
+# SPARKLE FORK — THERE IS NO TEST-RUNNER SIDECAR, AND THAT IS THE POINT.
+#
+# Upstream pairs every reviewer with a PRIVILEGED `docker:dind` container and
+# puts the reviewer in its network namespace, so a reviewed repo whose test
+# recipe drives a compose stack can run it nested. Upstream's README states the
+# consequence plainly: the codex agents run sandbox-bypassed beside that daemon,
+# so a successful prompt-injection of a review agent "could drive the daemon →
+# host root" — called there "an accepted v1 residual to resolve at bring-up".
+#
+# The reviewed repo here is drodio/sparkle, whose `just test` is `pnpm -r test`:
+# plain vitest, no daemon. So we resolve the residual by DELETING the sidecar
+# rather than hardening it — which keeps the test lane and removes the
+# escalation target outright. Upstream's other suggested fix (rootless dind /
+# sysbox) would only shrink it. Bead sparkle-akpqb7; the reasoning is written up
+# in PRD/sparkle/knightwatch-dind-removal.md in drodio/sparkle.
+#
+# WHAT ACTUALLY KEEPS THIS TRUE: upstream lands 1-5 commits/day and we rebase on
+# it, so the realistic way the privileged container returns is not a deliberate
+# re-add — it is a `git pull` resolving in upstream's favour. Removal alone is
+# therefore not durable; lib/tests/render-compose-smoke.sh § 1b parses the
+# rendered project with `docker compose config` and fails on any privileged
+# service, any dind service, or any DOCKER_HOST reaching a reviewer.
+# ─────────────────────────────────────────────────────────────────────────────
 TMP="$(mktemp "${OUT}.XXXXXX")"
 trap 'rm -f "$TMP"' EXIT
 
@@ -135,10 +159,8 @@ cat >"$TMP" <<'STATIC_HEADER'
 # Source:     docker/secrets/fleet.conf
 # Regenerate: just fleet
 #
-# N reviewer units on one host. Each reviewer shares its dind sidecar's
-# network namespace (network_mode: service:dind-K) so `just test`'s
-# published scenario ports land on a localhost the reviewer shares with
-# the daemon, and DOCKER_HOST can be tcp://127.0.0.1:2375.
+# N reviewer units on one host. This fork runs the reviewer ALONE — see the
+# generator's own header for why there is no test-runner sidecar.
 #
 # The `claims` volume is SHARED across ALL reviewers (STATE_DIR=/shared): it
 # holds runs/ review-state, the per-PR locks, the just-test concurrency
@@ -158,34 +180,17 @@ cat >"$TMP" <<'STATIC_HEADER'
 # there (`just fleet`) rather than hand-editing this file. See fleet.conf's
 # own header for the format and the operational notes on parking a unit.
 # Memory: the per-unit caps below are CEILINGS, not reservations, and they
-# deliberately over-commit — summing every unit's (20g reviewer + 12g dind)
-# cap routinely exceeds host RAM. What actually bounds the aggregate is the
-# shared just-test semaphore (MAX_CONCURRENT_TESTS, default 3), which rations
-# the dind side host-wide; the reviewer side is unbounded across containers,
+# deliberately over-commit — summing every unit's 20g reviewer cap routinely
+# exceeds host RAM. (Upstream also counted a second per-unit cap for its
+# test-runner sidecar; this fork has none, which is what lets the Sparkle VM be
+# a 4-vCPU/32GB e2-highmem-4 rather than an 8-vCPU e2-standard-8.) What bounds
+# the aggregate is the shared just-test semaphore (MAX_CONCURRENT_TESTS,
+# default 3); the reviewer side is unbounded across containers,
 # so a simultaneous fleet-wide codex peak is arbitrated by the host OOM killer
 # rather than by any cgroup — and it can reap prod Plow instead of a reviewer.
 # Per-unit caps stay high so a single legitimate review isn't killed
 # mid-flight. Revisit (lower the caps, or add a reviewer-side reservation) if
 # real peaks ever approach the box.
-
-x-dind: &dind
-  image: docker:27-dind
-  privileged: true
-  environment:
-    DOCKER_TLS_CERTDIR: ""          # plaintext daemon within the shared netns only
-  # Bind loopback ONLY. reviewer-K shares dind-K's netns (network_mode below), so
-  # 127.0.0.1 reaches its own daemon — but a sibling pair's netns can't, so a
-  # 0.0.0.0 bind (reachable across the compose network) would let one reviewer
-  # drive another account's daemon. Keep DOCKER_HOST=tcp://127.0.0.1:2375.
-  #
-  # `dockerd` MUST be the first token. dockerd-entrypoint.sh injects its own
-  # default `--host=tcp://0.0.0.0:2375` whenever argv is empty or starts with `-`
-  # (its line ~100). A bare `--host=…` first token trips that, so the entrypoint
-  # ALSO appends 0.0.0.0:2375 — which both defeats the loopback-only intent and
-  # collides on the port, so dockerd dies with "bind: address already in use".
-  # Leading with `dockerd` skips the injection, binding ONLY the hosts below.
-  command: ["dockerd", "--host=unix:///var/run/docker.sock", "--host=tcp://127.0.0.1:2375"]
-  mem_limit: 12g
 
 # Shared reviewer service contract (everything identical across accounts).
 x-reviewer: &reviewer
@@ -199,7 +204,6 @@ x-reviewer-env: &reviewer-env
   REPOS_DIR: /local/repos         # per-container
   WORKDIRS_DIR: /local/workdirs   # per-container
   LOCAL_STATE_DIR: /local/state   # canonical clone/fetch lock + ephemeral KID query copies (per-container; quota-pause + fatal-auth offline live in shared STATE_DIR/pool/<WORKER_ID>/, just-test semaphore in shared STATE_DIR)
-  DOCKER_HOST: tcp://127.0.0.1:2375
   CONFIG_ENV_FILE: /root/.kwr/config.env  # root-only path → reviewer-test (just test) can't read the token file
   REPOS_CONF_FILE: /shared/manifest/repos.conf  # read out of a DIRECTORY mount, not a file mount: docker pins a file bind-mount to the source inode, so an editor's write-temp-then-rename would leave every container serving the pre-edit manifest with no error. config.env stays a file mount above — it carries GH_TOKEN and must stay on the root-only path, off world-readable /shared.
   KWR_CONFIG_DIR: /root/.kwr-config       # mount point of the host-pulled kwr-config cache (read-only; see the per-reviewer volume). KWR_CONFIG_REPO lives in config.env — unset = no-op.
@@ -224,16 +228,8 @@ STATIC_HEADER
 for i in "${!ids[@]}"; do
     n="${ids[$i]}"; acct="${accounts[$i]}"
     cat >>"$TMP" <<EOF
-  dind-$n:
-    <<: *dind
-    volumes:
-      - dind$n-lib:/var/lib/docker
-      - scenario-shared$n:/scenario-shared   # token bridge; same path as reviewer-$n (PR #161)
-
   reviewer-$n:
     <<: *reviewer
-    network_mode: "service:dind-$n"
-    depends_on: [dind-$n]
     environment:
       <<: *reviewer-env
       WORKER_ID: "$n"
@@ -262,15 +258,14 @@ cat >>"$TMP" <<'EOF'
 volumes:
   # EXTERNAL fixed-name so the shared review state (runs/ — the KNOWN_SHA dedup
   # history) survives project rename / down -v / prune. Setup + migration:
-  # README § Containerized deployment. (reviewerN-local / dindN-lib stay
-  # compose-managed — rebuildable state, not dedup history.)
+  # README § Containerized deployment. (reviewerN-local stays compose-managed —
+  # rebuildable state, not dedup history.)
   claims:
     external: true
     name: kwr_claims
 EOF
 for n in "${ids[@]}"; do printf '  reviewer%s-local:\n' "$n" >>"$TMP"; done
-for n in "${ids[@]}"; do printf '  dind%s-lib:\n' "$n" >>"$TMP"; done
-printf '  # Per-pair token-passing bridge for nested-dind scenario stacks (see dind-%s).\n' "${ids[0]}" >>"$TMP"
+printf '  # Per-reviewer scratch bridge; XDG_CACHE_HOME points a test recipe here.\n' >>"$TMP"
 for n in "${ids[@]}"; do printf '  scenario-shared%s:\n' "$n" >>"$TMP"; done
 
 mv "$TMP" "$OUT"
