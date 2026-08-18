@@ -61,6 +61,22 @@ if [ -n "${REVIEWER_CONTAINER_MODE:-}" ]; then MAX_CONCURRENT=1; WAIT_FOR_WORKER
 # in ORGS. Replaces a 41×-per-tick `gh pr list` loop that was burning
 # the per-user GraphQL quota.
 . "$REVIEWER_LIB_DIR/pr-enumerate.sh"
+# SPARKLE FORK PATCH: merge-ready scoping gate. Sourced after pr-enumerate.sh
+# because it consumes the isDraft/labels fields that file now enumerates.
+#
+# Resolved with a fallback to this script's own lib/ because the sandboxed
+# smokes build REVIEWER_LIB_DIR from an explicit copy list that predates this
+# file. Without the fallback a missing copy makes pr_is_merge_ready undefined,
+# and `! pr_is_merge_ready` then reads as "not merge-ready" — silently skipping
+# every PR. Fail LOUDLY instead: an unreadable gate must never be a quiet skip.
+if [ -f "$REVIEWER_LIB_DIR/merge-ready.sh" ]; then
+    . "$REVIEWER_LIB_DIR/merge-ready.sh"
+elif [ -f "$(dirname "${BASH_SOURCE[0]}")/lib/merge-ready.sh" ]; then
+    . "$(dirname "${BASH_SOURCE[0]}")/lib/merge-ready.sh"
+else
+    echo "FATAL: lib/merge-ready.sh not found (looked in \$REVIEWER_LIB_DIR and ./lib)" >&2
+    exit 1
+fi
 # Shared work-list: one container per ENUMERATE_SECS window refreshes the
 # eligible-PR queue under the election flock; every container consumes it.
 . "$REVIEWER_LIB_DIR/queue.sh"
@@ -140,6 +156,7 @@ refresh_queue() {
     local REVIEWED_AT_ISO COMMENTS_JSON WHOLE_TRIGGER INCREMENTAL_TRIGGER
     local TRIGGER_JSON LAST_COMMIT_DATE LAST_COMMIT_TS AGE_SECS spec
     local PR_UPDATED_AT SEEN_UPDATED_FILE LAST_SEEN_UPDATED_AT
+    local MERGE_READY_REASON
     local DECLINED_ALREADY DECLINE_ERR DECLINE_HEADER LIVE_SHA
     while IFS= read -r PR_JSON; do
         REPO=$(echo "$PR_JSON" | jq -r '.repository.nameWithOwner')
@@ -214,6 +231,33 @@ refresh_queue() {
         # #189), so it was re-enumerated and trust-checked every ~30s forever.
         if [ -n "$PR_UPDATED_AT" ] && [ "$PR_UPDATED_AT" = "$LAST_SEEN_UPDATED_AT" ]; then
             continue
+        fi
+
+        # SPARKLE FORK PATCH: merge-ready scoping (lib/merge-ready.sh).
+        # Review only the PRs we are about to merge — one account cannot serve
+        # this repo's whole open backlog (see lib/merge-ready.sh for the why).
+        #
+        # Placed BELOW the idle-skip and ABOVE the trust check deliberately:
+        #   - below idle-skip, because a PR whose updatedAt has not moved was
+        #     already fully evaluated and must stay free;
+        #   - above the trust check, because that check is one uncached
+        #     core-API request per PR per tick per container, and a PR we are
+        #     not going to review must not spend it. This gate decides purely
+        #     from fields already in the enumeration payload, so it costs zero
+        #     API calls and is the cheapest possible place to drop a PR.
+        #
+        # The watermark write is what makes a skipped PR free on LATER ticks
+        # too: without it, an unlabelled PR would be re-evaluated every ~30s
+        # forever. Same write as the nothing-to-dispatch path below.
+        if [ "$MERGE_READY_GATE" = "true" ]; then
+            if ! MERGE_READY_REASON=$(pr_is_merge_ready "$PR_JSON"); then
+                log "$PR_ID: not merge-ready — $MERGE_READY_REASON; skipping"
+                if [ -n "$PR_UPDATED_AT" ]; then
+                    mkdir -p "$(dirname "$SEEN_UPDATED_FILE")"
+                    printf '%s' "$PR_UPDATED_AT" > "$SEEN_UPDATED_FILE"
+                fi
+                continue
+            fi
         fi
 
         # Author trust, derived once per surviving PR and passed to the worker

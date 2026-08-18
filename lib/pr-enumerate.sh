@@ -21,7 +21,9 @@
 # Output shape per element:
 #   {"repository":{"nameWithOwner":"owner/name"},
 #    "number":N, "title":"…", "headRefName":"…", "headRefOid":"…", "updatedAt":"…",
-#    "author":{"login":"…"}}
+#    "author":{"login":"…"}, "isDraft":false, "labels":["…"]}
+# (isDraft + labels are a SPARKLE FORK PATCH feeding lib/merge-ready.sh; labels
+#  is a flat string array on BOTH enumeration paths.)
 # On any underlying gh failure: exits non-zero, prints nothing — mirrors
 # fetch_issue_comments' contract so callers stay on the existing
 # `|| { log; continue; }` short-circuit.
@@ -40,7 +42,8 @@ _enumerate_graphql_query='query($q: String!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
-        number title headRefName headRefOid updatedAt
+        number title headRefName headRefOid updatedAt isDraft
+        labels(first: 20) { nodes { name } }
         author { login }
         repository { nameWithOwner }
       }
@@ -92,7 +95,11 @@ enumerate_open_prs() {
                 raw=$(gh api graphql -F q="user:${owner} is:pr is:open archived:false" \
                         -f query="$_enumerate_graphql_query" 2>/dev/null) || return 1
             fi
-            nodes=$(printf '%s' "$raw" | jq -c '.data.search.nodes // []') || return 1
+            # SPARKLE FORK PATCH: flatten labels to a plain string array so the
+            # merge-ready gate reads ONE shape regardless of which enumeration
+            # path produced the node (graphql nests under .labels.nodes[].name,
+            # `gh pr list` returns .labels[].name).
+            nodes=$(printf '%s' "$raw" | jq -c '[.data.search.nodes[]? | . + {labels: [(.labels.nodes // [])[].name]}]') || return 1
             pieces+=("$nodes")
             after=$(printf '%s' "$raw" | jq -r '.data.search.pageInfo // {} | if .hasNextPage then (.endCursor // empty) else empty end') || return 1
             [ -n "$after" ] || break
@@ -104,14 +111,16 @@ enumerate_open_prs() {
         owner="${repo%%/*}"
         owner_in_orgs "$owner" && continue
         if ! raw=$(gh pr list --repo "$repo" \
-                --json number,title,headRefName,headRefOid,updatedAt,author \
+                --json number,title,headRefName,headRefOid,updatedAt,author,isDraft,labels \
                 --state open --limit 200 2>/dev/null); then
             return 1
         fi
         # gh pr list omits the repository field — re-inject it so the
         # output shape matches the graphql branch.
+        # SPARKLE FORK PATCH: also flatten labels to a string array (see the
+        # graphql branch above) so both paths emit the same shape.
         nodes=$(printf '%s' "$raw" | jq -c --arg r "$repo" \
-            'map(. + {repository: {nameWithOwner: $r}})') || return 1
+            'map(. + {repository: {nameWithOwner: $r}, labels: [(.labels // [])[].name]})') || return 1
         pieces+=("$nodes")
     done
 
