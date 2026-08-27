@@ -33,6 +33,16 @@ ARG COMPOSE_VERSION=5.1.4
 # plow is actually tested against.
 ARG JQ_VERSION=1.7.1
 ARG CODEX_CLI_VERSION=0.144.1
+# pnpm: drodio/sparkle's `just test` is `pnpm -r test` — its root justfile is a
+# manifest that delegates to package.json, and package.json pins
+# `packageManager: pnpm@10.7.1`. pnpm is NOT in this image, so that recipe
+# exit-127s and EVERY review this fork posts carries "Tests not run": measured
+# live across the whole step-9 bring-up on PR #2718, and tracked as bead
+# sparkle-wl1cjy. Same npm-global route and the same pin discipline as codex
+# above; the version deliberately MATCHES the reviewed repo's packageManager
+# field, so the reviewer resolves dependencies with the resolver that repo is
+# actually tested with rather than whatever `latest` happens to be on a rebuild.
+ARG PNPM_VERSION=10.7.1
 
 # System deps a reviewed repo's `just test` shells out to. The May-2026
 # containerization (#103) + host-reviewer retirement (#119) moved test execution
@@ -90,6 +100,17 @@ RUN UV_TOOL_BIN_DIR=/usr/local/bin uv tool install \
 # codex CLI (npm global) — the reviewer agents. Pinned so a rebuild
 # can't change reviewer behavior outside the PR diff (matches GH/JUST/DOCKER pins).
 RUN npm install -g "@openai/codex@${CODEX_CLI_VERSION}"
+
+# pnpm (npm global) — see ARG PNPM_VERSION above. Installed GLOBALLY, into
+# /usr/local/bin, because two different users have to find it: root runs the
+# review, and the unprivileged `reviewer-test` user is who actually runs
+# `just test` (run_just_test in lib/run-dir.sh drops privileges and re-execs
+# under `env -i PATH="$PATH" ...`). /usr/local/bin is on that inherited PATH for
+# both. A corepack shim would not do: `corepack enable` writes into whichever
+# $HOME ran it, so it would resolve for root and be invisible to reviewer-test —
+# and corepack additionally reaches the network at FIRST USE, which would move a
+# download inside the reviewed repo's test window instead of doing it at build.
+RUN npm install -g "pnpm@${PNPM_VERSION}"
 
 # Authenticate HTTPS git clone/fetch via gh's credential helper (root's global
 # config). The helper shells out to `gh auth git-credential`, which reads

@@ -171,6 +171,22 @@ test:
     echo "=== container-state-split smoke test ==="
     bash lib/tests/container-state-split-smoke.sh
 
+    # --- SPARKLE FORK PATCHES ---------------------------------------------
+    # Both of these are fork-only guards, enumerated here because this recipe
+    # names every suite explicitly rather than globbing lib/tests/. That is why
+    # dind-reap-mode-smoke.sh sat ORPHANED from the day it was added: it landed
+    # as a new file (correctly — a new file cannot conflict on a rebase onto
+    # upstream) and nothing ever called it, so the assertion protecting the
+    # deleted privileged sidecar had never once run. A guard nobody runs is
+    # indistinguishable from a guard that passes.
+    echo ""
+    echo "=== dind reap-mode smoke test (fork) ==="
+    bash lib/tests/dind-reap-mode-smoke.sh
+
+    echo ""
+    echo "=== sparkle pnpm pin smoke test (fork) ==="
+    bash lib/tests/sparkle-pnpm-pin-smoke.sh
+
     echo ""
     echo "=== review-loop smoke test ==="
     bash lib/tests/review-loop-smoke.sh
