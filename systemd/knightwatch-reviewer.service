@@ -20,13 +20,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-User=odio
-Group=odio
+User=drodio
+Group=drodio
 # Deployed clone (~/services per the code-vs-deploy split) — the rendered
 # compose file lives here, not in ~/.pr-reviewer. Host-specific by design,
 # matching the /home/odio/ paths baked into the sibling units.
-WorkingDirectory=/home/odio/services/knightwatch-reviewer
-Environment=HOME=/home/odio
+WorkingDirectory=/home/drodio/services/knightwatch-reviewer
+Environment=HOME=/home/drodio
 # PATH: system dirs FIRST, matching the sibling units — uniform security stance
 # (no writable user dir searched ahead of /usr). ExecStart uses an absolute
 # docker path, so this is belt-and-suspenders for any helper compose invokes.
